@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSessionProcess, type SessionProcess } from "./process.js";
 import type { HarnessDescriptor, HarnessId, PolicyId, StartRunRequest } from "./types.js";
 
-export type StructuredFormat = "claude-stream-json";
+export type StructuredFormat = "claude-stream-json" | "codex-json";
 
 export type LaunchResult = {
   process: SessionProcess;
@@ -74,7 +74,7 @@ export class CommandHarnessAdapter implements HarnessAdapter {
       throw new Error(`Harness does not support resuming sessions: ${this.descriptor.id}`);
     }
     const resumeArgs = request.resumeSessionId && this.#resumeArgs ? this.#resumeArgs(request.resumeSessionId) : [];
-    const args = [...policyArgs, ...extraArgs, ...resumeArgs, ...this.#launchArgs(request.command)];
+    const args = [...policyArgs, ...extraArgs, ...this.#launchArgs(request.command, resumeArgs)];
     const process = spawnSessionProcess({
       command: this.#binary,
       args,
@@ -99,17 +99,19 @@ export class CommandHarnessAdapter implements HarnessAdapter {
     };
   }
 
-  #launchArgs(command: string): string[] {
+  // Resume args sit between the base args and the prompt: subcommand-style
+  // resume (codex `exec resume <id>`) needs to follow the base subcommand.
+  #launchArgs(command: string, resumeArgs: string[] = []): string[] {
     if (this.#promptMode === "shell-command") {
       // Empty command opens an interactive shell session.
       return command.length > 0 ? ["-lc", command] : ["-il"];
     }
 
     if (this.#promptMode === "arg" && command.length > 0) {
-      return [...this.#args, command];
+      return [...this.#args, ...resumeArgs, command];
     }
 
-    return [...this.#args];
+    return [...this.#args, ...resumeArgs];
   }
 }
 
@@ -131,8 +133,10 @@ export function defaultHarnesses(): HarnessAdapter[] {
       id: "codex",
       displayName: "Codex Exec",
       binary: "codex",
-      args: ["exec", "--skip-git-repo-check"],
+      args: ["exec", "--skip-git-repo-check", "--json"],
       promptMode: "arg",
+      structured: "codex-json",
+      resumeArgs: (sessionId) => ["resume", sessionId],
       policyArgs: {
         permissive: ["--sandbox", "workspace-write"],
         strict: ["--sandbox", "read-only"]
@@ -144,6 +148,7 @@ export function defaultHarnesses(): HarnessAdapter[] {
       binary: "codex",
       args: ["--no-alt-screen", "-c", "check_for_update_on_startup=false", "-c", "update_on_startup=false"],
       promptMode: "stdin",
+      resumeArgs: (sessionId) => ["resume", sessionId],
       policyArgs: {
         permissive: ["--full-auto"],
         strict: ["--sandbox", "read-only"]

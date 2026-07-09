@@ -571,6 +571,22 @@ input::placeholder {
   color: var(--mico-muted);
 }
 
+/* Clickable queue rows jump to their run; keep the plain-row look. */
+button.approval-jump {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+button.approval-jump:hover span:first-child {
+  background: var(--mico-fg);
+  color: var(--mico-bg);
+}
+
 .approval-actions {
   display: inline-flex;
   gap: 1ch;

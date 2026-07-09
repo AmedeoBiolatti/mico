@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { cwd as processCwd, env as processEnv } from "node:process";
 import { defaultHarnesses, type HarnessAdapter } from "./harnesses.js";
 import { EventLog } from "./events.js";
-import { parseClaudeStreamLine } from "./agent-events.js";
+import { parseClaudeStreamLine, parseCodexJsonLine } from "./agent-events.js";
 import { addWorktree, captureGitSnapshot, changedFilesFromSnapshots, diffText, mergeWorktree, removeWorktree } from "./git.js";
 import type { SessionProcess } from "./process.js";
 import type { RunStore } from "./store.js";
@@ -389,7 +389,8 @@ export class SessionManager {
       this.#processes.set(id, launch.process);
       this.events.append(id, "run.started", { pid: launch.process.pid ?? null, processKind: launch.process.kind });
 
-      if (launch.structured === "claude-stream-json") {
+      if (launch.structured !== undefined) {
+        const parseLine = launch.structured === "codex-json" ? parseCodexJsonLine : parseClaudeStreamLine;
         let lineBuffer = "";
         launch.process.onData((text) => {
           lineBuffer += text;
@@ -400,7 +401,7 @@ export class SessionManager {
             if (line.trim().length === 0) {
               continue;
             }
-            const parsed = parseClaudeStreamLine(line.trim());
+            const parsed = parseLine(line.trim());
             if (parsed === null) {
               this.events.append(id, "pty.output", { stream: "pty", text: `${line}\n` });
               continue;

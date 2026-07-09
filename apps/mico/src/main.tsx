@@ -632,19 +632,21 @@ function App() {
     }
   }
 
-  // Reopen a finished agent session interactively: same cwd, claude --resume <id>.
+  // Reopen a finished agent session interactively in the harness family it
+  // came from: claude --resume <id> or codex resume <id>, same cwd.
   async function resumeRun(run: SupervisorRun) {
     if (!run.agentSessionId) {
       return;
     }
     setLastError(null);
+    const harnessId = run.harnessId.startsWith("codex") ? "codex-interactive" : "claude-code";
 
     try {
       const response = await fetch(`${supervisorBase}/api/runs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          harnessId: "claude-code",
+          harnessId,
           command: "",
           cwd: run.cwd,
           cols: 120,
@@ -660,7 +662,7 @@ function App() {
       }
 
       const body = await response.json() as { run: SupervisorRun };
-      ensureSession({ id: body.run.id, harnessId: "claude-code", status: body.run.status });
+      ensureSession({ id: body.run.id, harnessId, status: body.run.status });
       setSelectedRunId(body.run.id);
       void refreshRuns();
     } catch (error) {
@@ -985,7 +987,7 @@ function App() {
       {
         id: "resume",
         label: "resume session",
-        hint: "claude --resume",
+        hint: "continue conversation",
         disabled: running || !run.agentSessionId,
         onSelect: () => void resumeRun(run)
       },
@@ -1059,7 +1061,10 @@ function App() {
   const liveCount = runs.filter((run) => run.status === "running").length;
   const selectedAttention = selectedRunId ? attentionFor(selectedRunId) : null;
   const pendingApprovals = approvals.filter((approval) => approval.state === "pending");
-  const attnTotal = attentionRuns.length + pendingApprovals.length;
+  // Ended isolated runs still holding a worktree are waiting on merge/discard.
+  const reviewRuns = runs.filter((run) => run.worktree && run.status !== "running" && run.status !== "created");
+  const queueCount = pendingApprovals.length + reviewRuns.length;
+  const attnTotal = attentionRuns.length + queueCount;
   const selectedActivity = selectedRunId ? activity[selectedRunId] ?? [] : [];
 
   useEffect(() => {
@@ -1254,29 +1259,57 @@ function App() {
 
               <Resizable className="demo-permissions" axis="y" minHeightCells={8} maxHeightCells={34}>
                 <Panel
-                  title="permissions"
-                  variant={pendingApprovals.length > 0 ? "warning" : "default"}
+                  title="queue"
+                  variant={queueCount > 0 ? "warning" : "default"}
                   footer={
                     <StatusLine
                       items={[
-                        { id: "pending", label: "pending", value: String(pendingApprovals.length), tone: pendingApprovals.length > 0 ? "warning" : "muted" },
+                        { id: "queue", label: "queue", value: String(queueCount), tone: queueCount > 0 ? "warning" : "muted" },
+                        { id: "review", label: "review", value: String(reviewRuns.length), tone: reviewRuns.length > 0 ? "accent" : "muted" },
                         { id: "total", label: "recorded", value: String(approvals.length) }
                       ]}
                     />
                   }
                 >
                   <div className="approval-list">
-                    {approvals.length === 0 ? (
-                      <div className="run-empty">no approval requests</div>
+                    {reviewRuns.length > 0 && (
+                      <>
+                        <div className="rule-header">awaiting review</div>
+                        {reviewRuns.map((run) => (
+                          <div key={run.id} className="approval-row approval-row-pending">
+                            <button type="button" className="approval-main approval-jump" onClick={() => selectRun(run)}>
+                              <span>{run.title ?? `${run.id} · ${run.harnessId}`} ⎇</span>
+                              <span>{run.command.length > 0 ? run.command : run.cwd}</span>
+                            </button>
+                            <span className="approval-actions">
+                              <button type="button" onClick={() => void openDiff(run.id, null)}>diff</button>
+                              <button type="button" className="approval-allow" onClick={() => void mergeRun(run.id)}>merge</button>
+                              <button type="button" className="approval-deny" onClick={() => void discardRun(run.id)}>discard</button>
+                            </span>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {approvals.length === 0 && reviewRuns.length === 0 ? (
+                      <div className="run-empty">nothing waiting on you</div>
                     ) : approvals.slice(0, 40).map((approval) => (
                       <div
                         key={approval.id}
                         className={["approval-row", approval.state === "pending" ? "approval-row-pending" : undefined].filter(Boolean).join(" ")}
                       >
-                        <span className="approval-main">
+                        <button
+                          type="button"
+                          className="approval-main approval-jump"
+                          onClick={() => {
+                            const run = runs.find((candidate) => candidate.id === approval.runId);
+                            if (run) {
+                              selectRun(run);
+                            }
+                          }}
+                        >
                           <span>{approval.toolName} · {approval.runId}</span>
                           <span>{summarizeApprovalInput(approval.input)}</span>
-                        </span>
+                        </button>
                         {approval.state === "pending" ? (
                           <span className="approval-actions">
                             <button type="button" className="approval-allow" onClick={() => void decideApproval(approval.id, "allowed")}>allow</button>
