@@ -1,0 +1,469 @@
+.mico-root {
+  background: var(--mico-bg);
+  color: var(--mico-fg);
+  font-family: var(--mico-font-family);
+  font-size: var(--mico-font-size);
+  line-height: var(--mico-line-height);
+  letter-spacing: 0;
+  min-height: 100%;
+  tab-size: 2;
+}
+
+.mico-root *,
+.mico-root *::before,
+.mico-root *::after {
+  box-sizing: border-box;
+}
+
+.mico-root ::selection {
+  background: var(--mico-selection);
+}
+
+.mico-root input,
+.mico-root textarea {
+  caret-color: var(--mico-accent);
+}
+
+.mico-root ::-webkit-scrollbar {
+  height: calc(var(--mico-cell-width) * 0.75);
+  width: calc(var(--mico-cell-width) * 0.75);
+}
+
+.mico-root ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mico-root ::-webkit-scrollbar-thumb {
+  background: var(--mico-border);
+}
+
+.mico-root ::-webkit-scrollbar-thumb:hover {
+  background: var(--mico-muted);
+}
+
+.mico-root ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.mico-density-compact {
+  --mico-pad-x: var(--mico-grid-x);
+  --mico-pad-y: var(--mico-grid-y);
+  --mico-panel-row: calc(var(--mico-grid-y) * 2);
+}
+
+.mico-density-standard {
+  --mico-pad-x: calc(var(--mico-grid-x) * 2);
+  --mico-pad-y: var(--mico-grid-y);
+  --mico-panel-row: calc(var(--mico-grid-y) * 2);
+}
+
+.mico-density-spacious {
+  --mico-pad-x: calc(var(--mico-grid-x) * 2);
+  --mico-pad-y: calc(var(--mico-grid-y) * 2);
+  --mico-panel-row: calc(var(--mico-grid-y) * 3);
+}
+
+.mico-panel {
+  --mico-panel-border: var(--mico-border);
+  background: var(--mico-panel);
+  color: var(--mico-fg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  padding: calc(var(--mico-cell-height) * 0.5) 0;
+  position: relative;
+}
+
+/* The frame is drawn inset by half a cell so the title/footer rows can
+   sit centered on the border line without escaping the panel box. */
+.mico-panel::before {
+  border: 1px solid var(--mico-panel-border);
+  content: "";
+  inset: calc(var(--mico-cell-height) * 0.5) 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.mico-panel-borderless {
+  padding: 0;
+}
+
+.mico-panel-borderless::before {
+  display: none;
+}
+
+.mico-focus-focused,
+.mico-focus-active {
+  --mico-panel-border: var(--mico-focus);
+}
+
+.mico-panel-danger {
+  --mico-panel-border: var(--mico-danger);
+}
+
+.mico-panel-warning {
+  --mico-panel-border: var(--mico-warning);
+}
+
+.mico-panel-success {
+  --mico-panel-border: var(--mico-success);
+}
+
+.mico-panel-muted {
+  color: var(--mico-muted);
+}
+
+/* Title and footer sit centered on the border line, TUI-style:
+   the content chunks mask the border behind them. */
+.mico-panel-header,
+.mico-panel-footer {
+  align-items: center;
+  display: flex;
+  height: var(--mico-cell-height);
+  justify-content: space-between;
+  left: calc(var(--mico-grid-x) * 2);
+  pointer-events: none;
+  position: absolute;
+  right: calc(var(--mico-grid-x) * 2);
+  white-space: nowrap;
+  /* above resize handles (z-index 2), which straddle the same border lines */
+  z-index: 3;
+}
+
+.mico-panel-header {
+  top: 0;
+}
+
+.mico-panel-footer {
+  bottom: 0;
+  color: var(--mico-muted);
+}
+
+.mico-panel:has(> .mico-panel-header) > .mico-panel-body {
+  padding-top: calc(var(--mico-cell-height) * 0.5);
+}
+
+.mico-panel:has(> .mico-panel-footer) > .mico-panel-body {
+  padding-bottom: calc(var(--mico-cell-height) * 0.5);
+}
+
+.mico-panel-title,
+.mico-panel-actions,
+.mico-panel-footer-content {
+  background: var(--mico-bg);
+  padding: 0 1ch;
+  pointer-events: auto;
+}
+
+.mico-panel-title {
+  color: var(--mico-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mico-panel-title::before {
+  color: var(--mico-panel-border);
+  content: "┤ ";
+}
+
+.mico-panel-title::after {
+  color: var(--mico-panel-border);
+  content: " ├";
+}
+
+.mico-panel-danger .mico-panel-title {
+  color: var(--mico-danger);
+}
+
+.mico-panel-warning .mico-panel-title {
+  color: var(--mico-warning);
+}
+
+.mico-panel-success .mico-panel-title {
+  color: var(--mico-success);
+}
+
+.mico-panel-actions {
+  align-items: center;
+  color: var(--mico-muted);
+  display: flex;
+  gap: 1ch;
+}
+
+.mico-panel-footer-content {
+  align-items: center;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mico-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mico-status-line {
+  align-items: center;
+  display: flex;
+  min-height: var(--mico-cell-height);
+  white-space: nowrap;
+}
+
+.mico-split-pane {
+  display: flex;
+  gap: var(--mico-split-gap);
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.mico-split-horizontal {
+  flex-direction: row;
+}
+
+.mico-split-vertical {
+  flex-direction: column;
+}
+
+.mico-viewport {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.mico-text-buffer {
+  font-variant-ligatures: none;
+  white-space: pre;
+}
+
+.mico-text-line {
+  display: flex;
+  min-height: var(--mico-cell-height);
+}
+
+.mico-text-gutter {
+  color: var(--mico-muted);
+  flex: 0 0 auto;
+  min-width: 5ch;
+  padding-right: 1ch;
+  text-align: right;
+  user-select: none;
+}
+
+.mico-text-content {
+  min-width: 0;
+}
+
+.mico-status-line {
+  gap: 1ch;
+  overflow: hidden;
+}
+
+.mico-status-item {
+  align-items: center;
+  display: inline-flex;
+  gap: 1ch;
+  min-width: 0;
+}
+
+.mico-status-item + .mico-status-item::before {
+  color: var(--mico-border);
+  content: "│";
+}
+
+.mico-status-label {
+  color: var(--mico-muted);
+}
+
+.mico-status-value {
+  color: var(--mico-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mico-tone-accent .mico-status-value {
+  color: var(--mico-accent);
+}
+
+.mico-tone-success .mico-status-value {
+  color: var(--mico-success);
+}
+
+.mico-tone-warning .mico-status-value {
+  color: var(--mico-warning);
+}
+
+.mico-tone-danger .mico-status-value {
+  color: var(--mico-danger);
+}
+
+.mico-tone-muted .mico-status-value {
+  color: var(--mico-muted);
+}
+
+.mico-menu {
+  background: var(--mico-bg);
+  border: 1px solid var(--mico-border);
+  box-shadow: var(--mico-cell-width) calc(var(--mico-cell-height) * 0.5) 0 rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  min-width: 26ch;
+  padding: calc(var(--mico-cell-height) * 0.5) 0;
+  position: fixed;
+  z-index: 100;
+}
+
+.mico-menu-title {
+  align-items: center;
+  color: var(--mico-muted);
+  display: flex;
+  min-height: var(--mico-cell-height);
+  overflow: hidden;
+  padding: 0 2ch;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mico-menu-item {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--mico-fg);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 3ch;
+  justify-content: space-between;
+  min-height: calc(var(--mico-cell-height) * 1.5);
+  padding: 0 2ch;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.mico-menu-item:hover:not(:disabled) {
+  background: var(--mico-fg);
+  color: var(--mico-bg);
+}
+
+.mico-menu-item:hover:not(:disabled) .mico-menu-hint {
+  color: var(--mico-bg);
+}
+
+.mico-menu-item:disabled {
+  color: var(--mico-muted);
+  cursor: default;
+}
+
+.mico-menu-danger {
+  color: var(--mico-danger);
+}
+
+.mico-menu-danger:hover:not(:disabled) {
+  background: var(--mico-danger);
+  color: var(--mico-bg);
+}
+
+.mico-menu-hint {
+  color: var(--mico-muted);
+}
+
+.mico-menu-separator {
+  border-top: 1px solid var(--mico-border);
+  margin: calc(var(--mico-cell-height) * 0.5) 0;
+}
+
+.mico-resizable {
+  max-height: 100%;
+  max-width: 100%;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+.mico-resizable-content {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
+.mico-resizable-content > .mico-panel,
+.mico-resizable-content > .mico-split-pane {
+  height: 100%;
+  width: 100%;
+}
+
+.mico-resize-handle {
+  background: transparent;
+  border: 0;
+  color: var(--mico-muted);
+  margin: 0;
+  min-height: 0;
+  padding: 0;
+  position: absolute;
+  z-index: 2;
+}
+
+.mico-resize-handle::after {
+  background: var(--mico-muted);
+  content: "";
+  display: block;
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+
+.mico-resize-handle:hover::after,
+.mico-resize-dragging::after,
+.mico-resizing .mico-resize-handle::after {
+  opacity: 1;
+}
+
+.mico-resize-right {
+  bottom: 0;
+  cursor: ew-resize;
+  right: calc(var(--mico-cell-width) * -0.5);
+  top: 0;
+  width: var(--mico-cell-width);
+}
+
+.mico-resize-right::after {
+  height: 100%;
+  margin-left: calc(var(--mico-cell-width) * 0.5 - 0.5px);
+  width: 1px;
+}
+
+.mico-resize-bottom {
+  bottom: calc(var(--mico-cell-height) * -0.5);
+  cursor: ns-resize;
+  height: var(--mico-cell-height);
+  left: 0;
+  right: 0;
+}
+
+.mico-resize-bottom::after {
+  height: 1px;
+  margin-top: calc(var(--mico-cell-height) * 0.5 - 0.5px);
+  width: 100%;
+}
+
+.mico-resize-corner {
+  bottom: calc(var(--mico-cell-height) * -0.5);
+  cursor: nwse-resize;
+  height: var(--mico-cell-height);
+  right: calc(var(--mico-cell-width) * -0.5);
+  width: var(--mico-cell-width);
+}
+
+.mico-resize-corner::after {
+  background: var(--mico-focus);
+  height: var(--mico-cell-height);
+  opacity: 0.42;
+  width: var(--mico-cell-width);
+}

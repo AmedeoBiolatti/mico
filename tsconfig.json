@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "outDir": "dist/types",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@mico/render-core": ["packages/render-core/src/index.ts"],
+      "@mico/render-core/*": ["packages/render-core/src/*"],
+      "@mico/render-dom": ["packages/render-dom/src/index.ts"],
+      "@mico/render-dom/*": ["packages/render-dom/src/*"]
+    },
+    "types": ["node", "react", "react-dom"],
+    "skipLibCheck": true
+  },
+  "include": ["packages/**/*.ts", "packages/**/*.tsx", "apps/**/*.ts", "apps/**/*.tsx", "vite.config.ts"]
+}

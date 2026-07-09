@@ -1,0 +1,8 @@
+{
+  "name": "@mico/render-core",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "../../dist/render-core/src/index.js",
+  "types": "../../dist/render-core/src/index.d.ts",
+  "sideEffects": false
+}
