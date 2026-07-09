@@ -483,6 +483,24 @@ export class SessionManager {
     this.events.append(runId, "pty.input", { resize: { cols, rows } });
   }
 
+  renameRun(runId: string, title: string): RunRecord {
+    const run = this.#runs.get(runId);
+
+    if (!run) {
+      throw new Error(`Unknown run: ${runId}`);
+    }
+
+    const trimmed = title.trim();
+    const updated: RunRecord = { ...run };
+    if (trimmed.length > 0) {
+      updated.title = trimmed;
+    } else {
+      delete updated.title;
+    }
+    this.#setRun(updated);
+    return updated;
+  }
+
   terminate(runId: string): void {
     const process = this.#processes.get(runId);
     const run = this.#runs.get(runId);

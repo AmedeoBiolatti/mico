@@ -392,6 +392,92 @@ input::placeholder {
   white-space: pre-wrap;
 }
 
+.term-stack {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.term-stack > .xterm-plane,
+.term-stack > .terminal-scroll-plane {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+
+.term-stack > .xterm-plane {
+  display: none;
+}
+
+/* Flex, not block: .session-host/.xterm size themselves with height:100%,
+   which never resolves against the auto height of a flex item. */
+.term-stack > .xterm-plane-active {
+  display: flex;
+  flex-direction: column;
+}
+
+.term-tabs {
+  border-bottom: 1px solid var(--mico-border);
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--mico-grid-x);
+  overflow-x: auto;
+  padding: 0 var(--mico-grid-x) calc(var(--mico-cell-height) * 0.15);
+  scrollbar-width: none;
+}
+
+.term-tab {
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--mico-muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  gap: calc(var(--mico-grid-x) * 0.5);
+  max-width: calc(var(--mico-cell-width) * 28);
+  padding: 0 var(--mico-grid-x);
+  white-space: nowrap;
+}
+
+.term-tab::before { content: "["; opacity: 0.6; }
+.term-tab::after { content: "]"; opacity: 0.6; }
+
+.term-tab:hover {
+  background: var(--mico-fg);
+  color: var(--mico-bg);
+}
+
+.term-tab-active {
+  color: var(--mico-fg);
+}
+
+.term-tab-active::before { content: "┤"; opacity: 1; }
+.term-tab-active::after { content: "├"; opacity: 1; }
+
+.term-tab-attn {
+  animation: mico-blink 1.2s step-end infinite;
+}
+
+.term-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-rename-input {
+  background: var(--mico-bg);
+  border: none;
+  border-bottom: 1px solid var(--mico-focus);
+  color: var(--mico-fg);
+  flex: 1;
+  font: inherit;
+  min-width: 0;
+  outline: none;
+  padding: 0 calc(var(--mico-grid-x) * 0.5);
+}
+
 .terminal-scroll-plane {
   height: 100%;
   min-height: 0;
@@ -419,7 +505,9 @@ input::placeholder {
 }
 
 .session-host {
+  flex: 1 1 auto;
   height: 100%;
+  min-height: 0;
   width: 100%;
 }
 

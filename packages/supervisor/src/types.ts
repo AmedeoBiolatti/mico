@@ -80,6 +80,7 @@ export type RunRecord = {
   exitCode?: number | null;
   signal?: NodeJS.Signals | null;
   worktree?: string;
+  title?: string;
 };
 
 

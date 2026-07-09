@@ -13,6 +13,7 @@ export type SupervisorRun = {
   exitCode?: number | null;
   signal?: string | null;
   worktree?: string;
+  title?: string;
 };
 
 export type SupervisorEvent = {
@@ -80,6 +81,8 @@ export type Session = {
   lastEventNum: number;
   lastAgentNum: number;
   opened: boolean;
+  /** Output received before the terminal is opened+fitted; parsed only once the real size is known. */
+  pendingOutput: string[] | null;
 };
 
 export type ActivityEntry = {

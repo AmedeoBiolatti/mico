@@ -247,6 +247,14 @@ async function route(manager: SessionManager, request: IncomingMessage, response
     return;
   }
 
+  const runPatchMatch = pathname.match(/^\/api\/runs\/([^/]+)$/);
+  if (method === "PATCH" && runPatchMatch?.[1]) {
+    const body = await readJson<{ title?: string }>(request);
+    const run = manager.renameRun(runPatchMatch[1], body.title ?? "");
+    sendJson(response, 200, { run });
+    return;
+  }
+
   const terminateMatch = pathname.match(/^\/api\/runs\/([^/]+)\/terminate$/);
   if (method === "POST" && terminateMatch?.[1]) {
     manager.terminate(terminateMatch[1]);

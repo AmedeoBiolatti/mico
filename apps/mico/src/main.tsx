@@ -47,6 +47,7 @@ function App() {
   const activityListRef = useRef<HTMLDivElement | null>(null);
   const [diffView, setDiffView] = useState<{ runId: string; file: string | null; text: string } | null>(null);
   const [taskPrompt, setTaskPrompt] = useState("");
+  const [renamingRunId, setRenamingRunId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [viewport, setViewport] = useState<ViewportState>(() => createViewport({ x: 0, y: 0, width: 100, height: 13 }));
 
@@ -171,6 +172,15 @@ function App() {
 
     const frame = window.requestAnimationFrame(() => {
       session.fit.fit();
+      // Replay buffered output only now that the terminal has its real size;
+      // parsing it at the default 80x24 mangles full-screen TUI frames.
+      if (session.pendingOutput) {
+        const pending = session.pendingOutput;
+        session.pendingOutput = null;
+        for (const text of pending) {
+          session.terminal.write(text);
+        }
+      }
       session.terminal.focus();
       if (sessionMetaRef.current[session.runId]?.status === "running") {
         void resizeRun(session.runId, session.terminal.cols, session.terminal.rows);
@@ -234,6 +244,51 @@ function App() {
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    // Ctrl+Shift+C / Ctrl+Shift+V copy and paste instead of reaching the pty.
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || !event.ctrlKey || !event.shiftKey) {
+        return true;
+      }
+      if (event.code === "KeyC" && terminal.hasSelection()) {
+        void navigator.clipboard.writeText(terminal.getSelection());
+        return false;
+      }
+      if (event.code === "KeyV") {
+        void navigator.clipboard.readText().then((text) => {
+          if (text.length > 0) {
+            terminal.paste(text);
+          }
+        });
+        return false;
+      }
+      return true;
+    });
+    // Classic X11 behavior: copy on select, paste on middle click.
+    terminal.onSelectionChange(() => {
+      const selection = terminal.getSelection();
+      if (selection.length > 0) {
+        void navigator.clipboard.writeText(selection);
+      }
+    });
+    host.addEventListener("mousedown", (event) => {
+      if (event.button === 1) {
+        event.preventDefault();
+      }
+    });
+    host.addEventListener("auxclick", (event) => {
+      if (event.button !== 1) {
+        return;
+      }
+      event.preventDefault();
+      if (sessionMetaRef.current[run.id]?.status !== "running") {
+        return;
+      }
+      void navigator.clipboard.readText().then((text) => {
+        if (text.length > 0) {
+          terminal.paste(text);
+        }
+      });
+    });
     terminal.onData((data) => {
       if (sessionMetaRef.current[run.id]?.status === "running") {
         void writeRunInput(run.id, data);
@@ -249,7 +304,8 @@ function App() {
       events: null,
       lastEventNum: 0,
       lastAgentNum: 0,
-      opened: false
+      opened: false,
+      pendingOutput: []
     };
     sessionsRef.current.set(run.id, session);
 
@@ -269,6 +325,14 @@ function App() {
     return session;
   }
 
+  function writeToSession(session: Session, text: string) {
+    if (session.pendingOutput) {
+      session.pendingOutput.push(text);
+      return;
+    }
+    session.terminal.write(text);
+  }
+
   function attachSessionEvents(session: Session) {
     const events = new EventSource(`${supervisorBase}/api/runs/${session.runId}/events`);
     session.events = events;
@@ -283,7 +347,7 @@ function App() {
         session.lastEventNum = num;
       }
       if (typeof runEvent.payload.text === "string" && runEvent.payload.text.length > 0) {
-        session.terminal.write(runEvent.payload.text);
+        writeToSession(session, runEvent.payload.text);
         bumpMeta(session.runId, { lastOutputAt: Date.now() });
       }
     });
@@ -312,7 +376,7 @@ function App() {
     events.addEventListener("process.exited", (event) => {
       const runEvent = JSON.parse((event as MessageEvent).data) as SupervisorEvent;
       const exitCode = typeof runEvent.payload.exitCode === "number" ? runEvent.payload.exitCode : null;
-      session.terminal.write(`\r\n\u001b[36m[process]\u001b[0m exited ${exitCode ?? "signal"}\r\n`);
+      writeToSession(session, `\r\n\u001b[36m[process]\u001b[0m exited ${exitCode ?? "signal"}\r\n`);
       events.close();
       session.events = null;
       setSessionMeta((current) => {
@@ -339,7 +403,7 @@ function App() {
     events.addEventListener("run.failed", (event) => {
       const runEvent = JSON.parse((event as MessageEvent).data) as SupervisorEvent;
       const message = typeof runEvent.payload.message === "string" ? runEvent.payload.message : "run failed";
-      session.terminal.write(`\r\n\u001b[31m[error]\u001b[0m ${message}\r\n`);
+      writeToSession(session, `\r\n\u001b[31m[error]\u001b[0m ${message}\r\n`);
       events.close();
       session.events = null;
       setSessionMeta((current) => {
@@ -508,8 +572,15 @@ function App() {
   }
 
   function selectRun(run: SupervisorRun) {
-    ensureSession(run);
+    const session = ensureSession(run);
     setSelectedRunId(run.id);
+    // Selecting the already-selected run leaves focus on the tab/row button,
+    // so keystrokes never reach the pty. Hand it back once the swap settles.
+    window.requestAnimationFrame(() => {
+      if (session.opened) {
+        session.terminal.focus();
+      }
+    });
     setDiffView(null);
     setSessionMeta((current) => {
       const existing = current[run.id];
@@ -850,11 +921,29 @@ function App() {
     ];
   }
 
+  async function renameRun(runId: string, title: string) {
+    try {
+      const response = await fetch(`${supervisorBase}/api/runs/${runId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title })
+      });
+      if (!response.ok) {
+        setLastError(await errorMessageFromResponse(response));
+        return;
+      }
+      await refreshRuns();
+    } catch (error) {
+      setLastError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function runMenuEntries(run: SupervisorRun): MenuEntry[] {
     const meta = sessionMeta[run.id];
     const running = (meta?.status ?? run.status) === "running";
     return [
       { id: "attach", label: "attach", hint: "view terminal", onSelect: () => selectRun(run) },
+      { id: "rename", label: "rename", hint: run.title ? `"${run.title}"` : "set a title", onSelect: () => setRenamingRunId(run.id) },
       { id: "copy-id", label: "copy run id", onSelect: () => void navigator.clipboard.writeText(run.id) },
       { id: "copy-cmd", label: "copy command", disabled: run.command.length === 0, onSelect: () => void navigator.clipboard.writeText(run.command) },
       { kind: "separator", id: "sep" },
@@ -867,12 +956,26 @@ function App() {
   function terminalMenuEntries(): MenuEntry[] {
     const session = selectedRunId ? sessionsRef.current.get(selectedRunId) : undefined;
     const running = selectedRunId ? sessionMeta[selectedRunId]?.status === "running" : false;
+    // Snapshot now: the selection can be gone by the time the menu item is clicked.
+    const selectionText = session?.terminal.hasSelection() ? session.terminal.getSelection() : "";
     return [
       {
         id: "copy",
         label: "copy selection",
-        disabled: !session?.terminal.hasSelection(),
-        onSelect: () => void navigator.clipboard.writeText(session?.terminal.getSelection() ?? "")
+        hint: "ctrl+shift+c",
+        disabled: selectionText.length === 0,
+        onSelect: () => void navigator.clipboard.writeText(selectionText)
+      },
+      {
+        id: "paste",
+        label: "paste",
+        hint: "ctrl+shift+v",
+        disabled: !session || !running,
+        onSelect: () => void navigator.clipboard.readText().then((text) => {
+          if (text.length > 0) {
+            session?.terminal.paste(text);
+          }
+        })
       },
       { id: "clear", label: "clear scrollback", disabled: !session, onSelect: () => session?.terminal.clear() },
       { kind: "separator", id: "sep" },
@@ -1011,6 +1114,28 @@ function App() {
                       <div className="run-empty">no runs in this workspace</div>
                     ) : visibleRuns.map((run) => {
                       const attention = attentionFor(run.id);
+                      if (renamingRunId === run.id) {
+                        return (
+                          <div key={run.id} className="run-row run-row-active">
+                            <span className={`run-dot run-dot-${attention ?? "idle"}`} />
+                            <input
+                              className="run-rename-input"
+                              autoFocus
+                              defaultValue={run.title ?? ""}
+                              placeholder={run.id}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  void renameRun(run.id, event.currentTarget.value);
+                                  setRenamingRunId(null);
+                                } else if (event.key === "Escape") {
+                                  setRenamingRunId(null);
+                                }
+                              }}
+                              onBlur={() => setRenamingRunId(null)}
+                            />
+                          </div>
+                        );
+                      }
                       return (
                         <button
                           key={run.id}
@@ -1026,8 +1151,8 @@ function App() {
                         >
                           <span className={`run-dot run-dot-${attention ?? "idle"}`} />
                           <span className="run-main">
-                            <span>{run.id} · {run.harnessId}{run.worktree ? " ⎇" : ""}</span>
-                            <span>{run.command.length > 0 ? run.command : "interactive session"}</span>
+                            <span>{run.title ?? `${run.id} · ${run.harnessId}`}{run.worktree ? " ⎇" : ""}</span>
+                            <span>{run.title ? `${run.id} · ${run.harnessId}` : run.command.length > 0 ? run.command : "interactive session"}</span>
                           </span>
                           <span className={attention === "waiting" ? "run-status-waiting" : undefined}>
                             {attention === "waiting" ? "needs input" : attention === "working" ? "working" : formatRunStatus(run)}
@@ -1153,7 +1278,7 @@ function App() {
                 title={
                   diffView
                     ? `diff :: ${diffView.runId}${diffView.file ? ` · ${diffView.file}` : ""}`
-                    : selectedRun ? `terminal :: ${selectedRun.id} · ${selectedRun.harnessId}` : "channel :: idle"
+                    : selectedRun ? `terminal :: ${selectedRun.title ?? selectedRun.id} · ${selectedRun.harnessId}` : "channel :: idle"
                 }
                 focusState={selectedAttention === "waiting" ? "focused" : "active"}
                 actions={
@@ -1204,21 +1329,47 @@ function App() {
                   />
                 }
               >
-                <div
-                  className={selectedRunId && !diffView ? "xterm-plane xterm-plane-active" : "xterm-plane"}
-                  ref={termContainerRef}
-                  onContextMenu={(event) => openMenu(event, selectedRun ? `terminal :: ${selectedRun.id}` : "terminal", terminalMenuEntries())}
-                />
-                {!selectedRunId || diffView ? (
+                <div className="term-stack">
+                  {visibleRuns.length > 0 && !diffView ? (
+                    <div className="term-tabs">
+                      {visibleRuns.map((run) => {
+                        const attention = attentionFor(run.id);
+                        return (
+                          <button
+                            key={run.id}
+                            type="button"
+                            className={[
+                              "term-tab",
+                              selectedRunId === run.id ? "term-tab-active" : undefined,
+                              attention === "waiting" || attention === "done" || attention === "failed" ? "term-tab-attn" : undefined
+                            ].filter(Boolean).join(" ")}
+                            onClick={() => selectRun(run)}
+                            onContextMenu={(event) => handleRunContextMenu(event, run)}
+                            title={run.command.length > 0 ? run.command : run.id}
+                          >
+                            <span className={`run-dot run-dot-${attention ?? "idle"}`} />
+                            <span className="term-tab-label">{run.title ?? run.id}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                   <div
-                    className="terminal-scroll-plane"
-                    onWheel={handleTerminalWheel}
-                    onKeyDown={handleTerminalKeyDown}
-                    tabIndex={0}
-                  >
-                    <Viewport viewport={viewport} buffer={viewBuffer} theme={micoDarkTheme} showLineNumbers />
-                  </div>
-                ) : null}
+                    className={selectedRunId && !diffView ? "xterm-plane xterm-plane-active" : "xterm-plane"}
+                    ref={termContainerRef}
+                    onContextMenu={(event) => openMenu(event, selectedRun ? `terminal :: ${selectedRun.id}` : "terminal", terminalMenuEntries())}
+                  />
+                  {!selectedRunId || diffView ? (
+                    <div
+                      className="terminal-scroll-plane"
+                      onWheel={handleTerminalWheel}
+                      onKeyDown={handleTerminalKeyDown}
+                      tabIndex={0}
+                    >
+                      <Viewport viewport={viewport} buffer={viewBuffer} theme={micoDarkTheme} showLineNumbers />
+                    </div>
+                  ) : null}
+                </div>
               </Panel>
             </Resizable>
 
