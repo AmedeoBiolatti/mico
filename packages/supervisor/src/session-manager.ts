@@ -406,6 +406,12 @@ export class SessionManager {
               continue;
             }
             for (const event of parsed) {
+              if (event.sessionId !== undefined) {
+                const current = this.#runs.get(id);
+                if (current && current.agentSessionId !== event.sessionId) {
+                  this.#setRun({ ...current, agentSessionId: event.sessionId });
+                }
+              }
               this.events.append(id, "agent.event", { kind: event.kind, label: event.label, detail: event.detail });
               this.events.append(id, "pty.output", { stream: "pty", text: event.text });
             }

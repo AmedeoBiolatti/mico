@@ -81,6 +81,8 @@ export type RunRecord = {
   signal?: NodeJS.Signals | null;
   worktree?: string;
   title?: string;
+  /** The agent's own session id (e.g. Claude Code), usable for --resume. */
+  agentSessionId?: string;
 };
 
 
@@ -110,6 +112,8 @@ export type StartRunRequest = {
   isolate?: boolean;
   policy?: PolicyId;
   runId?: string;
+  /** Resume a previous agent session (harness must support it). */
+  resumeSessionId?: string;
 };
 
 export type StartRunResponse = {

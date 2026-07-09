@@ -632,6 +632,42 @@ function App() {
     }
   }
 
+  // Reopen a finished agent session interactively: same cwd, claude --resume <id>.
+  async function resumeRun(run: SupervisorRun) {
+    if (!run.agentSessionId) {
+      return;
+    }
+    setLastError(null);
+
+    try {
+      const response = await fetch(`${supervisorBase}/api/runs`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          harnessId: "claude-code",
+          command: "",
+          cwd: run.cwd,
+          cols: 120,
+          rows: 32,
+          resumeSessionId: run.agentSessionId
+        })
+      });
+
+      if (!response.ok) {
+        setLastError(await errorMessageFromResponse(response));
+        void refreshRuns();
+        return;
+      }
+
+      const body = await response.json() as { run: SupervisorRun };
+      ensureSession({ id: body.run.id, harnessId: "claude-code", status: body.run.status });
+      setSelectedRunId(body.run.id);
+      void refreshRuns();
+    } catch (error) {
+      setLastError(`Supervisor unavailable at ${supervisorBase}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async function refreshRunGit(runId: string) {
     try {
       const response = await fetch(`${supervisorBase}/api/runs/${runId}`);
@@ -946,6 +982,13 @@ function App() {
       { id: "rename", label: "rename", hint: run.title ? `"${run.title}"` : "set a title", onSelect: () => setRenamingRunId(run.id) },
       { id: "copy-id", label: "copy run id", onSelect: () => void navigator.clipboard.writeText(run.id) },
       { id: "copy-cmd", label: "copy command", disabled: run.command.length === 0, onSelect: () => void navigator.clipboard.writeText(run.command) },
+      {
+        id: "resume",
+        label: "resume session",
+        hint: "claude --resume",
+        disabled: running || !run.agentSessionId,
+        onSelect: () => void resumeRun(run)
+      },
       { kind: "separator", id: "sep" },
       { id: "close", label: "close view", hint: "keeps process", disabled: !sessionsRef.current.has(run.id), onSelect: () => closeSession(run.id) },
       { id: "term", label: "terminate", hint: "SIGTERM", danger: true, disabled: !running, onSelect: () => void terminateRun(run.id) },

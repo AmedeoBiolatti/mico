@@ -22,6 +22,7 @@ type RunRow = {
   signal: string | null;
   worktree: string | null;
   title: string | null;
+  agent_session_id: string | null;
 };
 
 type EventRow = {
@@ -123,6 +124,7 @@ export class RunStore {
     this.#ensureColumn("runs", "worktree", "TEXT");
     this.#ensureColumn("approvals", "via", "TEXT");
     this.#ensureColumn("runs", "title", "TEXT");
+    this.#ensureColumn("runs", "agent_session_id", "TEXT");
   }
 
   #ensureColumn(table: string, column: string, definition: string): void {
@@ -188,8 +190,8 @@ export class RunStore {
 
   upsertRun(run: RunRecord): void {
     this.#db.prepare(`
-      INSERT INTO runs (id, harness_id, command, cwd, status, created_at, started_at, ended_at, exit_code, signal, worktree, title)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO runs (id, harness_id, command, cwd, status, created_at, started_at, ended_at, exit_code, signal, worktree, title, agent_session_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         harness_id = excluded.harness_id,
         command = excluded.command,
@@ -201,7 +203,8 @@ export class RunStore {
         exit_code = excluded.exit_code,
         signal = excluded.signal,
         worktree = excluded.worktree,
-        title = excluded.title
+        title = excluded.title,
+        agent_session_id = excluded.agent_session_id
     `).run(
       run.id,
       run.harnessId,
@@ -214,7 +217,8 @@ export class RunStore {
       run.exitCode ?? null,
       run.signal ?? null,
       run.worktree ?? null,
-      run.title ?? null
+      run.title ?? null,
+      run.agentSessionId ?? null
     );
   }
 
@@ -430,6 +434,10 @@ function runFromRow(row: RunRow): RunRecord {
 
   if (row.worktree !== null) {
     run.worktree = row.worktree;
+  }
+
+  if (row.agent_session_id !== null) {
+    run.agentSessionId = row.agent_session_id;
   }
 
   return run;

@@ -14,6 +14,7 @@ export type SupervisorRun = {
   signal?: string | null;
   worktree?: string;
   title?: string;
+  agentSessionId?: string;
 };
 
 export type SupervisorEvent = {

@@ -28,6 +28,7 @@ type CommandHarnessOptions = {
   promptMode?: "shell-command" | "stdin" | "arg";
   policyArgs?: Partial<Record<PolicyId, string[]>>;
   extraArgsForRun?: (context: { runId: string }) => string[];
+  resumeArgs?: (sessionId: string) => string[];
   structured?: StructuredFormat;
 };
 
@@ -38,6 +39,7 @@ export class CommandHarnessAdapter implements HarnessAdapter {
   readonly #promptMode: NonNullable<CommandHarnessOptions["promptMode"]>;
   readonly #policyArgs: Partial<Record<PolicyId, string[]>>;
   readonly #extraArgsForRun: CommandHarnessOptions["extraArgsForRun"];
+  readonly #resumeArgs: CommandHarnessOptions["resumeArgs"];
   readonly #structured: StructuredFormat | undefined;
 
   constructor(options: CommandHarnessOptions) {
@@ -47,6 +49,7 @@ export class CommandHarnessAdapter implements HarnessAdapter {
     this.#promptMode = options.promptMode ?? "arg";
     this.#policyArgs = options.policyArgs ?? {};
     this.#extraArgsForRun = options.extraArgsForRun;
+    this.#resumeArgs = options.resumeArgs;
     this.#structured = options.structured;
     this.descriptor = {
       id: options.id,
@@ -67,7 +70,11 @@ export class CommandHarnessAdapter implements HarnessAdapter {
     const cwd = request.cwd ?? processCwd();
     const policyArgs = request.policy ? this.#policyArgs[request.policy] ?? [] : [];
     const extraArgs = request.runId && this.#extraArgsForRun ? this.#extraArgsForRun({ runId: request.runId }) : [];
-    const args = [...policyArgs, ...extraArgs, ...this.#launchArgs(request.command)];
+    if (request.resumeSessionId && !this.#resumeArgs) {
+      throw new Error(`Harness does not support resuming sessions: ${this.descriptor.id}`);
+    }
+    const resumeArgs = request.resumeSessionId && this.#resumeArgs ? this.#resumeArgs(request.resumeSessionId) : [];
+    const args = [...policyArgs, ...extraArgs, ...resumeArgs, ...this.#launchArgs(request.command)];
     const process = spawnSessionProcess({
       command: this.#binary,
       args,
@@ -149,6 +156,7 @@ export function defaultHarnesses(): HarnessAdapter[] {
       args: ["-p", "--output-format", "stream-json", "--verbose"],
       promptMode: "arg",
       structured: "claude-stream-json",
+      resumeArgs: (sessionId) => ["--resume", sessionId],
       extraArgsForRun: ({ runId }) => {
         const configPath = join(tmpdir(), `mico-mcp-${runId}.json`);
         writeFileSync(configPath, JSON.stringify({
@@ -171,6 +179,7 @@ export function defaultHarnesses(): HarnessAdapter[] {
       displayName: "Claude Code",
       binary: "claude",
       promptMode: "arg",
+      resumeArgs: (sessionId) => ["--resume", sessionId],
       policyArgs: {
         permissive: ["--permission-mode", "acceptEdits"],
         strict: ["--permission-mode", "plan"]

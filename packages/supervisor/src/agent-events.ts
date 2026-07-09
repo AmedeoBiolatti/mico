@@ -3,6 +3,8 @@ export type ParsedAgentEvent = {
   label: string;
   detail: string | null;
   text: string;
+  /** Present on init events: the agent's own session id. */
+  sessionId?: string;
 };
 
 const esc = String.fromCharCode(27);
@@ -62,11 +64,13 @@ export function parseClaudeStreamLine(line: string): ParsedAgentEvent[] | null {
   if (payload.type === "system") {
     if (payload.subtype === "init") {
       const model = typeof payload.model === "string" ? payload.model : "unknown model";
+      const sessionId = typeof payload.session_id === "string" ? payload.session_id : undefined;
       return [{
         kind: "init",
         label: `session started · ${model}`,
         detail: null,
-        text: `${color("36", "[agent]")} session started · ${model}\n`
+        text: `${color("36", "[agent]")} session started · ${model}\n`,
+        ...(sessionId !== undefined ? { sessionId } : {})
       }];
     }
     return [];
