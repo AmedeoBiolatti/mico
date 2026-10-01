@@ -114,6 +114,7 @@ add_library(mico_core STATIC
   src/core/commands.cpp
   src/core/files.cpp
   src/core/workspace.cpp
+  src/core/conversation.cpp
 )
 target_link_libraries(mico_core PUBLIC mico_adapters mico_vt PRIVATE util)
 

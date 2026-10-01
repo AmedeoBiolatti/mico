@@ -9,7 +9,7 @@
 
 #include "base/front_vec.h"
 #include "adapters/adapter.h"
-#include "base/jsonl.h"
+#include "core/conversation.h"
 #include "vt/surface.h"
 #include "term/term.h"
 #include "base/text.h"
@@ -19,20 +19,24 @@
 
 namespace mico {
 
-// Renders a transcript as a chat. Owns the lazy window into the file and the
-// per-tool expansion state. Used both by the session browser and by a live
+// Renders a transcript as a chat: the Conversation's window of events, laid
+// out into rows, with the per-tool expansion state, scrolling, finding and
+// the question cards' keys. Used both by the session browser and by a live
 // agent pane, so the two cannot drift apart in appearance or behaviour.
 //
 // Nothing here owns text. Events index into `arena_`, rows index into either
 // `arena_` or `scratch_`, and a steady frame allocates nothing.
 class ChatRenderer {
  public:
+  ChatRenderer();
   bool open(const std::string& path, const Adapter* adapter);
+  // The chat itself, apart from how it is drawn.
+  const Conversation& conversation() const { return conv_; }
   // The folder the agent works in: a ```chart block's data file is read
   // relative to it.
   void set_base_dir(const std::string& dir) { chart_env_.base_dir = dir; }
-  bool has_adapter() const { return adapter_ != nullptr; }
-  const std::string& path() const { return open_path_; }
+  bool has_adapter() const { return conv_.adapter() != nullptr; }
+  const std::string& path() const { return conv_.path(); }
 
   void poll_growth();
   void render(Painter& p, const Theme& th, const Filters& f);
@@ -51,24 +55,9 @@ class ChatRenderer {
   // button with the keyboard or the mouse; the pane turns the complete form
   // into the keys the agent's own menu understands. Stored transcripts are
   // read-only (the answer is the tool result beneath).
-  struct QuestionOption {
-    std::string label, description;
-  };
-  struct QuestionSpec {
-    std::string header, text;
-    bool multi = false;
-    int recommended = 0;
-    std::vector<QuestionOption> options;
-  };
-  struct QuestionCard {
-    uint64_t tool_id = 0;
-    std::string tool;
-    std::vector<QuestionSpec> questions;
-    // Optional (codex's request_user_input_async): answered with a message,
-    // not through the agent's menu, and offers a reply in the user's own words.
-    bool async = false;
-    std::string call_id;  // an optional question's, which its answer names
-  };
+  using QuestionOption = mico::QuestionOption;
+  using QuestionSpec = mico::QuestionSpec;
+  using QuestionCard = mico::QuestionCard;
   // A committed choice, handed to the pane to translate into agent keys.
   struct Answer {
     uint64_t tool_id = 0;
@@ -85,15 +74,15 @@ class ChatRenderer {
   // True when the newest blocking question still has no answer: the agent is
   // stopped on it. Optional questions never count; the agent keeps working.
   bool has_pending_question() const {
-    return parsed_to_ == file_.line_count() && !pending_.empty();
+    return conv_.at_tail() && !conv_.pending_questions().empty();
   }
   // Optional questions the user has neither answered nor moved past.
-  int open_async_questions() const;
+  int open_async_questions() const { return conv_.open_async_questions(); }
   // Messages the agent is holding: sent while it worked, not yet handed to the
   // model. Claude records these; the pane lists them above the prompt.
   std::vector<std::string_view> agent_queue() const {
     std::vector<std::string_view> out;
-    for (const Str& s : agent_queue_) out.push_back(arena_.view(s));
+    for (const Str& s : conv_.agent_queue()) out.push_back(conv_.arena().view(s));
     return out;
   }
   bool question_active() const;
@@ -168,18 +157,13 @@ class ChatRenderer {
   // each call reads only what is new since the last, then goes on backwards
   // into older history for at most `budget_ms`. False when older history is
   // still unread.
-  struct OutlineEntry {
-    uint64_t offset = 0;  // byte offset of its line, for go_to()
-    char kind = 'u';      // 'u' you, 'e' edit, 'x' failed, 'q' question, 'n' notice
-    std::string label;
-    std::string detail;
-  };
-  bool outline(std::vector<OutlineEntry>& out, int budget_ms);
+  using OutlineEntry = mico::OutlineEntry;
+  bool outline(std::vector<OutlineEntry>& out, int budget_ms) { return conv_.outline(out, budget_ms); }
   // The full text of the user message whose line starts at byte `offset` (an
   // outline 'u' entry) — the outline's own label is one line and truncated,
   // this is what ↑ puts back in the prompt box. False when the line holds no
   // user message.
-  bool user_text_at(uint64_t offset, std::string* out);
+  bool user_text_at(uint64_t offset, std::string* out) { return conv_.user_text_at(offset, out); }
   // Byte offset of the line at the top of the view: where an outline opens.
   uint64_t view_offset() const;
   // Scrolls to the line holding byte `offset`, loading older history as needed.
@@ -196,18 +180,18 @@ class ChatRenderer {
   double thumb_fraction() const { return thumb_frac_; }
   void set_scroll(int s) { scroll_ = s; }
   // Transcript text currently retained. Bounded by the window budget.
-  size_t retained_bytes() const { return arena_.bytes(); }
+  size_t retained_bytes() const { return conv_.arena().bytes(); }
   size_t window_resets() const { return trims_; }
 
-  const SessionState& state() const { return state_; }
+  const SessionState& state() const { return conv_.state(); }
   // Declares the chip fields for `a` if none are known yet, so the bar shows
   // before the first turn. Safe to call every frame.
   void seed_agent(const Adapter* a) {
-    if (a && state_.empty()) a->seed_state(state_);
+    if (a && conv_.state().empty()) a->seed_state(conv_.state());
   }
   // Optimistic update after the user picks a value from a chip menu, before
   // the agent has written the change into the transcript.
-  void set_state(std::string_view key, std::string_view value) { state_.set(key, key, value); }
+  void set_state(std::string_view key, std::string_view value) { conv_.state().set(key, key, value); }
   // A clickable chip in the status strip under the chat.
   struct Chip {
     Rect rect;
@@ -268,19 +252,6 @@ class ChatRenderer {
   // Carries out a pending find, reveal or user-message jump.
   void resolve_moves(int w, int h, const Filters& f);
   void compute_matches(const Filters& f);
-  // Indexes the file back to `byte` (0: the whole file), keeping the window's
-  // line numbers in step.
-  void index_back_to(size_t byte);
-  // Parses lines [a, b) into outline entries.
-  void outline_scan(size_t a, size_t b, std::vector<OutlineEntry>& into);
-  std::vector<OutlineEntry> outline_;
-  uint64_t outline_lo_ = UINT64_MAX;  // first byte read; 0 once the start is reached
-  uint64_t outline_hi_ = 0;           // end of the last line read
-  // Calls seen, by id: a failed result names the call it failed. Bounded.
-  std::unordered_map<uint64_t, std::string> outline_calls_;
-  // Failed results whose call is in history not read yet: the offset of
-  // their entry, filled in when the call turns up.
-  std::unordered_map<uint64_t, uint64_t> outline_orphans_;
   // Puts the first row of line `line` a third of the way down the viewport.
   void show_line(uint32_t line, int w, int h, const Filters& f);
   // The line at the middle of the viewport, as last drawn.
@@ -301,7 +272,6 @@ class ChatRenderer {
   void seek_from_bar(int thumb_top);
   // Lays out events appended since the last pass.
   void layout_appended(int w, const Filters& f);
-  void add_images(std::string_view line, size_t before);
   const code::Lang* result_lang(size_t index) const;
   const code::Lang* output_lang_ = nullptr;  // the tool output being laid out, when it is a file
   void layout_image(const Event& e, int w);
@@ -344,8 +314,13 @@ class ChatRenderer {
   void restore_anchor(uint32_t line, int into, int w, int h, const Filters& f);
   void layout_event(size_t index, int w, const Filters& f);
   void layout_question(const Event& e, int w);
-  void note_event(const Event& e);
-  void shift_lines(size_t count);
+  // Renumbers the rows after older history was indexed in front of them.
+  void shift_rows(size_t count);
+  // Drops answers in progress, and answers sent, to questions no longer open.
+  void prune_answers();
+  // Re-lays out the window when the conversation says a card changed.
+  void sync_cards();
+  uint64_t cards_seen_ = 0;
   QState* state_for(uint64_t id, const QuestionCard& card);
   // The card that keys and clicks answer, 0 if none: the blocking question
   // when there is one, since it holds the agent, else the newest open optional
@@ -383,7 +358,7 @@ class ChatRenderer {
 
   bool expanded(uint64_t id) const;
   void toggle(uint64_t id);
-  bool tool_pending(uint64_t id) const;
+  bool tool_pending(uint64_t id) const { return conv_.tool_pending(id); }
   // Tool id on the row at screen row `y` of the last frame, 0 if none.
   uint64_t tool_at(int y) const;
 
@@ -391,31 +366,13 @@ class ChatRenderer {
     uint64_t id;
     QState st;
   };
-  // Optional questions in the window, oldest first. One is Open until a user
-  // message quotes it (Answered) or the user sends anything else (Skipped).
-  enum class AsyncStatus : uint8_t { Open, Answered, Skipped };
-  struct AsyncSlot {
-    uint64_t id;
-    Str title;   // the first question, as quoted back by the reply
-    Str answer;  // the reply below the quote, once Answered
-    AsyncStatus status;
-  };
-  std::vector<AsyncSlot> async_;
-  const AsyncSlot* async_slot(uint64_t id) const;
+  using AsyncStatus = Conversation::AsyncStatus;
+  using AsyncSlot = Conversation::AsyncSlot;
+  const AsyncSlot* async_slot(uint64_t id) const { return conv_.async_slot(id); }
   // An optional card changed state after it was laid out; the next frame
   // re-lays out the window rather than leave a stale card on screen.
   bool relayout_ = false;
-  // A blocking question whose result is in: the answer to each of its
-  // questions, read out of the result text. False while there is no result,
-  // when it failed, or when any answer cannot be found — the card then stays
-  // in full, with the raw result beneath it, rather than guess.
-  bool question_answers(uint64_t id, std::vector<std::string>& out) const;
-  std::vector<Str> agent_queue_;         // held by the agent, oldest first
-  std::vector<uint64_t> pending_;        // unanswered blocking question ids
-  std::vector<uint64_t> questions_all_;  // every question id in the window
   std::vector<uint64_t> sent_;           // answered here, result not in yet
-  std::vector<uint64_t> pending_tools_;  // tool calls with no result yet
-  std::vector<uint64_t> chart_tools_;    // plot calls: their results say nothing
   // The draft: its text, whether the transcript already holds it (worked out
   // again when either side changes), and what its rows added to the layout on
   // the last frame, taken off again before the next one.
@@ -453,14 +410,9 @@ class ChatRenderer {
   Answer answer_;
   bool answer_ready_ = false;
 
-  Jsonl file_;
-  const Adapter* adapter_ = nullptr;
-  std::string open_path_;
-
-  Arena arena_;    // event text, append-only for the life of the open file
+  Conversation conv_;
   Arena scratch_;  // synthesized row text; discarded whenever layout is rebuilt
 
-  FrontVec<Event> events_;
   FrontVec<Row> rows_;
   md::Work md_work_;  // md::render's buffers, reused across messages
   std::vector<Row> moved_;  // reused when moving a laid-out event to the front
@@ -475,11 +427,8 @@ class ChatRenderer {
   // one is laid out, the container each of its rows opens.
   std::unordered_map<uint64_t, std::unordered_set<int>> json_flips_;
   std::vector<uint16_t> mdline_nodes_;
-  std::vector<Event> batch_;            // reused parse output
   std::vector<text::Span> spans_;       // reused wrap output
 
-  size_t parsed_from_ = 0;
-  size_t parsed_to_ = 0;
 
   std::string find_q_, find_fold_;
   std::vector<uint32_t> find_lines_;  // matching lines, oldest first
@@ -508,7 +457,6 @@ class ChatRenderer {
   uint64_t rows_gen_ = 0;
   uint64_t rows_math_gen_ = 0;
 
-  SessionState state_;
   size_t trims_ = 0;
   uint32_t cur_line_ = 0;
   uint32_t menu_line_ = 0;  // src_line under the last right-click  // src_line of the event currently being laid out

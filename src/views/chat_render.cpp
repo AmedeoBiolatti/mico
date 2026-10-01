@@ -98,52 +98,6 @@ Style ink_style(Style base, md::Ink ink, const Theme& th) {
   return base;
 }
 
-std::string unescape_str(const js::Value& v) {
-  std::string s;
-  if (v.is_string()) js::unescape_append(v.body(), s);
-  return s;
-}
-
-// Parses a Question event's `questions` array into a card. Options without a
-// label are dropped; the array is capped so a pathological payload cannot cost
-// a second of layout.
-void parse_question_card(std::string_view json, ChatRenderer::QuestionCard& card) {
-  js::scan_array(json, [&](const js::Value& qv) {
-    if (!qv.is_object()) return true;
-    ChatRenderer::QuestionSpec q;
-    js::Value options{};
-    js::scan_object(qv.raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "question" || k == "title") q.text = unescape_str(v);
-      else if (k == "header") q.header = unescape_str(v);
-      else if ((k == "multiSelect" || k == "multi") && v.type == js::Type::Bool)
-        q.multi = v.is_true();
-      else if (k == "recommended" && v.type == js::Type::Number)
-        q.recommended = std::atoi(std::string(v.raw).c_str());
-      else if (k == "options") options = v;
-      return true;
-    });
-    js::scan_array(options.raw, [&](const js::Value& ov) {
-      ChatRenderer::QuestionOption o;
-      // The async form lists its options as bare strings.
-      if (ov.is_string()) {
-        o.label = unescape_str(ov);
-        if (!o.label.empty()) q.options.push_back(std::move(o));
-        return true;
-      }
-      if (!ov.is_object()) return true;
-      js::scan_object(ov.raw, [&](std::string_view k, const js::Value& v) {
-        if (k == "label") o.label = unescape_str(v);
-        else if (k == "description") o.description = unescape_str(v);
-        return true;
-      });
-      if (!o.label.empty()) q.options.push_back(std::move(o));
-      return true;
-    });
-    if (!q.text.empty() || !q.options.empty()) card.questions.push_back(std::move(q));
-    return card.questions.size() < 8;
-  });
-}
-
 // Counts source lines remaining after `consumed` bytes, for the "… N more"
 // marker. memchr, not a parse.
 size_t count_lines(std::string_view s, size_t from) {
@@ -198,7 +152,7 @@ void put_oneline(Arena& a, std::string_view s, int max_cols) {
 std::string_view ChatRenderer::seg_text(const md::Seg& s) const {
   if (s.len == 0) return {};
   return (s.off & kScratch) ? scratch_.view(Str{s.off & ~kScratch, s.len})
-                            : arena_.view(Str{s.off, s.len});
+                            : conv_.arena().view(Str{s.off, s.len});
 }
 
 bool ChatRenderer::expanded(uint64_t id) const {
@@ -213,8 +167,8 @@ void ChatRenderer::toggle(uint64_t id) {
   else expanded_.insert(it, id);
   expand_gen_++;
   if (opening && (id & kFoldBit))
-    for (size_t i = 0; i < events_.size(); i++)
-      if (fold_of_[i] == id && events_[i].bare) {
+    for (size_t i = 0; i < conv_.events().size(); i++)
+      if (fold_of_[i] == id && conv_.events()[i].bare) {
         reload_ = true;
         break;
       }
@@ -225,25 +179,13 @@ void ChatRenderer::reset() {
   roles_.clear();
   fold_of_.clear();
   open_from_ = 0;
-  outline_.clear();
-  outline_lo_ = UINT64_MAX;
-  outline_hi_ = 0;
-  outline_calls_.clear();
-  outline_orphans_.clear();
-  events_.clear();
+  conv_.clear();
   expanded_.clear();
-  arena_.clear();
-  state_.clear();
   scroll_ = 0;
-  pending_.clear();
-  questions_all_.clear();
-  agent_queue_.clear();
   sent_.clear();
-  pending_tools_.clear();
-  chart_tools_.clear();
   qstate_.clear();
-  async_.clear();
   relayout_ = false;
+  cards_seen_ = conv_.cards_gen();
   answer_ready_ = false;
   // Matches belong to a file; the query stays lit across files.
   find_done_ = false;
@@ -281,142 +223,82 @@ void ChatRenderer::invalidate_rows() {
   segs_.clear();
   scratch_.clear();
   cards_.clear();  // re-parsed as each Question is laid out again
-  rows_from_event_ = rows_to_event_ = events_.size();
+  rows_from_event_ = rows_to_event_ = conv_.events().size();
+}
+
+ChatRenderer::ChatRenderer() {
+  conv_.on_shift = [this](size_t n) { shift_rows(n); };
 }
 
 bool ChatRenderer::open(const std::string& path, const Adapter* adapter) {
-  if (path == open_path_ && file_.is_open()) return true;
-  open_path_ = path;
-  adapter_ = adapter;
+  if (path == conv_.path() && conv_.is_open()) return true;
   reset();
-  if (!file_.open(path)) {
-    adapter_ = nullptr;
-    return false;
-  }
-  arena_.reserve(1u << 20);
-  parsed_from_ = parsed_to_ = file_.line_count();
+  if (!conv_.open(path, adapter)) return false;
   invalidate_rows();
   return true;
 }
 
 void ChatRenderer::poll_growth() {
-  if (!file_.is_open() || !adapter_) return;
-  if (!file_.refresh()) return;
+  if (!conv_.is_open() || !conv_.adapter()) return;
+  if (!conv_.refresh()) return;
   grow_forwards();
 }
 
-// Images in a line, whichever agent wrote it: one Image event each, a tool
-// result's carrying its tool's id. Their pixels stay in the file.
-void ChatRenderer::add_images(std::string_view line, size_t before) {
-  const int n = count_images(line);
-  if (n == 0) return;
-  uint64_t tool = 0;
-  for (size_t j = before; j < batch_.size(); j++)
-    if (batch_[j].kind == EventKind::ToolResult) tool = batch_[j].tool_id;
-  for (int k = 0; k < n; k++) {
-    Event e;
-    e.kind = EventKind::Image;
-    e.tool_id = tool;
-    e.summary = arena_.add(std::to_string(k));
-    batch_.push_back(e);
-  }
-}
-
 void ChatRenderer::grow_forwards(size_t max_lines) {
-  const size_t end = max_lines == size_t(-1)
-                         ? file_.line_count()
-                         : std::min(file_.line_count(), parsed_to_ + max_lines);
-  batch_.clear();
-  file_.will_read(parsed_to_, end);
-  for (size_t i = parsed_to_; i < end; i++) {
-    std::string_view line = file_.line(i);
-    if (uint32_t(i) >= state_.from_line) {
-      adapter_->observe(line, state_);
-      state_.from_line = uint32_t(i);
-    }
-    size_t before = batch_.size();
-    adapter_->parse(line, arena_, batch_);
-    add_images(line, before);
-    for (size_t j = before; j < batch_.size(); j++) batch_[j].src_line = uint32_t(i);
-  }
-  parsed_to_ = end;
-  events_.append(batch_.data(), batch_.data() + batch_.size());
-  for (const Event& e : batch_) note_event(e);
+  conv_.grow_forwards(max_lines);
+  prune_answers();
+  sync_cards();
   classify(0);
 }
 
 void ChatRenderer::grow_backwards() {
-  if (!adapter_) return;
+  if (!conv_.adapter()) return;
   // Scrolling back fills the arena up to its budget. Growing there by doubling
   // copies the whole window at each step and overshoots to twice the budget;
   // one reservation does neither. Capped at the file's size, which bounds the
   // text it can yield, so a short chat does not reserve for a long one.
-  arena_.reserve(std::min<size_t>(kArenaBudget + (kArenaBudget >> 3), file_.size_bytes()));
-  if (parsed_from_ == 0) {
-    // The file is only indexed from the tail; pull in an older slab first.
-    // Every existing line index shifts up by however many lines that added.
-    size_t added_lines = file_.extend_back();
-    if (added_lines == 0) return;
-    shift_lines(added_lines);
-    parsed_from_ += added_lines;
-    parsed_to_ += added_lines;
-  }
-  size_t chunk = std::min(parsed_from_, kChunkLines);
-  size_t start = parsed_from_ - chunk;
-  const size_t mark = arena_.bytes();
-
-  batch_.clear();
-  file_.will_read(start, parsed_from_);
-  for (size_t i = start; i < parsed_from_; i++) {
-    std::string_view line = file_.line(i);
-    // Reading backwards: only fill in what nothing newer has already said.
-    if (uint32_t(i) >= state_.from_line) {
-      adapter_->observe(line, state_);
-      state_.from_line = uint32_t(i);
-    }
-    size_t before = batch_.size();
-    adapter_->parse(line, arena_, batch_);
-    add_images(line, before);
-    for (size_t j = before; j < batch_.size(); j++) batch_[j].src_line = uint32_t(i);
-  }
-  events_.prepend(batch_.data(), batch_.data() + batch_.size());
-  parsed_from_ = start;
-  classify(batch_.size());
-  if (rows_density_ != Density::Full) strip_folded(batch_.size(), mark);
+  conv_.arena().reserve(std::min<size_t>(kArenaBudget + (kArenaBudget >> 3), conv_.file().size_bytes()));
+  const size_t from = conv_.parsed_from();
+  size_t mark = 0;
+  const size_t added = conv_.grow_backwards(kChunkLines, &mark);
+  if (added == 0 && conv_.parsed_from() == from) return;  // nothing older to read
+  classify(added);
+  if (rows_density_ != Density::Full) strip_folded(added, mark);
   // Prepending history must replay activity in transcript order. A result
   // already in the newer window must resolve its newly loaded older call.
-  pending_.clear();
-  pending_tools_.clear();
-  chart_tools_.clear();
-  questions_all_.clear();
-  agent_queue_.clear();
-  async_.clear();
-  auto sent = std::move(sent_);
-  auto qstate = std::move(qstate_);
-  // Replaying reaches the same verdicts the laid-out cards already show.
-  const bool relayout = relayout_;
-  for (const Event& e : events_) note_event(e);
-  relayout_ = relayout;
-  std::erase_if(sent, [&](uint64_t id) {
-    const AsyncSlot* a = async_slot(id);
-    if (a) return a->status != AsyncStatus::Open;
-    return std::find(pending_.begin(), pending_.end(), id) == pending_.end();
-  });
-  std::erase_if(qstate, [&](const QStateSlot& slot) {
-    const AsyncSlot* a = async_slot(slot.id);
-    if (a) return a->status != AsyncStatus::Open;
-    return std::find(pending_.begin(), pending_.end(), slot.id) == pending_.end();
-  });
-  sent_ = std::move(sent);
-  qstate_ = std::move(qstate);
+  conv_.replay_facts();
+  prune_answers();
 }
 
-void ChatRenderer::shift_lines(size_t count) {
-  for (auto& e : events_) e.src_line += uint32_t(count);
+void ChatRenderer::prune_answers() {
+  std::erase_if(sent_, [&](uint64_t id) { return !conv_.question_open(id); });
+  std::erase_if(qstate_, [&](const QStateSlot& slot) { return !conv_.question_open(slot.id); });
+}
+
+void ChatRenderer::sync_cards() {
+  if (conv_.cards_gen() == cards_seen_) return;
+  cards_seen_ = conv_.cards_gen();
+  relayout_ = true;
+}
+
+void ChatRenderer::shift_rows(size_t count) {
   for (auto& r : rows_) r.src_line += uint32_t(count);
-  if (!state_.empty()) state_.from_line += uint32_t(count);
   cur_line_ += uint32_t(count);
   menu_line_ += uint32_t(count);
+}
+
+void ChatRenderer::reanchor(size_t line) {
+  roles_.clear();
+  fold_of_.clear();
+  open_from_ = 0;
+  conv_.reanchor(line);
+  sent_.clear();
+  qstate_.clear();
+  relayout_ = false;
+  cards_seen_ = conv_.cards_gen();
+  answer_ready_ = false;
+  invalidate_rows();
+  scroll_ = 0;
 }
 
 bool ChatRenderer::laid_out(size_t i, const Filters& f) const {
@@ -424,7 +306,7 @@ bool ChatRenderer::laid_out(size_t i, const Filters& f) const {
 }
 
 bool ChatRenderer::visible(size_t i, const Filters& f) const {
-  const Event& e = events_[i];
+  const Event& e = conv_.events()[i];
   // Pictures are their own setting: on, they show at every density, even
   // among a folded turn's steps.
   if (e.kind == EventKind::Image && render_settings().pictures) return true;
@@ -432,7 +314,7 @@ bool ChatRenderer::visible(size_t i, const Filters& f) const {
   switch (e.kind) {
     case EventKind::User:
     case EventKind::Assistant:
-      return arena_.view(e.text).find_first_not_of(" \t\r\n") != std::string_view::npos;
+      return conv_.arena().view(e.text).find_first_not_of(" \t\r\n") != std::string_view::npos;
     case EventKind::TurnEnd: return false;
     case EventKind::QueueAdd:
     case EventKind::QueueTake: return false;
@@ -449,14 +331,14 @@ bool ChatRenderer::visible(size_t i, const Filters& f) const {
       if (async_slot(e.tool_id)) return false;
       // A chart that was drawn needs no "drawn" under it; one that could not
       // be still shows why.
-      if (e.ok && std::find(chart_tools_.begin(), chart_tools_.end(), e.tool_id) != chart_tools_.end())
+      if (e.ok && std::find(conv_.chart_tools().begin(), conv_.chart_tools().end(), e.tool_id) != conv_.chart_tools().end())
         return false;
       // A question's answer is part of the card, so it shows whatever the
       // density filters say — unless the card already folded it in.
-      if (std::find(questions_all_.begin(), questions_all_.end(), e.tool_id) !=
-          questions_all_.end()) {
+      if (std::find(conv_.questions().begin(), conv_.questions().end(), e.tool_id) !=
+          conv_.questions().end()) {
         std::vector<std::string> answers;
-        return !question_answers(e.tool_id, answers);
+        return !conv_.question_answers(e.tool_id, answers);
       }
       return f.show_tools() && (f.show_results() || expanded(e.tool_id));
     default: return true;
@@ -478,7 +360,7 @@ void ChatRenderer::flush_lines(RowStyle base, int extra_indent, uint64_t tool_id
 
 void ChatRenderer::emit_text(Str text, RowStyle base, int indent, int w, size_t cap,
                              uint64_t tool_id, bool markdown, bool diff, Gutter gutter) {
-  std::string_view body = arena_.view(text);
+  std::string_view body = conv_.arena().view(text);
   if (base == RowStyle::User) {
     // Drop leading blank lines without stripping indentation from the first
     // content line or changing any spacing inside the message.
@@ -511,7 +393,7 @@ void ChatRenderer::emit_text(Str text, RowStyle base, int indent, int w, size_t 
     std::string pretty;
     // A notebook the agent read is shown as one: cells, outputs, plots.
     if (base == RowStyle::Result && render_settings().notebooks &&
-        ((notebook::is_claude_read(body) && notebook::from_claude(file_.line(cur_line_), pretty)) ||
+        ((notebook::is_claude_read(body) && notebook::from_claude(conv_.file().line(cur_line_), pretty)) ||
          (body.size() < (16u << 20) && body.find("\"nbformat\"") != std::string_view::npos &&
           notebook::from_ipynb(body, pretty)))) {
       if (tool_id) notebook_tools_.insert(tool_id);
@@ -578,12 +460,12 @@ void ChatRenderer::emit_text(Str text, RowStyle base, int indent, int w, size_t 
 // read (Read's path), or what a shell command printed (cat, head, tail, sed
 // -n on one file). Null for anything else.
 const code::Lang* ChatRenderer::result_lang(size_t index) const {
-  const Event& r = events_[index];
+  const Event& r = conv_.events()[index];
   for (size_t k = index; k-- > 0 && index - k < 400;) {
-    const Event& c = events_[k];
+    const Event& c = conv_.events()[k];
     if (c.kind != EventKind::ToolCall || c.tool_id != r.tool_id) continue;
-    const std::string_view name = arena_.view(c.name);
-    std::string_view arg = arena_.view(c.summary);
+    const std::string_view name = conv_.arena().view(c.name);
+    std::string_view arg = conv_.arena().view(c.summary);
     std::string_view path;
     if (name == "Read" || name == "read" || name == "view" || name == "read_file") {
       path = arg;
@@ -609,8 +491,8 @@ const code::Lang* ChatRenderer::result_lang(size_t index) const {
 void ChatRenderer::layout_image(const Event& e, int w) {
   const bool tool = e.tool_id != 0;
   const int indent = tool ? 4 : 2;
-  const std::string_view line = file_.line(e.src_line);
-  const int n = std::atoi(std::string(arena_.view(e.summary)).c_str());
+  const std::string_view line = conv_.file().line(e.src_line);
+  const int n = std::atoi(std::string(conv_.arena().view(e.summary)).c_str());
   std::string media;
   std::string_view b64;
   const math::Image* im = nullptr;
@@ -635,7 +517,7 @@ void ChatRenderer::layout_image(const Event& e, int w) {
 }
 
 void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
-  const Event& e = events_[index];
+  const Event& e = conv_.events()[index];
   cur_line_ = e.src_line;
   auto gap = [&] { rows_.push_back(Row{0, 0, cur_line_, 0, 0, RowStyle::Gap, Gutter::None}); };
 
@@ -686,10 +568,10 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
       // The bullet/spinner is drawn at render time (it depends on whether the
       // call is still executing), so the text starts past it.
       uint32_t off = scratch_.open();
-      scratch_.put(arena_.view(e.name));
+      scratch_.put(conv_.arena().view(e.name));
       if (!e.summary.empty()) {
         scratch_.put("  ");
-        put_oneline(scratch_, arena_.view(e.summary), std::max(4, w - 2));
+        put_oneline(scratch_, conv_.arena().view(e.summary), std::max(4, w - 2));
       }
       emit_scratch(scratch_.close(off), RowStyle::Tool, 2, e.tool_id, 0, 0xFF);
 
@@ -698,7 +580,7 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
         // language of the file it edits.
         const bool diff = !e.detail.empty();
         {
-          const std::string_view path = arena_.view(e.summary);
+          const std::string_view path = conv_.arena().view(e.summary);
           const size_t dot = path.rfind('.');
           output_lang_ = dot != std::string_view::npos && path.find('/', dot) == std::string_view::npos
                              ? code::lang_of(path.substr(dot + 1))
@@ -720,7 +602,7 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
       gap();
       uint32_t off = scratch_.open();
       scratch_.put("\xE2\x94\x80\xE2\x94\x80 ");  // ──
-      put_oneline(scratch_, arena_.view(e.text), std::max(4, w - 8));
+      put_oneline(scratch_, conv_.arena().view(e.text), std::max(4, w - 8));
       scratch_.put(" \xE2\x94\x80\xE2\x94\x80");
       emit_scratch(scratch_.close(off), RowStyle::Dim, 0, 0, 0, 0xFF);
       break;
@@ -729,7 +611,7 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
     case EventKind::TaskStatus: {
       uint32_t off = scratch_.open();
       scratch_.put(e.ok ? "✓ " : "! ");
-      put_oneline(scratch_, arena_.view(e.text), std::max(4, w - 6));
+      put_oneline(scratch_, conv_.arena().view(e.text), std::max(4, w - 6));
       emit_scratch(scratch_.close(off), e.ok ? RowStyle::Dim : RowStyle::ResultErr,
                    2, e.tool_id, 0, 0xFF);
       break;
@@ -797,19 +679,19 @@ bool reads_as(std::string_view text, std::string_view draft) {
 
 bool ChatRenderer::draft_shown() {
   if (draft_.empty()) return false;
-  if (draft_checked_ && draft_events_ == events_.size()) return !draft_committed_;
+  if (draft_checked_ && draft_events_ == conv_.events().size()) return !draft_committed_;
   draft_checked_ = true;
-  draft_events_ = events_.size();
+  draft_events_ = conv_.events().size();
   // Held by the transcript once a message of the current turn reads the same.
   const std::string d = reading(draft_, 8000);
   draft_committed_ = d.empty();
-  for (size_t i = events_.size(); i-- > 0 && !draft_committed_;) {
-    const Event& e = events_[i];
+  for (size_t i = conv_.events().size(); i-- > 0 && !draft_committed_;) {
+    const Event& e = conv_.events()[i];
     if (e.kind == EventKind::User) break;
     if (e.kind != EventKind::Assistant) continue;
     // Either way round: the screen can hold more than the block, when rows
     // of whatever follows it were taken for its own.
-    const std::string m = reading(arena_.view(e.text), 12000);
+    const std::string m = reading(conv_.arena().view(e.text), 12000);
     if (reads_as(m, d) || (m.size() >= 16 && reads_as(d, m))) draft_committed_ = true;
   }
   return !draft_committed_;
@@ -819,13 +701,13 @@ void ChatRenderer::layout_draft(int w) {
   draft_rows_ = 0;
   // Only under the newest message: a window re-anchored further back does not
   // end where the draft goes.
-  if (parsed_to_ != file_.line_count()) return;
+  if (conv_.parsed_to() != conv_.file().line_count()) return;
   const bool draft = draft_shown();
   if (!draft && aside_q_.empty()) return;
   const size_t before = rows_.size();
   draft_segs_ = segs_.size();
   draft_scratch_ = scratch_.bytes();
-  cur_line_ = uint32_t(parsed_to_ ? parsed_to_ - 1 : 0);
+  cur_line_ = uint32_t(conv_.parsed_to() ? conv_.parsed_to() - 1 : 0);
   if (draft) {
     rows_.push_back(Row{0, 0, cur_line_, 0, 0, RowStyle::Gap, Gutter::None});
     // The text goes into scratch, where the rows find it; the renderer reads
@@ -876,151 +758,19 @@ void ChatRenderer::emit_scratch(Str s, RowStyle base, int indent, uint64_t tool_
                       base, Gutter::None, q, opt, cont});
 }
 
-// Keeps the live-question sets in step with the parsed window: a Question makes
-// an id pending, its ToolResult resolves it.
-void ChatRenderer::note_event(const Event& e) {
-  if (e.kind == EventKind::Chart && e.tool_id) chart_tools_.push_back(e.tool_id);
-  if (e.kind == EventKind::TurnEnd) {
-    // An optional question outlives the turn that asked it.
-    pending_.clear();
-    pending_tools_.clear();
-    std::erase_if(sent_, [&](uint64_t id) { return !async_slot(id); });
-    std::erase_if(qstate_, [&](const QStateSlot& slot) { return !async_slot(slot.id); });
-    return;
-  }
-  if (e.kind == EventKind::QueueAdd) {
-    agent_queue_.push_back(e.text);
-    return;
-  }
-  if (e.kind == EventKind::QueueTake) {
-    // By its text when the record names it, else the oldest.
-    const std::string_view text = arena_.view(e.text);
-    auto it = agent_queue_.begin();
-    if (!text.empty())
-      it = std::find_if(agent_queue_.begin(), agent_queue_.end(),
-                        [&](const Str& s) { return arena_.view(s) == text; });
-    if (it != agent_queue_.end()) agent_queue_.erase(it);
-    return;
-  }
-  if (e.kind == EventKind::Question) {
-    questions_all_.push_back(e.tool_id);
-    if (is_async_question_tool(arena_.view(e.name))) {
-      // A newer optional question takes the keys from an older one, whose card
-      // then has to drop its live rows.
-      if (open_async_questions()) relayout_ = true;
-      async_.push_back(AsyncSlot{e.tool_id, e.text, {}, AsyncStatus::Open});
-    } else {
-      pending_.push_back(e.tool_id);
-    }
-    return;
-  }
-  if (e.kind == EventKind::User && open_async_questions()) {
-    // A reply names the question it answers by its call (codex 0.159's
-    // envelope, read by the adapter), or quotes it, the way older codex wrote
-    // it. Any other message moves past everything still open.
-    const std::string_view text = arena_.view(e.text);
-    AsyncSlot* answered = nullptr;
-    for (auto& a : async_) {
-      if (a.status != AsyncStatus::Open) continue;
-      if (e.tool_id) {
-        if (a.id == e.tool_id) answered = &a;
-        continue;
-      }
-      std::string_view title = arena_.view(a.title);
-      title = title.substr(0, title.find('\n'));
-      if (!title.empty() && text.starts_with("> ") && text.substr(2).starts_with(title))
-        answered = &a;
-    }
-    // Another answer to a question already settled (codex answers a card's
-    // questions one by one) leaves the rest open.
-    if (!answered && e.tool_id) return;
-    const auto settle = [&](AsyncSlot& a, AsyncStatus status) {
-      a.status = status;
-      std::erase(sent_, a.id);
-      std::erase_if(qstate_, [&](const QStateSlot& slot) { return slot.id == a.id; });
-      relayout_ = true;
-    };
-    if (answered) {
-      const size_t gap = text.find("\n\n");
-      if (gap != std::string_view::npos)
-        answered->answer = Str{uint32_t(e.text.off + gap + 2), uint32_t(text.size() - gap - 2)};
-      settle(*answered, AsyncStatus::Answered);
-    } else {
-      for (auto& a : async_)
-        if (a.status == AsyncStatus::Open) settle(a, AsyncStatus::Skipped);
-    }
-    return;
-  }
-  if (e.kind == EventKind::ToolCall) {
-    if (e.tool_id) pending_tools_.push_back(e.tool_id);
-    return;
-  }
-  if (e.kind != EventKind::ToolResult && e.kind != EventKind::TaskStatus) return;
-  // The card was laid out in full while it waited; its answer folds it down.
-  if (e.kind == EventKind::ToolResult &&
-      std::find(questions_all_.begin(), questions_all_.end(), e.tool_id) != questions_all_.end())
-    relayout_ = true;
-  auto drop = [&](std::vector<uint64_t>& v) {
-    v.erase(std::remove(v.begin(), v.end(), e.tool_id), v.end());
-  };
-  drop(pending_);
-  drop(sent_);
-  drop(pending_tools_);
-  for (auto it = qstate_.begin(); it != qstate_.end(); ++it)
-    if (it->id == e.tool_id) { qstate_.erase(it); break; }
-}
-
 // The card itself: a header chip, the question, then one row per option. The
 // cursor and check are painted at render time from the live state, so moving
 // the choice never re-lays-out the transcript.
-bool ChatRenderer::question_answers(uint64_t id, std::vector<std::string>& out) const {
-  out.clear();
-  if (id == 0) return false;
-  const Event* ask = nullptr;
-  const Event* result = nullptr;
-  for (const Event& ev : events_) {
-    if (ev.tool_id != id) continue;
-    if (ev.kind == EventKind::Question) ask = &ev;
-    else if (ev.kind == EventKind::ToolResult) result = &ev;
-  }
-  if (!ask || !result || !result->ok) return false;
-  if (is_async_question_tool(arena_.view(ask->name))) return false;  // drawn from the reply
-  QuestionCard card;
-  parse_question_card(arena_.view(ask->detail), card);
-  if (card.questions.empty()) return false;
-
-  // claude writes each one as "<question>"="<answer>", a multi-select's labels
-  // joined by ", ", and follows the closing quote with punctuation or with
-  // notes and a preview — never with more of the answer.
-  const std::string_view text = arena_.view(result->text);
-  for (const QuestionSpec& q : card.questions) {
-    const std::string key = "\"" + q.text + "\"=\"";
-    const size_t at = text.find(key);
-    if (q.text.empty() || at == std::string_view::npos) return false;
-    const size_t from = at + key.size();
-    size_t end = from;
-    for (;; end++) {
-      end = text.find('"', end);
-      if (end == std::string_view::npos) return false;
-      if (end + 1 == text.size() || std::string_view(".,\n ").find(text[end + 1]) !=
-                                        std::string_view::npos)
-        break;
-    }
-    out.emplace_back(text.substr(from, end - from));
-  }
-  return true;
-}
-
 void ChatRenderer::layout_question(const Event& e, int w) {
   cur_line_ = e.src_line;
   rows_.push_back(Row{0, 0, cur_line_, 0, 0, RowStyle::Gap, Gutter::None, 0, 0xFF});
 
   QuestionCard card;
   card.tool_id = e.tool_id;
-  card.tool = std::string(arena_.view(e.name));
+  card.tool = std::string(conv_.arena().view(e.name));
   card.async = is_async_question_tool(card.tool);
-  if (card.async) card.call_id = std::string(arena_.view(e.summary));
-  parse_question_card(arena_.view(e.detail), card);
+  if (card.async) card.call_id = std::string(conv_.arena().view(e.summary));
+  parse_question_card(conv_.arena().view(e.detail), card);
   if (card.questions.empty()) {
     // A payload this reader could not read still shows its preview text.
     emit_text(e.text, RowStyle::Tool, 2, w, 4, e.tool_id, false, false);
@@ -1039,7 +789,7 @@ void ChatRenderer::layout_question(const Event& e, int w) {
   // the scrollback is what was asked and what was chosen, so the card folds
   // down to exactly that and the raw result beneath it is hidden.
   std::vector<std::string> answers;
-  if (!live && question_answers(e.tool_id, answers)) {
+  if (!live && conv_.question_answers(e.tool_id, answers)) {
     for (size_t qi = 0; qi < card.questions.size(); qi++) {
       std::string asked = "\xE2\x9D\x93 " + card.questions[qi].text;  // ❓
       std::string chose = "\xE2\x86\xB3 " + answers[qi];               // ↳
@@ -1122,7 +872,7 @@ void ChatRenderer::layout_question(const Event& e, int w) {
   }
   if (slot && slot->status == AsyncStatus::Answered) {
     std::string reply = "\xE2\x86\xB3 ";
-    reply += arena_.view(slot->answer);
+    reply += conv_.arena().view(slot->answer);
     for (char& ch : reply)
       if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
     emit(reply, RowStyle::QText, 4, 6, 0, 0xFF);
@@ -1189,40 +939,24 @@ const ChatRenderer::QuestionCard* ChatRenderer::card(uint64_t id) const {
   return nullptr;
 }
 
-bool ChatRenderer::tool_pending(uint64_t id) const {
-  return parsed_to_ == file_.line_count() && id != 0 &&
-         std::find(pending_tools_.begin(), pending_tools_.end(), id) != pending_tools_.end();
-}
-
 bool ChatRenderer::in_flight_tool(std::string_view* name, std::string_view* summary, uint64_t* id) const {
-  if (!working_ || pending_tools_.empty()) return false;
+  if (!working_ || conv_.pending_tools().empty()) return false;
   // The newest call still waiting on a result: the one executing right now.
-  for (size_t i = events_.size(); i-- > 0;) {
-    const Event& e = events_[i];
+  for (size_t i = conv_.events().size(); i-- > 0;) {
+    const Event& e = conv_.events()[i];
     if (e.kind != EventKind::ToolCall || !tool_pending(e.tool_id)) continue;
-    if (name) *name = arena_.view(e.name);
-    if (summary) *summary = arena_.view(e.summary);
+    if (name) *name = conv_.arena().view(e.name);
+    if (summary) *summary = conv_.arena().view(e.summary);
     if (id) *id = e.tool_id;
     return true;
   }
   return false;
 }
 
-const ChatRenderer::AsyncSlot* ChatRenderer::async_slot(uint64_t id) const {
-  for (const auto& a : async_)
-    if (a.id == id) return &a;
-  return nullptr;
-}
-
-int ChatRenderer::open_async_questions() const {
-  return int(std::count_if(async_.begin(), async_.end(),
-                           [](const AsyncSlot& a) { return a.status == AsyncStatus::Open; }));
-}
-
 uint64_t ChatRenderer::live_question() const {
-  if (!q_interactive_ || parsed_to_ != file_.line_count()) return 0;
-  if (!pending_.empty()) return pending_.back();
-  for (auto it = async_.rbegin(); it != async_.rend(); ++it)
+  if (!q_interactive_ || conv_.parsed_to() != conv_.file().line_count()) return 0;
+  if (!conv_.pending_questions().empty()) return conv_.pending_questions().back();
+  for (auto it = conv_.async_questions().rbegin(); it != conv_.async_questions().rend(); ++it)
     if (it->status == AsyncStatus::Open) return it->id;
   return 0;
 }
@@ -1420,7 +1154,7 @@ bool ChatRenderer::take_answer(Answer& out) {
 }
 
 void ChatRenderer::classify(size_t prepended) {
-  const size_t n = events_.size();
+  const size_t n = conv_.events().size();
   const size_t appended = n - prepended - roles_.size();
   if (prepended) {
     zeros_.assign(prepended, 0);
@@ -1446,7 +1180,7 @@ void ChatRenderer::classify(size_t prepended) {
   };
 
   const auto blank = [&](const Event& e) {
-    return arena_.view(e.text).find_first_not_of(" \t\r\n") == std::string_view::npos;
+    return conv_.arena().view(e.text).find_first_not_of(" \t\r\n") == std::string_view::npos;
   };
   const auto silent = [&](const Event& e) {
     return e.kind == EventKind::TurnEnd || e.kind == EventKind::Meta || e.kind == EventKind::QueueAdd ||
@@ -1457,7 +1191,7 @@ void ChatRenderer::classify(size_t prepended) {
   const auto answer_from = [&](size_t s, size_t e) {
     size_t a = e;
     for (size_t i = e; i > s; i--) {
-      const Event& ev = events_[i - 1];
+      const Event& ev = conv_.events()[i - 1];
       if (silent(ev)) continue;
       if (ev.kind != EventKind::Assistant) break;
       a = i - 1;
@@ -1471,18 +1205,18 @@ void ChatRenderer::classify(size_t prepended) {
     uint64_t id = 0;
     if (answered)
       for (size_t i = s; i < a; i++) {
-        const Event& ev = events_[i];
+        const Event& ev = conv_.events()[i];
         // A question, a chart and a notice are said to the user: they stay.
         if (ev.kind == EventKind::Question || ev.kind == EventKind::Chart || ev.kind == EventKind::Notice ||
             (ev.kind == EventKind::Image && !ev.tool_id) || silent(ev))
           continue;
         head = i;
         // Named by where its first step is in the file, which outlives the window.
-        id = kFoldBit | uint64_t(file_.line_offset(ev.src_line));
+        id = kFoldBit | uint64_t(conv_.file().line_offset(ev.src_line));
         break;
       }
     for (size_t i = s; i < e; i++) {
-      const Event& ev = events_[i];
+      const Event& ev = conv_.events()[i];
       if (answered && i >= a) {
         set(i, ev.kind == EventKind::Assistant ? kAnswer : 0, 0);
         continue;
@@ -1508,7 +1242,7 @@ void ChatRenderer::classify(size_t prepended) {
   const size_t stop_at = prepended ? prepended : SIZE_MAX;
   bool stopped = false;
   for (size_t i = s; i < n; i++) {
-    const Event& ev = events_[i];
+    const Event& ev = conv_.events()[i];
     size_t a = i;
     if (ev.kind == EventKind::User) {
       finish(s, i, false);
@@ -1537,18 +1271,18 @@ void ChatRenderer::classify(size_t prepended) {
   // Older history came in at the front. Only the turn it completed can have
   // changed, and its rows are the first ones: those are laid out again, not
   // the window. Scrolling back through a long chat does this at every step.
-  const uint32_t line = events_[changed].src_line;
+  const uint32_t line = conv_.events()[changed].src_line;
   size_t drop = 0;
   while (drop < rows_.size() && rows_[drop].src_line <= line) drop++;
   rows_.pop_front(drop);
   size_t from = changed + 1;
-  while (from < laid_to && events_[from].src_line <= line) from++;
+  while (from < laid_to && conv_.events()[from].src_line <= line) from++;
   rows_from_event_ = from - prepended;  // in the old numbering, as ensure_rows expects
 }
 
 void ChatRenderer::strip_folded(size_t count, size_t mark) {
   const auto bare = [&](size_t i) {
-    const Event& e = events_[i];
+    const Event& e = conv_.events()[i];
     return (roles_[i] & kFolded) && !expanded(fold_of_[i]) && e.kind != EventKind::QueueAdd &&
            e.kind != EventKind::QueueTake && e.kind != EventKind::Image;  // a picture may show in a fold
   };
@@ -1559,7 +1293,7 @@ void ChatRenderer::strip_folded(size_t count, size_t mark) {
   std::string keep;
   std::vector<std::pair<Str*, size_t>> moved;
   for (i = 0; i < count; i++) {
-    Event& e = events_[i];
+    Event& e = conv_.events()[i];
     const bool drop = bare(i);
     for (Str* s : {&e.text, &e.name, &e.summary, &e.detail}) {
       if (s->len == 0 || s->off < mark) continue;
@@ -1568,12 +1302,12 @@ void ChatRenderer::strip_folded(size_t count, size_t mark) {
         continue;
       }
       moved.push_back({s, keep.size()});
-      keep.append(arena_.view(*s));
+      keep.append(conv_.arena().view(*s));
     }
     if (drop) e.bare = 1;
   }
-  arena_.truncate(mark);
-  const Str at = arena_.add(keep);
+  conv_.arena().truncate(mark);
+  const Str at = conv_.arena().add(keep);
   for (auto& [s, off] : moved) s->off = at.off + uint32_t(off);
 }
 
@@ -1581,10 +1315,10 @@ void ChatRenderer::strip_folded(size_t count, size_t mark) {
 void ChatRenderer::layout_fold(size_t index, int w) {
   const uint64_t id = fold_of_[index];
   size_t steps = 0, edits = 0, failed = 0, comments = 0;
-  for (size_t i = index; i < events_.size(); i++) {
+  for (size_t i = index; i < conv_.events().size(); i++) {
     if (roles_[i] & kAnswer) break;
     if (fold_of_[i] != id) continue;
-    const Event& e = events_[i];
+    const Event& e = conv_.events()[i];
     if (e.kind == EventKind::ToolCall) {
       steps++;
       if (!e.detail.empty()) edits++;
@@ -1613,12 +1347,12 @@ void ChatRenderer::layout_fold(size_t index, int w) {
 }
 
 bool ChatRenderer::unfold_line(uint32_t line) {
-  for (size_t i = 0; i < events_.size(); i++)
-    if (events_[i].src_line == line && (roles_[i] & kFolded) && !expanded(fold_of_[i])) {
+  for (size_t i = 0; i < conv_.events().size(); i++)
+    if (conv_.events()[i].src_line == line && (roles_[i] & kFolded) && !expanded(fold_of_[i])) {
       toggle(fold_of_[i]);
       if (reload_) {
         reload_ = false;
-        reanchor(std::min<size_t>(size_t(line) + 40, file_.line_count()));
+        reanchor(std::min<size_t>(size_t(line) + 40, conv_.file().line_count()));
       }
       return true;
     }
@@ -1646,7 +1380,7 @@ void ChatRenderer::restore_anchor(uint32_t line, int into, int w, int h, const F
 }
 
 void ChatRenderer::layout_appended(int w, const Filters& f) {
-  for (; rows_to_event_ < events_.size(); rows_to_event_++) {
+  for (; rows_to_event_ < conv_.events().size(); rows_to_event_++) {
     if (laid_out(rows_to_event_, f)) layout_event(rows_to_event_, w, f);
   }
 }
@@ -1677,23 +1411,23 @@ void ChatRenderer::ensure_rows(int w, size_t needed, const Filters& f) {
   // file. The viewport then sits at the oldest loaded row, trim_window()
   // re-anchors there, and the next scroll continues from that point — the
   // window slides through the file instead of accumulating it.
-  while (rows_.size() < needed && arena_.bytes() < kArenaBudget) {
+  while (rows_.size() < needed && conv_.arena().bytes() < kArenaBudget) {
     if (rows_from_event_ == 0) {
-      if (parsed_from_ == 0 && file_.complete()) {
+      if (conv_.parsed_from() == 0 && conv_.file().complete()) {
         // Nothing older exists. The screen can still be short of rows after a
         // seek near the start of a file, where the opening lines carry no
         // conversation, so take material from the other direction instead of
         // leaving the view empty.
-        if (parsed_to_ >= file_.line_count()) break;
-        const size_t before_fwd = parsed_to_;
+        if (conv_.parsed_to() >= conv_.file().line_count()) break;
+        const size_t before_fwd = conv_.parsed_to();
         grow_forwards(kChunkLines);
         layout_appended(w, f);
-        if (parsed_to_ == before_fwd) break;
+        if (conv_.parsed_to() == before_fwd) break;
         continue;
       }
-      size_t before = events_.size();
+      size_t before = conv_.events().size();
       grow_backwards();
-      size_t added = events_.size() - before;
+      size_t added = conv_.events().size() - before;
       rows_from_event_ += added;
       rows_to_event_ += added;
       // Running out of older material is decided at the top of the loop, which
@@ -1716,7 +1450,7 @@ void ChatRenderer::ensure_rows(int w, size_t needed, const Filters& f) {
 // viewport is unchanged afterwards: the re-seeded window ends at the line the
 // viewport ended on, so scroll_ returns to zero meaning "bottom of the window".
 void ChatRenderer::trim_window() {
-  if (arena_.bytes() < kArenaBudget || rows_.empty()) return;
+  if (conv_.arena().bytes() < kArenaBudget || rows_.empty()) return;
 
   const int total = int(rows_.size());
   const int bottom = std::clamp(total - scroll_ - 1, 0, total - 1);
@@ -1724,198 +1458,23 @@ void ChatRenderer::trim_window() {
 
   reanchor(size_t(keep_line) + 1);
   trims_++;
-  file_.release_pages();
-}
-
-void ChatRenderer::reanchor(size_t line) {
-  events_.clear();
-  roles_.clear();
-  fold_of_.clear();
-  open_from_ = 0;
-  arena_.clear();
-  pending_.clear();
-  questions_all_.clear();
-  agent_queue_.clear();
-  sent_.clear();
-  pending_tools_.clear();
-  chart_tools_.clear();
-  qstate_.clear();
-  async_.clear();
-  relayout_ = false;
-  answer_ready_ = false;
-  invalidate_rows();
-  // Keep state_: it describes the session, not the window into it.
-  parsed_from_ = parsed_to_ = std::min(line, file_.line_count());
-  scroll_ = 0;
-}
-
-void ChatRenderer::index_back_to(size_t byte) {
-  // Every slab the index adds shifts the line numbers the window is holding.
-  while (!file_.complete() && file_.indexed_from() > byte) {
-    const size_t added = file_.extend_back();
-    if (added == 0) break;
-    shift_lines(added);
-    parsed_from_ += added;
-    parsed_to_ += added;
-  }
+  conv_.file().release_pages();
 }
 
 // ------------------------------------------------------------------ outline
 
-void ChatRenderer::outline_scan(size_t a, size_t b, std::vector<OutlineEntry>& into) {
-  Arena tmp;
-  std::vector<Event> evs;
-  file_.will_read(a, b);
-  for (size_t i = a; i < b; i++) {
-    tmp.clear();
-    evs.clear();
-    adapter_->parse(file_.line(i), tmp, evs);
-    const uint64_t at = file_.line_offset(i);
-    for (const Event& e : evs) {
-      OutlineEntry o;
-      o.offset = at;
-      switch (e.kind) {
-        case EventKind::User: {
-          o.kind = 'u';
-          o.label = text::oneline(tmp.view(e.text), 200);
-          if (o.label.empty()) continue;
-          break;
-        }
-        case EventKind::ToolCall: {
-          const std::string_view name = tmp.view(e.name), summary = tmp.view(e.summary);
-          std::string label = text::oneline(summary.empty() ? name : summary, 160);
-          if (e.tool_id) {
-            if (outline_calls_.size() > 50'000) outline_calls_.clear();
-            outline_calls_[e.tool_id] = std::string(name) + "\t" + label;
-            // A failure read before its call (history read backwards) gets
-            // its name now.
-            if (auto it = outline_orphans_.find(e.tool_id); it != outline_orphans_.end()) {
-              for (auto* list : {&into, &outline_})
-                for (auto& x : *list)
-                  if (x.offset == it->second && x.kind == 'x' && x.label.empty()) {
-                    x.label = label;
-                    x.detail = std::string(name) + " failed";
-                  }
-              outline_orphans_.erase(it);
-            }
-          }
-          if (classify_tool(name, summary, nullptr, nullptr) != ToolKind::Edit) continue;
-          o.kind = 'e';
-          o.label = std::move(label);
-          o.detail = std::string(name);
-          break;
-        }
-        case EventKind::ToolResult: {
-          if (e.ok) continue;
-          o.kind = 'x';
-          if (auto it = outline_calls_.find(e.tool_id); it != outline_calls_.end()) {
-            const size_t tab = it->second.find('\t');
-            o.label = it->second.substr(tab + 1);
-            o.detail = it->second.substr(0, tab) + " failed";
-          } else {
-            outline_orphans_[e.tool_id] = at;
-          }
-          break;
-        }
-        case EventKind::Question: {
-          o.kind = 'q';
-          QuestionCard card;
-          parse_question_card(tmp.view(e.detail), card);
-          if (!card.questions.empty()) {
-            o.label = text::oneline(card.questions[0].text, 200);
-            o.detail = card.questions[0].header;
-          }
-          if (o.label.empty()) o.label = text::oneline(tmp.view(e.summary).empty() ? tmp.view(e.name) : tmp.view(e.summary), 200);
-          if (o.detail.empty()) o.detail = "question";
-          break;
-        }
-        case EventKind::Notice: {
-          o.kind = 'n';
-          o.label = text::oneline(tmp.view(e.text), 200);
-          if (o.label.empty()) continue;
-          break;
-        }
-        default: continue;
-      }
-      into.push_back(std::move(o));
-    }
-  }
-}
-
-bool ChatRenderer::outline(std::vector<OutlineEntry>& out, int budget_ms) {
-  out.clear();
-  if (!file_.is_open() || !adapter_) return true;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
-  // Line numbers are only stable once the index covers the file; indexing is
-  // a newline scan, far cheaper than the parsing below.
-  index_back_to(0);
-  const size_t n = file_.line_count();
-  if (n == 0) return true;
-  auto first_at = [&](uint64_t byte) {  // the first line starting at or after `byte`
-    size_t i = file_.line_at_byte(size_t(byte));
-    while (i < n && file_.line_offset(i) < byte) i++;
-    return i;
-  };
-  const uint64_t end = file_.line_offset(n - 1) + file_.line(n - 1).size() + 1;
-  if (outline_lo_ == UINT64_MAX) outline_lo_ = outline_hi_ = end;
-  // What was written since the last look.
-  if (outline_hi_ < end) {
-    outline_scan(first_at(outline_hi_), n, outline_);
-    outline_hi_ = end;
-  }
-  // Then older history, a slab at a time, newest slab first.
-  constexpr size_t kSlab = 2000;
-  while (outline_lo_ > 0 && std::chrono::steady_clock::now() < deadline) {
-    const size_t e = first_at(outline_lo_);
-    const size_t a = e > kSlab ? e - kSlab : 0;
-    std::vector<OutlineEntry> older;
-    outline_scan(a, e, older);
-    outline_.insert(outline_.begin(), std::make_move_iterator(older.begin()), std::make_move_iterator(older.end()));
-    outline_lo_ = a == 0 ? 0 : file_.line_offset(a);
-  }
-  out = outline_;
-  for (auto& o : out)
-    if (o.kind == 'x' && o.label.empty()) {
-      o.label = "a tool call";
-      o.detail = "failed";
-    }
-  return outline_lo_ == 0;
-}
-
-bool ChatRenderer::user_text_at(uint64_t offset, std::string* out) {
-  if (!file_.is_open() || !adapter_) return false;
-  index_back_to(size_t(offset));
-  const size_t n = file_.line_count();
-  if (n == 0) return false;
-  size_t i = file_.line_at_byte(size_t(offset));
-  while (i < n && file_.line_offset(i) < offset) i++;
-  if (i >= n) return false;
-  Arena tmp;
-  std::vector<Event> evs;
-  adapter_->parse(file_.line(i), tmp, evs);
-  for (const Event& e : evs) {
-    if (e.kind != EventKind::User) continue;
-    std::string t(tmp.view(e.text));
-    while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ')) t.pop_back();
-    if (t.empty()) return false;
-    *out = std::move(t);
-    return true;
-  }
-  return false;
-}
-
 uint64_t ChatRenderer::view_offset() const {
-  if (!file_.is_open() || file_.line_count() == 0) return 0;
+  if (!conv_.file().is_open() || conv_.file().line_count() == 0) return 0;
   const uint32_t line = viewport_line(last_h_);
-  return file_.line_offset(std::min<size_t>(line, file_.line_count() - 1));
+  return conv_.file().line_offset(std::min<size_t>(line, conv_.file().line_count() - 1));
 }
 
 void ChatRenderer::seek_fraction(double f) {
-  if (!file_.is_open() || file_.size_bytes() == 0) return;
+  if (!conv_.file().is_open() || conv_.file().size_bytes() == 0) return;
   f = std::clamp(f, 0.0, 1.0);
-  const size_t target = size_t(f * double(file_.size_bytes()));
-  index_back_to(target);
-  reanchor(file_.line_at_byte(target) + 1);
+  const size_t target = size_t(f * double(conv_.file().size_bytes()));
+  conv_.index_back_to(target);
+  reanchor(conv_.file().line_at_byte(target) + 1);
 }
 
 void ChatRenderer::set_find_query(std::string q) {
@@ -1938,22 +1497,22 @@ void ChatRenderer::reveal(uint64_t offset, std::string query) {
 }
 
 void ChatRenderer::compute_matches(const Filters& f) {
-  index_back_to(0);
+  conv_.index_back_to(0);
   find_lines_.clear();
   find_tools_.clear();
   Arena tmp;
   std::vector<Event> evs;
   const SearchScope scope{f.show_thinking(), f.show_tools(), f.show_meta()};
-  const size_t n = file_.line_count();
+  const size_t n = conv_.file().line_count();
   constexpr size_t kSlab = 4096;
   for (size_t i = 0; i < n; i++) {
-    if (i % kSlab == 0) file_.will_read(i, std::min(n, i + kSlab));
-    const std::string_view line = file_.line(i);
+    if (i % kSlab == 0) conv_.file().will_read(i, std::min(n, i + kSlab));
+    const std::string_view line = conv_.file().line(i);
     // The raw line first: most lines are rejected by one scan, unparsed.
     if (text::find_folded(line, find_fold_) == std::string_view::npos) continue;
     tmp.clear();
     evs.clear();
-    adapter_->parse(line, tmp, evs);
+    conv_.adapter()->parse(line, tmp, evs);
     for (const Event& e : evs) {
       if (!in_scope(e.kind, scope)) continue;
       const auto has = [&](Str s) {
@@ -1975,15 +1534,15 @@ void ChatRenderer::compute_matches(const Filters& f) {
 }
 
 uint32_t ChatRenderer::viewport_line(int h) const {
-  if (rows_.empty()) return uint32_t(parsed_to_);
+  if (rows_.empty()) return uint32_t(conv_.parsed_to());
   const int total = int(rows_.size());
   const int first = std::max(0, total - h - scroll_);
   return rows_[size_t(std::min(total - 1, first + h / 2))].src_line;
 }
 
 void ChatRenderer::show_line(uint32_t line, int w, int h, const Filters& f) {
-  if (line < parsed_from_ || line >= parsed_to_)
-    reanchor(std::min<size_t>(size_t(line) + 40, file_.line_count()));
+  if (line < conv_.parsed_from() || line >= conv_.parsed_to())
+    reanchor(std::min<size_t>(size_t(line) + 40, conv_.file().line_count()));
   // Lay out older rows until the line's first row is in, or nothing is left.
   size_t need = size_t(h);
   for (int guard = 0; guard < 64; guard++) {
@@ -2017,8 +1576,8 @@ void ChatRenderer::resolve_moves(int w, int h, const Filters& f) {
     // and the next step goes on from this one. Counting indexes the whole
     // file, which renumbers lines: the line is looked up only after it.
     if (!find_fold_.empty()) compute_matches(f);
-    else index_back_to(byte);
-    find_line_ = uint32_t(file_.line_at_byte(byte));
+    else conv_.index_back_to(byte);
+    find_line_ = uint32_t(conv_.file().line_at_byte(byte));
     if (!find_fold_.empty()) {
       const auto it = std::lower_bound(find_lines_.begin(), find_lines_.end(), find_line_);
       find_cur_ = it != find_lines_.end() && *it == find_line_ ? int(it - find_lines_.begin()) : -1;
@@ -2030,7 +1589,7 @@ void ChatRenderer::resolve_moves(int w, int h, const Filters& f) {
   if (pending_find_) {
     const int dir = pending_find_;
     pending_find_ = 0;
-    if (!find_done_ || find_upto_ != file_.line_count()) {
+    if (!find_done_ || find_upto_ != conv_.file().line_count()) {
       const uint32_t keep = find_cur_ >= 0 ? find_lines_[size_t(find_cur_)] : UINT32_MAX;
       compute_matches(f);
       find_cur_ = -1;
@@ -2106,11 +1665,11 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
   last_h_ = p.height();
   p.clear(Style{th.text, th.panel});
 
-  if (!file_.is_open()) {
+  if (!conv_.file().is_open()) {
     p.text(1, 0, "no transcript yet", Style{th.dim, th.panel});
     return;
   }
-  if (!adapter_) {
+  if (!conv_.adapter()) {
     p.text(1, 0, "no adapter for this agent — raw view only", Style{th.dim, th.panel});
     return;
   }
@@ -2137,7 +1696,7 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
   }
   if (reload_) {
     reload_ = false;
-    reanchor(parsed_to_);
+    reanchor(conv_.parsed_to());
   }
   if (relayout_) {
     relayout_ = false;
@@ -2318,14 +1877,14 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
   // Position is reported against the file, not against the parsed window. With
   // tail-first indexing the window is a sliver of a large transcript, and a bar
   // measured against it claims you are at the top when you are at the end.
-  const bool fits = file_.complete() && parsed_from_ == 0 &&
-                    parsed_to_ == file_.line_count() && total <= p.height();
-  if (!fits && p.width() > 2 && !rows_.empty() && file_.size_bytes() > 0) {
-    const size_t bytes = file_.size_bytes();
+  const bool fits = conv_.file().complete() && conv_.parsed_from() == 0 &&
+                    conv_.parsed_to() == conv_.file().line_count() && total <= p.height();
+  if (!fits && p.width() > 2 && !rows_.empty() && conv_.file().size_bytes() > 0) {
+    const size_t bytes = conv_.file().size_bytes();
     const uint32_t top_line = rows_[size_t(first)].src_line;
     const uint32_t bot_line = rows_[size_t(std::min(total - 1, first + p.height() - 1))].src_line;
-    const double a = double(file_.line_offset(top_line)) / double(bytes);
-    const double b = double(file_.line_offset(size_t(bot_line) + 1)) / double(bytes);
+    const double a = double(conv_.file().line_offset(top_line)) / double(bytes);
+    const double b = double(conv_.file().line_offset(size_t(bot_line) + 1)) / double(bytes);
 
     const int h = p.height();
     const int bar_h = std::max(1, int((b - a) * h + 0.5));
@@ -2364,11 +1923,11 @@ void ChatRenderer::render_chips(Painter& p, const Theme& th, std::vector<Chip>& 
   // A background of its own, not the chat's: this strip is controls, not
   // conversation, and the two must never read as one continuous block.
   p.clear(Style{th.dim, th.strip_bg});
-  if (state_.fields.empty()) return;
+  if (conv_.state().fields.empty()) return;
 
   int x = 1;
-  for (size_t i = 0; i < state_.fields.size(); i++) {
-    const StateField& f = state_.fields[i];
+  for (size_t i = 0; i < conv_.state().fields.size(); i++) {
+    const StateField& f = conv_.state().fields[i];
     const std::string_view value =
         f.value.empty() ? std::string_view("?") : short_value(f.key, f.value);
 
@@ -2542,10 +2101,10 @@ bool ChatRenderer::on_action(const std::string& a, Filters& f, std::string* copy
     // clipboard full of hard-wrapped fragments is useless.
     if (copy_out) {
       copy_out->clear();
-      for (const auto& e : events_) {
+      for (const auto& e : conv_.events()) {
         if (e.src_line != menu_line_ || e.bare) continue;
         if (!copy_out->empty()) copy_out->push_back('\n');
-        copy_out->append(arena_.view(e.text.empty() ? e.summary : e.text));
+        copy_out->append(conv_.arena().view(e.text.empty() ? e.summary : e.text));
       }
     }
     return true;
@@ -2559,7 +2118,7 @@ bool ChatRenderer::on_action(const std::string& a, Filters& f, std::string* copy
     return true;
   }
   if (a == "expand_all") {
-    for (const auto& e : events_)
+    for (const auto& e : conv_.events())
       if (e.kind == EventKind::ToolCall && e.tool_id) expanded_.push_back(e.tool_id);
     std::sort(expanded_.begin(), expanded_.end());
     expanded_.erase(std::unique(expanded_.begin(), expanded_.end()), expanded_.end());
