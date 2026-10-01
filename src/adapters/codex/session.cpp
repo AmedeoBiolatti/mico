@@ -10,7 +10,6 @@
 #include "adapters/cmdline.h"
 #include "base/fs.h"
 #include "base/json.h"
-#include "vt/vt.h"
 
 namespace mico {
 namespace {

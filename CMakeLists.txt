@@ -66,10 +66,13 @@ add_library(mico_adapters STATIC
   src/adapters/adapter.cpp
   src/adapters/cmdline.cpp
   src/adapters/registry.cpp
+  src/adapters/screen.cpp
   src/adapters/claude/transcript.cpp
   src/adapters/claude/session.cpp
+  src/adapters/claude/screen.cpp
   src/adapters/codex/transcript.cpp
   src/adapters/codex/session.cpp
+  src/adapters/codex/screen.cpp
   src/adapters/pi/transcript.cpp
   src/adapters/pi/session.cpp
 )

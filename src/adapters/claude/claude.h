@@ -1,5 +1,6 @@
 #pragma once
 #include "adapters/adapter.h"
+#include "adapters/screen.h"
 
 namespace mico {
 
@@ -22,7 +23,40 @@ class ClaudeAdapter final : public Adapter {
   bool continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const override;
   bool find_transcript(const TranscriptQuery& q, FoundTranscript& out) const override;
   bool busy(const Liveness& l) const override;
+  bool awaits_input(const Vt& vt) const override;
   std::string startup_answer(const Vt& vt, bool* confirms) const override;
+  bool startup_prompt(const Vt& vt) const override;
+
+  // screen.cpp
+  bool permission_prompt(const Vt& vt, PermissionPrompt& out) const override;
+  bool side_panel(const Vt& vt, BtwPanel& out) const override;
+  bool compacting(const Vt& vt) const override;
+  std::string screen_reply(const Vt& vt) const override;
+  MenuKeys menu_keys() const override;
 };
+
+// Reading its screen (screen.cpp).
+
+// Claude's current working footer, excluding ordinary terminal redraws,
+// completion summaries and old status lines in scrollback.
+bool screen_shows_claude_activity(const Vt& vt);
+// The text of Claude's live spinner row ("✻ Compacting conversation… (12s)"),
+// or empty when it shows none. What Claude says it is doing, in its words.
+std::string claude_activity_line(const Vt& vt);
+
+// Claude's permission dialog; see PermissionPrompt.
+bool parse_permission_prompt(const Vt& vt, PermissionPrompt& out);
+
+// True when the screen is Claude's first-run "do you trust this folder"
+// dialog specifically — a prompt mico can answer on the user's behalf, since
+// they explicitly added the folder to the tracked list.
+bool screen_is_trust_prompt(const Vt& vt);
+// Down-arrow presses (negative: up) from the dialog's cursor to its "Yes, I
+// trust" choice, or kNoTrustMove when either cannot be found on screen.
+constexpr int kNoTrustMove = -1000;
+int trust_prompt_moves(const Vt& vt);
+
+// Claude's side-question panel; see BtwPanel.
+bool parse_btw_panel(const Vt& vt, BtwPanel& out);
 
 }  // namespace mico

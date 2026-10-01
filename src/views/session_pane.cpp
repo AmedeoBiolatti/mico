@@ -1,6 +1,7 @@
 #include <algorithm>
 
 #include "adapters/adapters.h"
+#include "adapters/screen.h"
 #include "core/settings.h"
 #include <cctype>
 #include <chrono>
@@ -74,7 +75,7 @@ class SessionPane final : public Pane {
     // Only a recognisable startup trust dialog may choose the terminal for
     // us. Ordinary prompt cursors and quoted questions also match needs_input;
     // using that heuristic here made sending a message switch views.
-    if (s_->transcript().empty() && screen_is_trust_prompt(s_->vt())) return View::Raw;
+    if (s_->transcript().empty() && s_->driver().startup_prompt(s_->vt())) return View::Raw;
     return View::Chat;
   }
   bool showing_raw() const { return effective_view() == View::Raw; }
@@ -111,7 +112,7 @@ class SessionPane final : public Pane {
       const auto now = std::chrono::steady_clock::now();
       if (s_->busy()) draft_until_ = now + std::chrono::seconds(3);
       chat_.set_draft(!showing_raw() && s_->adapter() && now < draft_until_
-                          ? screen_reply(s_->vt(), s_->agent())
+                          ? s_->driver().screen_reply(s_->vt())
                           : std::string());
     }
     // A question's answer stops once its result lands; a permission answer
@@ -308,11 +309,8 @@ class SessionPane final : public Pane {
   // exactly the choices the agent offers now, and disappears the moment it
   // closes the dialog, whoever answered it.
   void refresh_permission() {
-    const std::string& agent = s_->agent();
     perm_live_ = s_->spawned() && !s_->exited() && !chat_.has_pending_question() &&
-                 (agent == "claude"  ? parse_permission_prompt(s_->vt(), perm_)
-                  : agent == "codex" ? parse_codex_permission_prompt(s_->vt(), perm_)
-                                     : false);
+                 s_->driver().permission_prompt(s_->vt(), perm_);
     if (!perm_live_) {
       if (!s_->answer_sending()) perm_key_.clear();
       return;
@@ -362,8 +360,8 @@ class SessionPane final : public Pane {
   // transcript. It is read off the screen every frame and drawn at the foot
   // of the chat; while the box is empty, the panel's keys go through to it.
   void refresh_btw() {
-    btw_live_ = s_->agent() == "claude" && s_->spawned() && !s_->exited() && !perm_live_ &&
-                parse_btw_panel(s_->vt(), btw_);
+    btw_live_ = s_->spawned() && !s_->exited() && !perm_live_ &&
+                s_->driver().side_panel(s_->vt(), btw_);
     if (!btw_live_) {
       if (chat_.aside_shown()) chat_.set_aside({}, {}, {});
       return;
@@ -523,8 +521,8 @@ class SessionPane final : public Pane {
       recommended.push_back(q.recommended);
       options.push_back(int(q.options.size()));
     }
-    const auto steps = question_answer_steps(s_->agent(), multi, recommended, options, a.chosen);
-    if (s_->agent() == "claude") {
+    const auto steps = question_answer_steps(s_->driver(), multi, recommended, options, a.chosen);
+    if (s_->driver().menu_keys().paced) {
       if (!s_->send_answer(steps)) {
         app_->set_status("could not send answers — F2 to finish in the terminal");
         return;
@@ -1337,7 +1335,7 @@ class SessionPane final : public Pane {
   // Picks the emulator rows worth showing as the live tail: the last few
   // non-blank ones, with trailing blanks trimmed so the strip does not float.
   int live_range() const {
-    live_rows(s_->vt(), live_, 4, s_->agent());
+    s_->driver().live_rows(s_->vt(), live_, 4);
     return int(live_.size());
   }
 
@@ -1369,10 +1367,8 @@ class SessionPane final : public Pane {
     std::string_view name, summary;
     uint64_t tool_id = 0;
     // Compaction is its own kind of wait, and can run for minutes: say so,
-    // rather than "Thinking". Read from Claude's spinner row only; the rest of
-    // its screen is conversation and may mention compaction for other reasons.
-    const bool compacting = s_->agent() == "claude" &&
-        claude_activity_line(s_->vt()).find("Compacting") != std::string::npos;
+    // rather than "Thinking".
+    const bool compacting = s_->driver().compacting(s_->vt());
     if (compacting) {
       action = "Compacting\xE2\x80\xA6";
     } else if (chat_.in_flight_tool(&name, &summary, &tool_id)) {

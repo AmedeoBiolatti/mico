@@ -17,6 +17,15 @@ class PiFamilyAdapter : public Adapter {
   void parse(std::string_view raw, Arena& arena, std::vector<Event>& out) const override;
   void observe(std::string_view raw, SessionState& st) const override;
   void seed_state(SessionState& st) const override;
+
+  // pi and omp render a complete chat of their own into the terminal. Splicing
+  // its tail shows that rendering verbatim — a streaming reply, thinking, tool
+  // output — beside mico's own rendering of the same turn, which is exactly
+  // the duplication the chat view exists to avoid. Neither leads a completed
+  // message with a bullet and both park their footer below the editor, so no
+  // row is reliably "work in flight". Their chat view is transcript-only; the
+  // pane title and state chips already say the agent is working.
+  void live_rows(const Vt&, std::vector<int>& out, int) const override { out.clear(); }
 };
 
 // Sessions are ~/.pi/agent/sessions/<cwd-slug>/<timestamp>_<id>.jsonl, and pi

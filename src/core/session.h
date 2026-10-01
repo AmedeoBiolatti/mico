@@ -128,6 +128,9 @@ class LiveSession {
   bool forked() const { return forked_; }
   const std::string& transcript() const { return transcript_; }
   const Adapter* adapter() const { return adapter_; }
+  // The adapter, or the defaults for a command mico has none for: what to ask
+  // about the agent's screen and how it takes keys, whichever agent it is.
+  const Adapter& driver() const;
   bool exited() const { return pty_.exited(); }
   // True while the agent appears active. Claude uses its visible working
   // footer, Codex its status line and its transcript's turns; other agents
@@ -148,8 +151,6 @@ class LiveSession {
 
  private:
   void discover_transcript();
-  // The adapter, or the defaults for a command mico has none for.
-  const Adapter& driver() const;
   void follow_turns();
 
   Pty pty_;

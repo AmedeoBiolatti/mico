@@ -1,5 +1,6 @@
 #pragma once
 #include "adapters/adapter.h"
+#include "adapters/screen.h"
 
 namespace mico {
 
@@ -26,6 +27,28 @@ class CodexAdapter final : public Adapter {
   bool awaits_input(const Vt& vt) const override;
   bool tracks_turns() const override { return true; }
   int turn_marker(std::string_view head) const override;
+
+  // screen.cpp
+  bool permission_prompt(const Vt& vt, PermissionPrompt& out) const override;
+  std::string screen_reply(const Vt& vt) const override;
 };
+
+// Reading its screen (screen.cpp).
+
+// Codex's "Working (12s • esc to interrupt)" line, just above its input box.
+// Only there: the conversation higher up can quote the same words.
+bool screen_shows_codex_activity(const Vt& vt);
+// Codex's dialogs (a command to approve, the folder trust question) take the
+// place of its input box and lead the focused choice with its "›" and a
+// number. The input box leads with the same glyph and no number.
+bool screen_awaits_codex_input(const Vt& vt);
+
+// Codex's approval dialog in the same terms: "Would you like to run the
+// following command?" as the question, what it is about (the reason, "$ cmd")
+// as the heading, and the choices without the key each answers to ("(y)").
+// Codex offers no Tab to amend: a note goes as a message after the answer.
+// Also its "Implement this plan?" (plan = true), each choice with a
+// description beside it and possibly disabled.
+bool parse_codex_permission_prompt(const Vt& vt, PermissionPrompt& out);
 
 }  // namespace mico

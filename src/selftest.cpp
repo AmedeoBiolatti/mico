@@ -14,6 +14,9 @@
 #include <string>
 
 #include "adapters/adapters.h"
+#include "adapters/claude/claude.h"
+#include "adapters/codex/codex.h"
+#include "adapters/screen.h"
 #include "base/json.h"
 #include "adapters/adapter.h"
 #include "term/encoder.h"
@@ -1352,23 +1355,23 @@ int run_selftest() {
 
     // The keystrokes that drive the agent's own menu: walk the cursor to the
     // chosen option, then confirm, including each agent's Submit behaviour.
-    check_str(question_answer_keys("codex", {false}, {0}, {3}, {{0, 0, 1}}),
+    check_str(question_answer_keys(*adapter_for("codex"), {false}, {0}, {3}, {{0, 0, 1}}),
               "\x1b[B\x1b[B\r", "a single-select walks down then confirms");
-    check_str(question_answer_keys("codex", {false}, {1}, {3}, {{0, 1, 0}}), "\r",
+    check_str(question_answer_keys(*adapter_for("codex"), {false}, {1}, {3}, {{0, 1, 0}}), "\r",
               "the recommended option needs no movement");
-    check_str(question_answer_keys("claude", {false}, {0}, {2}, {{1, 0}}), "\r",
+    check_str(question_answer_keys(*adapter_for("claude"), {false}, {0}, {2}, {{1, 0}}), "\r",
               "claude submits a single choice without leaking an extra Enter");
-    check_str(question_answer_keys("claude", {true}, {0}, {3}, {{1, 0, 1}}),
+    check_str(question_answer_keys(*adapter_for("claude"), {true}, {0}, {3}, {{1, 0, 1}}),
               " \x1b[B\x1b[B \x1b[B\x1b[B\r\r",
               "claude multi-select reaches its Submit button after Other before confirming review");
-    check_str(question_answer_keys("claude", {false, false}, {1, 1}, {2, 2}, {{0, 1}, {1, 0}}),
+    check_str(question_answer_keys(*adapter_for("claude"), {false, false}, {1, 1}, {2, 2}, {{0, 1}, {1, 0}}),
               "\x1b[B\r\r\r", "claude starts each question on its first option, then confirms review");
-    check_str(question_answer_keys("omp", {true}, {0}, {3}, {{0, 1, 1}}),
+    check_str(question_answer_keys(*adapter_for("omp"), {true}, {0}, {3}, {{0, 1, 1}}),
               "\x1b[B \x1b[B \r", "a multi-select toggles each chosen option");
-    check_str(question_answer_keys("codex", {false, false}, {0, 1}, {2, 2},
+    check_str(question_answer_keys(*adapter_for("codex"), {false, false}, {0, 1}, {2, 2},
                                    {{1, 0}, {0, 1}}),
               "\r\r\r", "two questions confirm in turn then submit");
-    check_str(question_answer_keys("codex", {false, false}, {0, 1}, {2, 2},
+    check_str(question_answer_keys(*adapter_for("codex"), {false, false}, {0, 1}, {2, 2},
                                    {{0, 1}, {1, 0}}),
               "\x1b[B\r\x1b[A\r\r", "each question walks its own cursor");
   }
@@ -2358,7 +2361,7 @@ int run_selftest() {
       vt.resize(60, 16);
       vt.write(screen);
       std::vector<int> rows;
-      live_rows(vt, rows, 4, agent);
+      adapter_for(agent)->live_rows(vt, rows, 4);
       check(rows.empty(), "pi/omp contribute no live strip");
     }
     // Claude and Codex keep the generic scan.
@@ -2366,7 +2369,7 @@ int run_selftest() {
     vt.resize(60, 16);
     vt.write("thinking about it\r\ndoing something\r\n\r\n" + rule + "\r\n" + rule + "\r\n");
     std::vector<int> rows;
-    live_rows(vt, rows, 4, "claude");
+    claude_adapter().live_rows(vt, rows, 4);
     check(!rows.empty(), "claude still gets a live strip");
   }
 
@@ -2714,7 +2717,7 @@ int run_selftest() {
               "btw: the answer as markdown, its wrapping undone");
     check(!b.answering && b.hint.starts_with("\xE2\x87\xA7"), "btw: done, with its key line");
 
-    check(!screen_awaits_input(vt), "btw: the panel is not a prompt waiting on you");
+    check(!claude_adapter().awaits_input(vt), "btw: the panel is not a prompt waiting on you");
     vt = panel("      \xE2\x9C\xBD Answering\xE2\x80\xA6", "Esc to close");
     check(parse_btw_panel(vt, b) && b.answering && b.answer.empty(), "btw: answering");
 
@@ -2747,7 +2750,7 @@ int run_selftest() {
       Vt vt;
       vt.resize(60, 30);
       vt.write(screen);
-      return screen_reply(vt, agent);
+      return adapter_for(agent)->screen_reply(vt);
     };
     // Rows 1 and 3 are full enough that the next row's first word could not
     // have fit: the agent wrapped them.

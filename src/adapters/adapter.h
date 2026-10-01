@@ -29,6 +29,20 @@ inline void make_chart_event(Event& e, Arena& arena, std::string_view args_json)
 
 
 class Vt;
+struct PermissionPrompt;
+struct BtwPanel;
+
+// How an agent's multiple-choice menu answers to keys.
+struct MenuKeys {
+  // The cursor starts on the recommended option rather than the first.
+  bool starts_at_recommended = true;
+  // A multi-select ends in Next/Submit buttons, below the options and the
+  // Other field, and has a review screen even when it is the only question.
+  bool multi_buttons = false;
+  // Each key waits until the menu has redrawn from the one before: a React
+  // form drops keys that arrive while it renders.
+  bool paced = false;
+};
 
 // What is known when looking for a running session's transcript.
 struct TranscriptQuery {
@@ -144,6 +158,31 @@ class Adapter {
   // send, or empty when the screen shows none. `confirms` is set when that key
   // accepts it. Sent one at a time, each after the screen has settled.
   virtual std::string startup_answer(const Vt& vt, bool* confirms) const { return {}; }
+  // True while the screen shows such a dialog, answerable or not yet.
+  virtual bool startup_prompt(const Vt& vt) const { return false; }
+
+  // --- Reading a running session's screen ----------------------------------
+
+  // The permission dialog the agent shows now, read off its screen. False when
+  // it shows none.
+  virtual bool permission_prompt(const Vt& vt, PermissionPrompt& out) const { return false; }
+  // A panel whose content never reaches the transcript (claude's /btw), so the
+  // screen is the only place to read it. False when none is open.
+  virtual bool side_panel(const Vt& vt, BtwPanel& out) const { return false; }
+  // True while the agent compacts its context: a wait of its own, which can
+  // run for minutes.
+  virtual bool compacting(const Vt& vt) const { return false; }
+  // Up to `max` rows of work in progress to splice under the chat; see
+  // mico::live_rows(), which is the default.
+  virtual void live_rows(const Vt& vt, std::vector<int>& out, int max) const;
+  // The reply the agent is writing, read off its screen as markdown, before
+  // its transcript has it. Empty when there is none or it cannot be read.
+  virtual std::string screen_reply(const Vt& vt) const { return {}; }
+
+  // --- Answering ------------------------------------------------------------
+
+  // How the agent's question menus take keys.
+  virtual MenuKeys menu_keys() const { return {}; }
 };
 
 // Codex's optional question: the call returns `{"accepted":true}` at once and
@@ -205,44 +244,15 @@ inline bool build_question(Event& e, Arena& arena, const js::Value& input) {
 // Keystrokes that answer a question card by driving the agent's own menu:
 // for each question, walk its cursor to the chosen option (Space-toggling each
 // one for a multi-select) and confirm with Enter, which advances to the next
-// question. Claude's multi-select Enter toggles the current option: its
-// separate Next/Submit button comes after the options and the Other field.
-// Keep key events separate so a React form can render between state changes.
-inline std::vector<std::string> question_answer_steps(
-    std::string_view agent, const std::vector<bool>& multi,
+// question. Keep key events separate so a paced menu can render between them.
+std::vector<std::string> question_answer_steps(
+    const Adapter& agent, const std::vector<bool>& multi,
     const std::vector<int>& recommended, const std::vector<int>& options,
-    const std::vector<std::vector<uint8_t>>& chosen) {
-  const size_t nq = std::min({multi.size(), recommended.size(), options.size(), chosen.size()});
-  std::vector<std::string> keys;
-  for (size_t qi = 0; qi < nq; qi++) {
-    int cur = agent == "claude" ? 0 : std::clamp(recommended[qi], 0, std::max(0, options[qi] - 1));
-    auto move_to = [&](int to) {
-      while (cur < to) { keys.emplace_back("\x1b[B"); cur++; }
-      while (cur > to) { keys.emplace_back("\x1b[A"); cur--; }
-    };
-    if (multi[qi]) {
-      for (int i = 0; i < options[qi] && i < int(chosen[qi].size()); i++)
-        if (chosen[qi][size_t(i)]) { move_to(i); keys.emplace_back(" "); }
-      if (agent == "claude") move_to(options[qi] + 1);
-    } else {
-      for (int i = 0; i < options[qi] && i < int(chosen[qi].size()); i++)
-        if (chosen[qi][size_t(i)]) { move_to(i); break; }
-    }
-    keys.emplace_back("\r");  // confirm and advance
-  }
-  // Claude now submits a single single-select immediately. Sending a second
-  // Enter there leaks into the next prompt. Multi-select still has review.
-  if (nq > 1 || (agent == "claude" && nq == 1 && multi[0])) keys.emplace_back("\r");
-  return keys;
-}
+    const std::vector<std::vector<uint8_t>>& chosen);
 
-inline std::string question_answer_keys(
-    std::string_view agent, const std::vector<bool>& multi,
+std::string question_answer_keys(
+    const Adapter& agent, const std::vector<bool>& multi,
     const std::vector<int>& recommended, const std::vector<int>& options,
-    const std::vector<std::vector<uint8_t>>& chosen) {
-  std::string keys;
-  for (const auto& step : question_answer_steps(agent, multi, recommended, options, chosen)) keys += step;
-  return keys;
-}
+    const std::vector<std::vector<uint8_t>>& chosen);
 
 }  // namespace mico

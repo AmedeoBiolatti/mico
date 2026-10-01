@@ -3,7 +3,6 @@
 #include "adapters/cmdline.h"
 #include "base/fs.h"
 #include "base/uuid.h"
-#include "vt/vt.h"
 
 namespace mico {
 
@@ -98,6 +97,8 @@ bool ClaudeAdapter::busy(const Liveness& l) const {
 // can land as a bare Enter. So one step at a time, each judged from the
 // screen: an arrow while the cursor is elsewhere, and Enter only once the
 // screen shows it on "Yes".
+bool ClaudeAdapter::startup_prompt(const Vt& vt) const { return screen_is_trust_prompt(vt); }
+
 std::string ClaudeAdapter::startup_answer(const Vt& vt, bool* confirms) const {
   if (!screen_is_trust_prompt(vt)) return {};
   const int moves = trust_prompt_moves(vt);
