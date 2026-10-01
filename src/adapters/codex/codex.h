@@ -46,6 +46,10 @@ class CodexAdapter final : public Adapter {
   // screen.cpp
   bool permission_prompt(const Vt& vt, PermissionPrompt& out) const override;
   std::string screen_reply(const Vt& vt) const override;
+
+  // commands.cpp
+  std::vector<SlashCommand> builtin_commands() const override;
+  ChipControl chip_control(std::string_view key) const override;
 };
 
 // Reading its screen (screen.cpp).

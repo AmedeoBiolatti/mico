@@ -18,6 +18,15 @@ bool Adapter::busy(const Liveness& l) const {
 
 bool Adapter::awaits_input(const Vt& vt) const { return screen_awaits_input(vt); }
 
+ChipControl Adapter::chip_control(std::string_view key) const {
+  // The agents' own pickers, by the names most of them use.
+  ChipControl c;
+  if (key == "model" || key == "effort") c.picker = "/model";
+  else if (key == "mode" || key == "perm") c.picker = "/permissions";
+  else if (key == "approval") c.picker = "/approvals";
+  return c;
+}
+
 void Adapter::live_rows(const Vt& vt, std::vector<int>& out, int max) const {
   mico::live_rows(vt, out, max);
 }

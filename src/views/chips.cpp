@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 
+#include "adapters/adapters.h"
 #include "core/models.h"
 #include "model/state.h"
 #include "base/text.h"
@@ -11,53 +12,31 @@ namespace mico {
 namespace {
 
 // Values mico offers directly for a chip, and the line it sends the agent to
-// select one. Empty list -> fall back to opening the agent's own picker.
+// select one. Empty list -> fall back to the ring or the agent's own picker.
 struct ChipSpec {
   std::vector<std::string> values;
   std::string cmd_prefix;  // e.g. "/model " ; the chosen value is appended
 };
 
-ChipSpec spec_for(const std::string& agent, const std::string& key) {
-  if (agent == "claude") {
-    // The model list is whatever the probe read out of claude's own picker —
-    // never a list written down here, which would go stale the day a model
-    // ships. Empty until a probe lands, and then the menu offers claude's
-    // picker instead.
-    if (key == "model") {
-      ChipSpec spec;
-      spec.cmd_prefix = "/model ";
-      for (const auto& m : known_models(agent)) spec.values.push_back(m.value);
-      return spec;
-    }
-    if (key == "effort") {
-      // The levels claude's own initialize answer reported, when it has.
-      ChipSpec spec;
-      spec.cmd_prefix = "/effort ";
-      spec.values = known_efforts(agent);
-      if (spec.values.empty()) spec.values = {"low", "medium", "high"};
-      return spec;
-    }
-  } else if (agent == "codex") {
-    if (key == "effort") return {{"low", "medium", "high"}, "/model "};
-    if (key == "approval")
-      return {{"untrusted", "on-request", "on-failure", "never"}, "/approvals "};
-  }
-  return {};
+const Adapter& adapter_of(const std::string& agent) {
+  const Adapter* a = adapter_for(agent);
+  return a ? *a : plain_adapter();
 }
 
-// The bare picker command, for chips mico does not enumerate itself.
-std::string picker_cmd(const std::string& agent, const std::string& key) {
-  if (agent == "pi" || agent == "omp") {
-    // Both open a fuzzy-search picker rather than taking a value inline, so
-    // mico cannot offer a one-shot set the way it does for claude/codex.
-    if (key == "model") return "/model";
-    if (key == "effort") return "/thinking";
-    return {};
+ChipSpec spec_for(const std::string& agent, const ChipControl& c) {
+  ChipSpec spec;
+  spec.cmd_prefix = c.set_prefix;
+  switch (c.source) {
+    case ChipControl::Source::Fixed: spec.values = c.values; break;
+    case ChipControl::Source::Models:
+      for (const auto& m : known_models(agent)) spec.values.push_back(m.value);
+      break;
+    case ChipControl::Source::Efforts:
+      spec.values = known_efforts(agent);
+      if (spec.values.empty()) spec.values = c.values;
+      break;
   }
-  if (key == "model" || key == "effort") return "/model";
-  if (key == "mode" || key == "perm") return "/permissions";
-  if (key == "approval") return "/approvals";
-  return {};
+  return spec;
 }
 
 }  // namespace
@@ -87,7 +66,8 @@ std::vector<PickItem> chip_pick_items(const SessionState& st, const std::string&
   if (cursor) *cursor = 0;
 
   std::vector<PickItem> items;
-  const ChipSpec spec = spec_for(agent, key);
+  const ChipControl control = adapter_of(agent).chip_control(key);
+  const ChipSpec spec = spec_for(agent, control);
   if (!spec.values.empty() && live) {
     for (const auto& v : spec.values) {
       // Show the readable form; the action still carries the exact value. A
@@ -117,28 +97,26 @@ std::vector<PickItem> chip_pick_items(const SessionState& st, const std::string&
       if (it.checked && cursor) *cursor = int(items.size());
       items.push_back(std::move(it));
     }
-  } else if (agent == "claude" && (key == "mode" || key == "perm")) {
-    // Claude has no one-shot command for the permission mode; Shift+Tab walks a
-    // fixed ring. We know the current state, so each entry sends exactly enough
-    // presses to land on it — and "plan" is reachable directly.
-    static const char* kRing[] = {"default", "acceptEdits", "plan"};
-    static const char* kNice[] = {"default", "accept edits", "plan mode"};
+  } else if (!control.ring.empty()) {
+    // A ring walked with one key: knowing the current state, each entry sends
+    // exactly enough presses to land on it.
+    const int n = int(control.ring.size());
     int cur = 0;
     if (value)
-      for (int i = 0; i < 3; i++)
-        if (*value == kRing[i]) cur = i;
-    for (int i = 0; i < 3; i++) {
+      for (int i = 0; i < n; i++)
+        if (*value == control.ring[size_t(i)].first) cur = i;
+    for (int i = 0; i < n; i++) {
       std::string keys;
-      for (int step = (i - cur + 3) % 3; step > 0; step--) keys += "\x1b[Z";
+      for (int step = (i - cur + n) % n; step > 0; step--) keys += control.ring_key;
       PickItem it;
-      it.label = kNice[i];
-      it.id = "chipmode:" + key + "|" + kRing[i] + "|" + keys;
+      it.label = control.ring[size_t(i)].second;
+      it.id = "chipmode:" + key + "|" + control.ring[size_t(i)].first + "|" + keys;
       it.enabled = live;
       it.checked = i == cur;
       if (it.checked && cursor) *cursor = int(items.size());
       items.push_back(std::move(it));
     }
-  } else if (const std::string cmd = picker_cmd(agent, key); !cmd.empty()) {
+  } else if (const std::string& cmd = control.picker; !cmd.empty()) {
     PickItem it;
     it.label = "open " + cmd + " in the agent";
     it.id = "chipcmd:" + cmd;

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "model/changes.h"
+#include "model/commands.h"
 #include "model/event.h"
 #include "model/launch.h"
 #include "model/session_ref.h"
@@ -224,6 +225,33 @@ class Adapter {
   // The reply the agent is writing, read off its screen as markdown, before
   // its transcript has it. Empty when there is none or it cannot be read.
   virtual std::string screen_reply(const Vt& vt) const { return {}; }
+
+  // --- Commands, models and settings -----------------------------------------
+
+  // The commands built into the agent, as its own "/" menu lists them.
+  virtual std::vector<SlashCommand> builtin_commands() const { return {}; }
+  // Commands the user or the project defined in files (prompt templates,
+  // skills). `home` is passed so tests can point it elsewhere.
+  virtual void file_commands(const std::string& cwd, const std::string& home,
+                             std::vector<SlashCommand>& out) const {}
+
+  // A command line that answers command_probe_request(), written to its
+  // stdin, with what the agent offers now: commands, and perhaps models.
+  // Empty when the agent cannot be asked.
+  virtual std::vector<std::string> command_probe_argv() const { return {}; }
+  virtual std::string command_probe_request() const { return {}; }
+  // Reads the probe's answer out of what it has written so far. False until
+  // a complete one is there.
+  virtual bool read_command_probe(std::string_view output, CommandProbeAnswer& out) const { return false; }
+
+  // Keys that open the agent's model picker in a fresh session, for an agent
+  // that has no other way to say which models it offers; empty for none.
+  virtual std::string model_picker_command() const { return {}; }
+  // The models that picker shows, read off the screen.
+  virtual std::vector<ModelOption> read_model_picker(const Vt& vt) const { return {}; }
+
+  // How mico sets the state field `key` (see seed_state()).
+  virtual ChipControl chip_control(std::string_view key) const;
 
   // --- Answering ------------------------------------------------------------
 

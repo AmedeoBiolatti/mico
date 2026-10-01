@@ -19,9 +19,12 @@ void for_each_pi_family_session(const std::string& root,
   });
 }
 
+std::string PiFamilyAdapter::sessions_dir() const {
+  return fs::home() + "/" + std::string(dot_dir()) + "/agent/sessions";
+}
+
 // --- pi ----------------------------------------------------------------------
 
-std::string PiAdapter::sessions_dir() const { return fs::home() + "/.pi/agent/sessions"; }
 
 void PiAdapter::prepare(Launch& l, const LaunchExtras&) const {
   if (l.argv.empty()) {
@@ -65,7 +68,6 @@ bool PiAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& out) 
 
 // --- omp ---------------------------------------------------------------------
 
-std::string OmpAdapter::sessions_dir() const { return fs::home() + "/.omp/agent/sessions"; }
 
 bool OmpAdapter::continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const {
   // omp has no fork flag of its own; resuming is all it offers.

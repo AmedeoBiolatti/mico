@@ -50,7 +50,27 @@ class ClaudeAdapter final : public Adapter {
   bool compacting(const Vt& vt) const override;
   std::string screen_reply(const Vt& vt) const override;
   MenuKeys menu_keys() const override;
+
+  // commands.cpp
+  std::vector<SlashCommand> builtin_commands() const override;
+  std::vector<std::string> command_probe_argv() const override;
+  std::string command_probe_request() const override;
+  bool read_command_probe(std::string_view output, CommandProbeAnswer& out) const override;
+  std::string model_picker_command() const override;
+  std::vector<ModelOption> read_model_picker(const Vt& vt) const override;
+  ChipControl chip_control(std::string_view key) const override;
 };
+
+// Claude's answer to an SDK "initialize" request — the line holding the
+// control_response — as commands; and the same answer's model catalog: what
+// "/model <value>" takes, the shown name, the description, and (in `efforts`)
+// the union of the effort levels the models report, in claude's order.
+std::vector<SlashCommand> parse_claude_commands(std::string_view line);
+std::vector<ModelOption> parse_claude_models(std::string_view line,
+                                             std::vector<std::string>* efforts = nullptr);
+// The entries of Claude's /model picker, read off a rendered screen. The part
+// most likely to drift when the picker is restyled.
+std::vector<ModelOption> parse_model_picker(const Vt& vt);
 
 // Reading its screen (screen.cpp).
 

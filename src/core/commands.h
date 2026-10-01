@@ -7,32 +7,18 @@
 #include <string_view>
 #include <vector>
 
+#include "adapters/adapter.h"
 #include "core/models.h"
+#include "model/commands.h"
 
 namespace mico {
 
-// One entry of an agent's "/" menu.
-struct SlashCommand {
-  std::string name;         // without the slash: "compact", "frontend:review"
-  std::string description;  // one line
-  std::string hint;         // the arguments it takes: "<model>", "[name]"
-};
-
-// The commands built into `agent`, as its own menu lists them. For claude this
-// is only the interactive set: everything else comes from asking claude.
+// The commands built into `agent`, as its own menu lists them; see
+// Adapter::builtin_commands().
 std::vector<SlashCommand> builtin_commands(std::string_view agent);
 
-// Parses claude's answer to an SDK "initialize" request — the line holding
-// the control_response — into commands. Exposed for the selftest.
-std::vector<SlashCommand> parse_claude_commands(std::string_view line);
-// The same answer's model catalog: what "/model <value>" takes, the shown
-// name, the description, and (in `efforts`) the union of the effort levels
-// the models report, in claude's order.
-std::vector<ModelOption> parse_claude_models(std::string_view line,
-                                             std::vector<std::string>* efforts = nullptr);
-
-// Custom commands kept as files: pi's prompt templates and skills. `home` is
-// the user's home directory, passed so the selftest can point it elsewhere.
+// Custom commands kept as files (Adapter::file_commands()). `home` is the
+// user's home directory, passed so the selftest can point it elsewhere.
 std::vector<SlashCommand> file_commands(std::string_view agent, const std::string& cwd,
                                         const std::string& home);
 
@@ -76,7 +62,7 @@ class CommandCatalog {
     int64_t probed_ms = -1;  // -1: never asked
     Probe probe;
   };
-  void start_probe(Entry& e, const std::string& cwd);
+  void start_probe(Entry& e, const Adapter& agent, const std::string& cwd);
   void end_probe(Entry& e);
   void rebuild(Entry& e, const std::string& agent, const std::string& cwd);
 

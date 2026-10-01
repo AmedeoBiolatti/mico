@@ -329,6 +329,33 @@ one small file rather than scraping two hundred rollouts, so the chat list shows
   identical to `claude`, the view would have added nothing. Density and the
   markdown renderer are the product.
 
+## Source layout
+
+Each directory under `src/` is one library, and each may use only the ones
+above it in this list; `tools/check_layers.py` (the `layers` test) fails on an
+`#include` that reaches the other way.
+
+| | |
+|---|---|
+| `base/` | text, JSON, paths, logging: nothing mico-specific |
+| `vt/` | the cell grid, the terminal emulator, key encoding |
+| `math/` | equation and image layout and rasterizing |
+| `model/` | mico's plain types: `Event`, `SessionRef`, `Launch`, changes, usage, commands |
+| `adapters/` | the `Adapter` interface, and one directory per agent |
+| `core/` | sessions, the store, the indexes: everything but drawing |
+| `term/` | the host terminal: output, input, kitty and sixel |
+| `views/`, `ui/` | the TUI |
+| `net/` | daemon and client |
+
+Everything mico knows about one agent is in its adapter (`adapters/adapter.h`):
+how to start, resume and fork it, where its transcripts are and how to read
+them, what its screen means, and how its menus take keys. Nothing outside
+`adapters/` asks which agent it is dealing with, so supporting another agent is
+a new `adapters/<agent>/` directory and one line in `adapters/registry.cpp`.
+The existing ones split it the same way: `transcript.cpp` (chat events),
+`session.cpp` (launch, discovery, liveness), `screen.cpp`, `list.cpp`,
+`changes.cpp`, `tools.cpp`, `usage.cpp`, `commands.cpp`.
+
 ## What the agent is running
 
 Under the chat is a strip of what the session reports about itself, read out of

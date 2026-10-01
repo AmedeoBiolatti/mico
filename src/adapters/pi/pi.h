@@ -32,8 +32,16 @@ class PiFamilyAdapter : public Adapter {
   // list.cpp
   void list_sessions(const std::function<void(SessionRef&&)>& add) const override;
 
+  // commands.cpp
+  void file_commands(const std::string& cwd, const std::string& home,
+                     std::vector<SlashCommand>& out) const override;
+  ChipControl chip_control(std::string_view key) const override;
+
+  // The agent's directory name, in the home directory (sessions, the user's
+  // prompts and skills) and in a project (the project's): ".pi", ".omp".
+  virtual std::string_view dot_dir() const = 0;
   // Where the agent keeps its sessions, one folder per working directory.
-  virtual std::string sessions_dir() const = 0;
+  std::string sessions_dir() const;
 
   // pi and omp render a complete chat of their own into the terminal. Splicing
   // its tail shows that rendering verbatim — a streaming reply, thinking, tool
@@ -51,7 +59,8 @@ class PiAdapter final : public PiFamilyAdapter {
  public:
   std::string_view id() const override { return "pi"; }
   std::string_view label() const override { return "Pi"; }
-  std::string sessions_dir() const override;
+  std::string_view dot_dir() const override { return ".pi"; }
+  std::vector<SlashCommand> builtin_commands() const override;
 
   // session.cpp
   void prepare(Launch& l, const LaunchExtras& x) const override;
@@ -66,7 +75,8 @@ class OmpAdapter final : public PiFamilyAdapter {
   std::string_view id() const override { return "omp"; }
   std::string_view name() const override { return "Oh My Pi"; }
   std::string_view label() const override { return "OMP"; }
-  std::string sessions_dir() const override;
+  std::string_view dot_dir() const override { return ".omp"; }
+  std::vector<SlashCommand> builtin_commands() const override;
 
   // session.cpp
   bool continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const override;

@@ -337,8 +337,8 @@ bool App::service() {
 
   if (!model_probe_.started()) {
     for (const auto& s : live_)
-      if (s->agent() == "claude" && !s->cwd().empty()) {
-        model_probe_.start("claude", s->cwd());
+      if (s->adapter() && !s->adapter()->model_picker_command().empty() && !s->cwd().empty()) {
+        model_probe_.start(*s->adapter(), s->cwd());
         break;
       }
   } else if (model_probe_.pump()) {
