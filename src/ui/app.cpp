@@ -32,8 +32,12 @@ const char* density_name(Density d) {
   }
 }
 
-App::App() {
-  store_.scan();
+App::App() : own_ws_(std::make_unique<Workspace>()), ws_(*own_ws_) {
+  load_layout();
+  build_layout();
+}
+
+App::App(Workspace& ws) : ws_(ws) {
   load_layout();
   build_layout();
 }
@@ -48,7 +52,7 @@ void App::build_layout() {
     }
   }
   std::erase_if(session_panes_, [&](const auto& entry) {
-    return std::none_of(live_.begin(), live_.end(),
+    return std::none_of(ws_.live().begin(), ws_.live().end(),
                         [&](const auto& s) { return s.get() == entry.first; });
   });
   // Sidebar: the tracked folders, then the unified chat list for the selected
@@ -63,14 +67,14 @@ void App::build_layout() {
   // selected — a live session's own view, or a read-only browse of a stored
   // transcript. Switching away leaves that selection as it was.
   std::unique_ptr<Node> main;
-  if (tab_ == 1) main = Node::leaf(make_usage_view(usage_));
-  else if (tab_ == 2) main = Node::leaf(make_search_view(search_));
-  else if (tab_ == 3) main = Node::leaf(make_tools_view(activity_));
-  else if (tab_ == 4) main = Node::leaf(make_diff_view(activity_, diff_));
+  if (tab_ == 1) main = Node::leaf(make_usage_view(ws_.usage()));
+  else if (tab_ == 2) main = Node::leaf(make_search_view(ws_.search()));
+  else if (tab_ == 3) main = Node::leaf(make_tools_view(ws_.activity()));
+  else if (tab_ == 4) main = Node::leaf(make_diff_view(ws_.activity(), diff_));
   else if (tab_ == 5) main = Node::leaf(make_settings_view());
   if (!main && selected_live_) {
     bool alive = false;
-    for (auto& s : live_)
+    for (auto& s : ws_.live())
       if (s.get() == selected_live_) alive = true;
     if (alive) {
       auto& pane = session_panes_[selected_live_];
@@ -145,12 +149,12 @@ void App::open_search(std::string query) {
 
 void App::open_at(const std::string& path, uint64_t offset, const std::string& query) {
   LiveSession* live = nullptr;
-  for (const auto& s : live_)
+  for (const auto& s : ws_.live())
     if (s->transcript() == path) live = s.get();
   if (live) {
     select_live(live);
   } else {
-    const auto& ps = store_.projects();
+    const auto& ps = ws_.store().projects();
     for (size_t p = 0; p < ps.size(); p++)
       for (size_t i = 0; i < ps[p].sessions.size(); i++)
         if (ps[p].sessions[i].path == path) force_select(int(p), int(i));
@@ -170,42 +174,28 @@ void App::show_tab(size_t i) {
 }
 
 std::string App::usable_cwd(const std::string& want) const {
-  auto usable = [](const std::string& d) {
-    struct stat st{};
-    return !d.empty() && stat(d.c_str(), &st) == 0 && S_ISDIR(st.st_mode) &&
-           access(d.c_str(), X_OK) == 0;
-  };
-  if (usable(want)) return want;
-  if (const Project* p = current_project(); p && usable(p->path)) return p->path;
-  for (const auto& f : store_.folders())
-    if (usable(f)) return f;
-  if (const char* h = getenv("HOME"); h && usable(h)) return h;
-  char buf[4096];
-  return getcwd(buf, sizeof buf) ? std::string(buf) : std::string(".");
+  const Project* p = current_project();
+  return ws_.usable_cwd(want, p ? p->path : std::string());
 }
 
 bool App::spawn_agent(const std::string& agent, const std::string& cwd) {
   show_tab(0);
-  const std::string dir = usable_cwd(cwd);
-  LiveSession::Launch l;
-  l.agent = agent;
-  l.cwd = dir;
-  auto s = std::make_unique<LiveSession>();
-  // Size is provisional; the pane resizes the pty on its first render.
-  if (!s->start(l)) {
-    set_status("failed to start " + agent);
+  const Project* pr = current_project();
+  const Workspace::Started r = ws_.start_agent(agent, cwd, pr ? pr->path : std::string());
+  if (!r.session) {
+    set_status(r.error);
     return false;
   }
-  focus_after_build_ = s.get();
-  select_live(focus_after_build_);
+  focus_after_build_ = r.session;
+  select_live(r.session);
   // Started from a sub-project: filed under it once its id is known.
-  if (const SubProject* sp = current_sub(); sp && dir == sp->path && current_project())
-    pending_subs_[s.get()] = {current_project()->path, sp->name};
-  live_.push_back(std::move(s));
+  if (const SubProject* sp = current_sub(); sp && r.session->cwd() == sp->path && pr)
+    ws_.file_under(r.session, pr->path, sp->name);
   layout_dirty_ = true;
   close_menu();
-  set_status(dir == cwd ? "started " + agent + " in " + dir
-                        : "folder unavailable \xE2\x80\x94 started " + agent + " in " + dir);
+  const std::string& dir = r.session->cwd();
+  set_status(!r.moved ? "started " + agent + " in " + dir
+                      : "folder unavailable \xE2\x80\x94 started " + agent + " in " + dir);
   return true;
 }
 
@@ -213,86 +203,50 @@ bool App::spawn_continuation(const std::string& agent, const std::string& sessio
                              const std::string& cwd, bool fork) {
   if (session_id.empty()) return false;
   show_tab(0);
-  if (!fork) {
-    for (const auto& s : live_) {
-      if (s->agent() != agent || s->exited() ||
-          (s->session_id() != session_id && (s->forked() || s->origin() != session_id))) continue;
-      select_live(s.get());
-      focus_after_build_ = s.get();
-      focus_session(s.get());
+  const Project* pr = current_project();
+  const Workspace::Started r = ws_.continue_session(agent, session_id, cwd, fork, pr ? pr->path : std::string());
+  if (!r.note.empty()) set_status(r.note);
+  using How = Workspace::Started::How;
+  switch (r.how) {
+    case How::Failed:
+      if (!r.error.empty()) set_status(r.error);
+      return false;
+    case How::Running:
+      select_live(r.session);
+      focus_after_build_ = r.session;
+      focus_session(r.session);
       close_menu();
       set_status("focused the running chat");
       return true;
-    }
-  }
-
-  // The recorded folder can be gone (an unmounted drive, a deleted checkout).
-  // Resuming in it would only make a dead pane; run somewhere that exists.
-  const std::string dir = usable_cwd(cwd);
-  LiveSession::Launch l;
-  l.agent = agent;
-  l.cwd = dir;
-  l.origin = session_id;
-  l.forked = fork;
-
-  const Adapter* adapter = adapter_for(agent);
-  std::string note;
-  if (!adapter || !adapter->continue_session(l, session_id, fork, &note)) {
-    set_status("cannot continue a session for " + agent);
-    return false;
-  }
-  fork = l.forked;  // an agent that cannot fork resumes instead
-  if (!note.empty()) set_status(note);
-
-  if (!fork) {
-    for (const auto& previous : live_) {
-      if (previous->agent() != agent || !previous->exited() ||
-          previous->session_id() != session_id) continue;
-      if (!previous->restart(l)) continue;
-      focus_after_build_ = previous.get();
-      select_live(previous.get());
+    case How::Restarted:
+      focus_after_build_ = r.session;
+      select_live(r.session);
       layout_dirty_ = true;
       close_menu();
-      set_status("Resuming " + session_title(*previous));
+      set_status("Resuming " + session_title(*r.session));
       return true;
-    }
+    case How::Started:
+      focus_after_build_ = r.session;
+      select_live(r.session);
+      layout_dirty_ = true;
+      close_menu();
+      set_status((r.forked ? "Forked " : "Resuming ") + session_title(*r.session) +
+                 (r.moved ? " (original folder unavailable)" : ""));
+      return true;
   }
-  auto s = std::make_unique<LiveSession>();
-  if (!s->start(l)) {
-    set_status("failed to start " + agent);
-    return false;
-  }
-  focus_after_build_ = s.get();
-  select_live(focus_after_build_);
-  live_.push_back(std::move(s));
-  layout_dirty_ = true;
-  close_menu();
-  set_status((fork ? "Forked " : "Resuming ") + session_title(*focus_after_build_) +
-             (dir == cwd ? "" : " (original folder unavailable)"));
-  return true;
+  return false;
 }
 
 bool App::spawn_raw(std::vector<std::string> argv, const std::string& cwd) {
-  if (argv.empty()) return false;
-  auto s = std::make_unique<LiveSession>();
-  LiveSession::Launch l;
-  l.agent = argv[0];
-  l.cwd = cwd;
-  l.argv = std::move(argv);
-  if (!s->start(l)) return false;
-  focus_after_build_ = s.get();
-  select_live(focus_after_build_);
-  live_.push_back(std::move(s));
+  LiveSession* s = ws_.start_command(std::move(argv), cwd);
+  if (!s) return false;
+  focus_after_build_ = s;
+  select_live(s);
   layout_dirty_ = true;
   return true;
 }
 
-std::vector<LiveSession*> App::live_sessions() const {
-  std::vector<LiveSession*> out;
-  out.reserve(live_.size());
-  for (const auto& s : live_) out.push_back(s.get());
-  return out;
-}
+std::vector<LiveSession*> App::live_sessions() const { return ws_.live_sessions(); }
 
 void App::focus_session(LiveSession* s) {
   for (const auto& p : placed_)
@@ -300,18 +254,11 @@ void App::focus_session(LiveSession* s) {
 }
 
 void App::reap_sessions() {
-  for (LiveSession* gone : to_close_) {
-    for (size_t i = 0; i < live_.size(); i++) {
-      if (live_[i].get() != gone) continue;
-      if (selected_live_ == gone) selected_live_ = nullptr;
-      if (focus_after_build_ == gone) focus_after_build_ = nullptr;
-      live_[i]->pty().terminate();
-      live_.erase(live_.begin() + long(i));
-      break;
-    }
-    layout_dirty_ = true;
-  }
-  to_close_.clear();
+  const bool closed = ws_.reap([&](LiveSession* gone) {
+    if (selected_live_ == gone) selected_live_ = nullptr;
+    if (focus_after_build_ == gone) focus_after_build_ = nullptr;
+  });
+  if (closed) layout_dirty_ = true;
   if (layout_dirty_) {
     // A pane's menu goes with the pane; mico's own pickers belong to no pane
     // and stay open across the rebuild, so typing into one is not cut off by
@@ -328,57 +275,14 @@ void App::reap_sessions() {
 
 bool App::service() {
   x11clip::pump();
-  const size_t before = live_.size();
+  const size_t before = ws_.live().size();
   const bool rebuilt = layout_dirty_;
   reap_sessions();
-  bool changed = live_.size() != before || rebuilt;
-  for (auto& s : live_)
-    if (s->pump()) changed = true;
-
-  if (!model_probe_.started()) {
-    for (const auto& s : live_)
-      if (s->adapter() && !s->adapter()->model_picker_command().empty() && !s->cwd().empty()) {
-        model_probe_.start(*s->adapter(), s->cwd());
-        break;
-      }
-  } else if (model_probe_.pump()) {
-    changed = true;  // the model chip menu has entries now
-  }
-  // New chats started from a sub-project, once their agent names them.
-  for (auto it = pending_subs_.begin(); it != pending_subs_.end();) {
-    LiveSession* ls = it->first;
-    const bool alive = std::any_of(live_.begin(), live_.end(), [&](const auto& p) { return p.get() == ls; });
-    if (!alive) { it = pending_subs_.erase(it); continue; }
-    if (ls->session_id().empty()) { ++it; continue; }
-    store_.assign_sub(it->second.first, ls->agent(), ls->session_id(), it->second.second);
-    it = pending_subs_.erase(it);
-    changed = true;
-  }
-  // Claude's "/" menu is read from claude; ask ahead of the first "/".
-  for (const auto& s : live_) commands_.warm(s->agent(), s->cwd());
-  if (commands_.pump()) changed = true;
-  // A search across chats advances in slices, so input stays responsive.
-  if (!search_.complete()) {
-    search_.step(12);
-    changed = true;
-  }
-  // The index behind Tools and Diff: its first pass runs as soon as the
-  // daemon is up, so the tabs open on numbers rather than on "reading";
-  // after that it reads whatever the tab's refresh finds changed. Either way
-  // in slices between frames, at full speed rather than a frame's worth a
-  // second.
-  if (!activity_warmed_) {
-    activity_warmed_ = true;
-    activity_.start(store_.projects(), store_);
-  }
-  if (!activity_.complete()) {
-    activity_.step(kIndexSliceMs);
-    if (tab_ == 3 || tab_ == 4) changed = true;
-  }
-  if (tab_ == 1 && !usage_.complete()) {
-    usage_.step(kIndexSliceMs);
-    changed = true;
-  }
+  bool changed = ws_.live().size() != before || rebuilt;
+  const unsigned moved = ws_.service(tab_ == 1);
+  // The activity index is shown only by Tools and Diff.
+  if (moved & ~unsigned(Workspace::kActivity)) changed = true;
+  if ((moved & Workspace::kActivity) && (tab_ == 3 || tab_ == 4)) changed = true;
 
   // Relative times in the sidebar ("3m", "2h") drift on their own, so nudge a
   // repaint occasionally even when nothing else moved.
@@ -396,9 +300,7 @@ bool App::service() {
   // runs while something is actually busy, so an idle daemon still costs
   // nothing.
   static int64_t last_anim = 0;
-  bool any_busy = false;
-  for (const auto& s : live_)
-    if (s->busy()) { any_busy = true; break; }
+  const bool any_busy = ws_.any_busy();
   const int64_t now_ms = int64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
   if (any_busy && now_ms - last_anim >= 120) {
     last_anim = now_ms;
@@ -410,21 +312,10 @@ bool App::service() {
   return std::exchange(dirty_, false);
 }
 
-int App::idle_timeout_ms() const {
-  int ms = 1000;
-  if (!search_.complete()) ms = 1;  // a search in progress works between frames
-  if (!activity_.complete() || (tab_ == 1 && !usage_.complete())) ms = 1;  // so does an index pass
-  if (model_probe_.running() || commands_.probing()) ms = 30;
-  for (const auto& s : live_) {
-    if (const int t = s->timer_ms(); t >= 0) ms = std::min(ms, t);
-    // The spinner's beat, which also catches a quiet agent turning idle.
-    if (s->busy()) ms = std::min(ms, 120);
-  }
-  return ms;
-}
+int App::idle_timeout_ms() const { return ws_.idle_timeout_ms(tab_ == 1); }
 
 void App::collect_session_fds(std::vector<int>& out) const {
-  for (const auto& s : live_) out.push_back(s->pty().fd());
+  ws_.collect_fds(out);
   // A paste in another window is a request to us while we own the clipboard.
   if (const int x = x11clip::fd(); x >= 0) out.push_back(x);
 }
@@ -456,7 +347,7 @@ void App::copy_to_clipboard(std::string text) {
 
 
 int App::project_index() const {
-  const auto& ps = store_.projects();
+  const auto& ps = ws_.store().projects();
   if (!project_path_.empty())
     for (size_t i = 0; i < ps.size(); i++)
       if (ps[i].path == project_path_) return int(i);
@@ -464,7 +355,7 @@ int App::project_index() const {
 }
 
 const Project* App::current_project() const {
-  const auto& ps = store_.projects();
+  const auto& ps = ws_.store().projects();
   const int i = project_index();
   return i < 0 ? nullptr : &ps[size_t(i)];
 }
@@ -488,17 +379,7 @@ void App::select_sub(const std::string& name) {
   notify_state_changed();
 }
 
-std::string App::live_sub(const LiveSession& s) const {
-  if (auto it = pending_subs_.find(const_cast<LiveSession*>(&s)); it != pending_subs_.end())
-    return it->second.second;
-  for (const auto& p : store_.projects()) {
-    bool here = s.cwd() == p.path;
-    for (const auto& sp : p.subs)
-      here |= sp.path != p.path && (s.cwd() == sp.path || s.cwd().starts_with(sp.path + "/"));
-    if (here) return store_.sub_for(p, s.agent(), s.session_id(), s.cwd());
-  }
-  return {};
-}
+std::string App::live_sub(const LiveSession& s) const { return ws_.sub_of(s); }
 
 std::string App::selected_cwd() const {
   if (const SubProject* sp = current_sub()) return sp->path;
@@ -533,7 +414,7 @@ App::ViewFilter App::view_filter() const {
     for (const auto& s : f.project->sessions)
       if (s.path == selected_path_) {
         std::string t = s.title.empty() ? s.id : text::oneline(s.title, 60);
-        if (const std::string* n = store_.custom_name(s.agent, s.id)) t = *n;
+        if (const std::string* n = ws_.store().custom_name(s.agent, s.id)) t = *n;
         f.label += " \xC2\xB7 " + t;
       }
   }
@@ -545,7 +426,7 @@ App::ViewFilter App::view_filter() const {
 
 std::vector<Project> App::filtered_projects() const {
   const ViewFilter f = view_filter();
-  if (!f.project) return store_.projects();
+  if (!f.project) return ws_.store().projects();
   Project one = *f.project;
   if (!f.chat_path.empty())
     std::erase_if(one.sessions, [&](const SessionRef& s) { return s.path != f.chat_path; });
@@ -559,7 +440,7 @@ bool App::in_filter(const std::string& project_name, const std::string& path) co
   if (!f.project) return true;
   if (project_name != f.project->name) return false;
   if (!f.chat_path.empty()) return path == f.chat_path;
-  if (f.sub) return store_.sub_of_path(path) == f.sub->name;
+  if (f.sub) return ws_.store().sub_of_path(path) == f.sub->name;
   return true;
 }
 
@@ -567,7 +448,7 @@ void App::select_project(int i) {
   if (i == project_index() && sub_.empty()) return;
   filter_version_++;
   project_ = i;
-  const auto& ps = store_.projects();
+  const auto& ps = ws_.store().projects();
   project_path_ = i >= 0 && size_t(i) < ps.size() ? ps[size_t(i)].path : std::string();
   sub_.clear();
   selected_path_.clear();
@@ -609,20 +490,12 @@ bool App::open_selected_chat() {
   return spawn_continuation(s->agent, s->id, s->cwd, false);
 }
 
-std::string App::session_title(const LiveSession& session) const {
-  if (const auto* name = store_.custom_name(session.agent(), session.session_id())) return *name;
-  for (const auto& project : store_.projects())
-    for (const auto& s : project.sessions)
-      if (s.agent == session.agent() && !s.title.empty() &&
-          (s.id == session.session_id() || (session.forked() && s.id == session.origin())))
-        return (session.forked() ? "Fork: " : "") + text::oneline(s.title, 100);
-  return "New " + session.agent() + " chat";
-}
+std::string App::session_title(const LiveSession& session) const { return ws_.title_of(session); }
 
 void App::force_select(int p, int s) {
   project_ = p;
   {
-    const auto& ps = store_.projects();
+    const auto& ps = ws_.store().projects();
     project_path_ = p >= 0 && size_t(p) < ps.size() ? ps[size_t(p)].path : std::string();
     sub_.clear();
   }
@@ -674,9 +547,9 @@ void App::prompt_submit() {
   prompt_.reset();
 
   if (p.action == "add_folder") {
-    if (store_.add_folder(p.text)) {
+    if (ws_.store().add_folder(p.text)) {
       set_status("tracking " + p.text);
-      select_project(int(store_.projects().size()) - 1);
+      select_project(int(ws_.store().projects().size()) - 1);
     } else {
       set_status("could not add folder: " + p.text);
     }
@@ -691,15 +564,15 @@ void App::prompt_submit() {
     while (!name.empty() && name.front() == ' ') name.erase(0, 1);
     if (name.empty()) return;
     const bool add = p.action == "add_sub_name";
-    const bool ok = add ? store_.add_subproject(project, name, other)
-                        : store_.rename_subproject(project, other, name);
+    const bool ok = add ? ws_.store().add_subproject(project, name, other)
+                        : ws_.store().rename_subproject(project, other, name);
     if (!ok) {
       set_status("could not " + std::string(add ? "add" : "rename") + " \xE2\x80\x9C" + name +
                  "\xE2\x80\x9D \xE2\x80\x94 is the name taken?");
       return;
     }
     // Land on it: the new or renamed sub-project is what is selected.
-    const auto& ps = store_.projects();
+    const auto& ps = ws_.store().projects();
     for (size_t i = 0; i < ps.size(); i++)
       if (ps[i].path == project) select_project(int(i));
     select_sub(name);
@@ -709,7 +582,7 @@ void App::prompt_submit() {
   if (p.action == "rename") {
     const size_t tab = p.carry.find('\t');
     if (tab != std::string::npos) {
-      store_.set_custom_name(p.carry.substr(0, tab), p.carry.substr(tab + 1), p.text);
+      ws_.store().set_custom_name(p.carry.substr(0, tab), p.carry.substr(tab + 1), p.text);
       set_status(p.text.empty() ? "name cleared" : "renamed to " + p.text);
     }
     return;
@@ -1134,7 +1007,7 @@ void App::run_command(std::string line) {
   if (cmd == "sessions") { show_tab(0); return; }
   if (cmd == "redraw") { force_redraw(); return; }
   if (cmd == "log") { set_status("log: " + logs::path()); return; }
-  if (cmd == "rescan") { store_.scan(); set_status("rescanned"); return; }
+  if (cmd == "rescan") { ws_.store().scan(); set_status("rescanned"); return; }
   if (cmd == "close") {
     if (focus_ < placed_.size())
       if (LiveSession* ls = placed_[focus_].pane->session()) close_session(ls);
@@ -1198,19 +1071,19 @@ void App::render_status(Surface& s) {
   status_.clear();
 
   int working = 0, attention = 0;
-  for (const auto& ls : live_) {
+  for (const auto& ls : ws_.live()) {
     if (ls->status() == LiveSession::Status::Working) working++;
     if (ls->unseen()) attention++;
   }
   char buf[192];
-  if (live_.empty()) {
+  if (ws_.live().empty()) {
     snprintf(buf, sizeof buf, " %zu folders · %zu chats · density: %s",
-             store_.projects().size(), store_.session_count(), density_name(filters_.density));
+             ws_.store().projects().size(), ws_.store().session_count(), density_name(filters_.density));
   } else {
     // Only mention what is true: a bar that always reads "0 need you" trains
     // you to stop reading it.
-    int n = snprintf(buf, sizeof buf, " %zu agent%s", live_.size(),
-                     live_.size() == 1 ? "" : "s");
+    int n = snprintf(buf, sizeof buf, " %zu agent%s", ws_.live().size(),
+                     ws_.live().size() == 1 ? "" : "s");
     if (working) n += snprintf(buf + n, sizeof buf - size_t(n), " · %d working", working);
     if (attention)
       n += snprintf(buf + n, sizeof buf - size_t(n), " · %d need%s you", attention,
@@ -1615,7 +1488,7 @@ int App::run() {
     // and an idle UI costs nothing.
     fds.clear();
     fds.push_back(pollfd{term_.input_fd(), POLLIN, 0});
-    for (auto& live : live_)
+    for (auto& live : ws_.live())
       fds.push_back(pollfd{live->pty().fd(), POLLIN, 0});
     if (const int x = x11clip::fd(); x >= 0) fds.push_back(pollfd{x, POLLIN, 0});
 
@@ -1648,7 +1521,7 @@ int App::run() {
 
   }
 
-  for (auto& live : live_) live->pty().terminate();
+  ws_.terminate_all();
   term_.stop();
   return 0;
 }

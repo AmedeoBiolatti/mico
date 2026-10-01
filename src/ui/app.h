@@ -5,14 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "core/models.h"
-#include "core/session.h"
-#include "core/store.h"
-#include "core/activity.h"
-#include "core/commands.h"
-#include "core/files.h"
-#include "core/search.h"
-#include "core/usage.h"
+#include "core/workspace.h"
 #include "term/term.h"
 #include "ui/layout.h"
 #include "ui/picker.h"
@@ -34,11 +27,12 @@ struct DiffSettings {
 
 class App {
  public:
-  // How long an index pass reads between frames: short enough that a key is
-  // answered at once, long enough that a gigabyte of transcripts takes seconds.
-  static constexpr int kIndexSliceMs = 25;
+  static constexpr int kIndexSliceMs = Workspace::kIndexSliceMs;
+  // A front end over `ws`, which outlives it. The default owns one.
   App();
+  explicit App(Workspace& ws);
   ~App();
+  Workspace& workspace() { return ws_; }
 
   int run();                      // interactive, single process; requires a tty
   // How long the event loop may sleep before service() has timed work to do.
@@ -53,7 +47,7 @@ class App {
   AppAction feed(const InputEvent& e) {
     // Several input events may arrive before the next frame. Route each one
     // against the selection established by the preceding event.
-    if ((layout_dirty_ || !to_close_.empty()) && viewport_w_ > 0 && viewport_h_ > 0) {
+    if ((layout_dirty_ || ws_.closing()) && viewport_w_ > 0 && viewport_h_ > 0) {
       Surface scratch;
       scratch.resize(viewport_w_, viewport_h_);
       render(scratch);
@@ -70,7 +64,7 @@ class App {
   bool service();
   void collect_session_fds(std::vector<int>& out) const;
   bool running() const { return running_; }
-  Store& store() { return store_; }
+  Store& store() { return ws_.store(); }
   const Theme& theme() const { return theme_; }
   Filters& filters() { return filters_; }
   // Advances a few times a second while an agent is working, so a spinner can
@@ -137,8 +131,8 @@ class App {
   // Deferred: the caller is usually the pane being removed.
   // Queued, and carried out before the next layout. Several can be queued in
   // one frame: archiving a selection stops every idle agent in it.
-  void close_session(LiveSession* s) { to_close_.push_back(s); }
-  bool has_live() const { return !live_.empty(); }
+  void close_session(LiveSession* s) { ws_.close(s); }
+  bool has_live() const { return ws_.has_live(); }
   std::vector<LiveSession*> live_sessions() const;
   // Moves focus to the pane showing `s`, if one is on screen.
   void focus_session(LiveSession* s);
@@ -257,11 +251,11 @@ class App {
   // What "/" offers for `agent` in `cwd`, and what "@" can name there. Both
   // are kept here, not in a pane, so a folder is asked once for all its chats.
   const std::vector<SlashCommand>& slash_commands(const std::string& agent, const std::string& cwd) {
-    return commands_.get(agent, cwd);
+    return ws_.commands().get(agent, cwd);
   }
-  uint64_t commands_version() const { return commands_.version(); }
-  const std::vector<std::string>& project_files(const std::string& cwd) { return files_.get(cwd); }
-  uint64_t files_version() const { return files_.version(); }
+  uint64_t commands_version() const { return ws_.commands().version(); }
+  const std::vector<std::string>& project_files(const std::string& cwd) { return ws_.files().get(cwd); }
+  uint64_t files_version() const { return ws_.files().version(); }
 
   // --- the sidebar as a filter ------------------------------------------
   // The Projects and Chats column stays on every tab. On Sessions it picks
@@ -304,6 +298,9 @@ class App {
   void open_tab(size_t i) { show_tab(i); }
 
  private:
+  std::unique_ptr<Workspace> own_ws_;  // when constructed without one
+  Workspace& ws_;
+
   struct Menu {
     Pane* owner = nullptr;
     Point at{};
@@ -371,17 +368,8 @@ class App {
   void focus_next(int delta);
   void notify_state_changed();
 
-  Store store_;
-  // Usage scan state lives here, not in the Usage pane: the pane is rebuilt
-  // whenever the tab changes, and the per-file cache has to survive that.
-  UsageIndex usage_;
-  ChatSearch search_;
-  ActivityIndex activity_;
   DiffSettings diff_;
   ChatOrder chat_order_;
-  bool activity_warmed_ = false;
-  CommandCatalog commands_;
-  FileIndex files_;
   std::string search_request_;
   bool search_requested_ = false;
   struct Reveal {
@@ -393,12 +381,6 @@ class App {
   Theme theme_;
   Filters filters_;
   Term term_;
-  std::vector<std::unique_ptr<LiveSession>> live_;
-  // Asks claude what models it offers, once, in a process of its own. Started
-  // from the first live session so it inherits a directory the user has
-  // already trusted — an untrusted one would only get a dialog.
-  ModelProbe model_probe_;
-  std::vector<LiveSession*> to_close_;
   LiveSession* focus_after_build_ = nullptr;  // pane to focus once layout rebuilds
   bool focus_chat_after_build_ = false;       // focus the main chat pane then
   bool layout_dirty_ = true;
@@ -448,9 +430,6 @@ class App {
   int project_ = 0;
   std::string project_path_;  // what project_ was when chosen; wins over it
   std::string sub_;           // selected sub-project's name; "" whole folder
-  // New chats started from a sub-project, filed under it once their agent
-  // has told us their id: project path and sub-project name.
-  std::map<LiveSession*, std::pair<std::string, std::string>> pending_subs_;
   bool all_folders_ = false;
   bool chat_filter_ = false;
   uint64_t filter_version_ = 1;

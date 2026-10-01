@@ -113,6 +113,7 @@ add_library(mico_core STATIC
   src/core/edits.cpp
   src/core/commands.cpp
   src/core/files.cpp
+  src/core/workspace.cpp
 )
 target_link_libraries(mico_core PUBLIC mico_adapters mico_vt PRIVATE util)
 

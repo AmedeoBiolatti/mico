@@ -260,10 +260,10 @@ std::vector<PickItem> App::switcher_items() const {
   // Running agents first, the ones waiting on you at the top.
   std::vector<std::pair<int, PickItem>> live;
   std::set<std::string> live_keys;
-  for (const auto& sp : live_) {
+  for (const auto& sp : ws_.live()) {
     const LiveSession& s = *sp;
     live_keys.insert(s.agent() + "\t" + s.session_id());
-    if (s.exited() && store_.archived(s.agent(), s.session_id())) continue;
+    if (s.exited() && ws_.store().archived(s.agent(), s.session_id())) continue;
     const ChatState cs = chat_state(&s, theme_);
     PickItem it;
     it.label = session_title(s);
@@ -282,15 +282,15 @@ std::vector<PickItem> App::switcher_items() const {
 
   // Then every stored chat, newest first, whichever folder it is in.
   std::vector<const SessionRef*> stored;
-  for (const auto& p : store_.projects())
+  for (const auto& p : ws_.store().projects())
     for (const auto& s : p.sessions)
-      if (!live_keys.count(s.agent + "\t" + s.id) && !store_.archived(s.agent, s.id)) stored.push_back(&s);
+      if (!live_keys.count(s.agent + "\t" + s.id) && !ws_.store().archived(s.agent, s.id)) stored.push_back(&s);
   std::stable_sort(stored.begin(), stored.end(),
                    [](const SessionRef* a, const SessionRef* b) { return a->mtime > b->mtime; });
   if (stored.size() > 500) stored.resize(500);
   for (const SessionRef* s : stored) {
     PickItem it;
-    if (const std::string* n = store_.custom_name(s->agent, s->id)) it.label = *n;
+    if (const std::string* n = ws_.store().custom_name(s->agent, s->id)) it.label = *n;
     else it.label = s->title.empty() ? s->id : text::oneline(s->title, 200);
     it.lead = "\xC2\xB7";  // ·
     it.lead_color = theme_.dim;
@@ -310,7 +310,7 @@ std::vector<PickItem> App::folder_items(const std::string& query, bool tracked) 
 
   if (tracked && !path_like(query)) {
     // The folders mico tracks, the selected one first.
-    std::vector<std::string> dirs = store_.folders();
+    std::vector<std::string> dirs = ws_.store().folders();
     if (cur) {
       auto it = std::find(dirs.begin(), dirs.end(), cur->path);
       if (it != dirs.end()) std::rotate(dirs.begin(), it, it + 1);
@@ -373,7 +373,7 @@ std::vector<PickItem> App::folder_items(const std::string& query, bool tracked) 
     use.detail = "not a folder";
     use.enabled = false;
   } else if (!tracked) {
-    for (const auto& f : store_.folders())
+    for (const auto& f : ws_.store().folders())
       if (f == whole) {
         use.detail = "already tracked";
         use.enabled = false;
@@ -406,9 +406,9 @@ void App::flow_chosen(const PickItem& it) {
     close_menu();
     if (it.id.starts_with("live:")) {
       const uintptr_t want = std::strtoull(it.id.c_str() + 5, nullptr, 10);
-      for (const auto& sp : live_) {
+      for (const auto& sp : ws_.live()) {
         if (reinterpret_cast<uintptr_t>(sp.get()) != want) continue;
-        const auto& ps = store_.projects();
+        const auto& ps = ws_.store().projects();
         for (size_t p = 0; p < ps.size(); p++)
           if (ps[p].path == sp->cwd()) select_project(int(p));
         select_live(sp.get());
@@ -420,7 +420,7 @@ void App::flow_chosen(const PickItem& it) {
       return;
     }
     const std::string path = it.id.substr(5);
-    const auto& ps = store_.projects();
+    const auto& ps = ws_.store().projects();
     for (size_t p = 0; p < ps.size(); p++)
       for (size_t i = 0; i < ps[p].sessions.size(); i++)
         if (ps[p].sessions[i].path == path) {
@@ -459,9 +459,9 @@ void App::flow_chosen(const PickItem& it) {
   if (flow == "folder") {
     close_menu();
     const std::string dir = it.id.substr(4);
-    if (store_.add_folder(dir)) {
+    if (ws_.store().add_folder(dir)) {
       set_status("tracking " + abbreviate(dir));
-      select_project(int(store_.projects().size()) - 1);
+      select_project(int(ws_.store().projects().size()) - 1);
     } else {
       set_status("could not add " + abbreviate(dir));
     }

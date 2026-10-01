@@ -119,7 +119,10 @@ int run_daemon() {
   signal(SIGTERM, on_term);
   signal(SIGINT, on_term);
 
-  App app;
+  // The daemon owns the agents and what is known about them; the App is how
+  // its clients see them. Today every client shares that one view.
+  Workspace workspace;
+  App app(workspace);
   Surface back;
   std::vector<std::unique_ptr<Client>> clients;
   std::vector<pollfd> fds;
