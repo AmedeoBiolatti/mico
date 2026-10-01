@@ -53,6 +53,7 @@ class WebServer {
   Workspace& ws_;
   int lfd_ = -1;
   int port_ = 0;
+  int failed_port_ = 0;  // the port last found taken, not tried again
   std::vector<std::unique_ptr<Conn>> conns_;
   size_t fds_from_ = 0;  // where this server's entries start in the poll set
   size_t polled_ = 0;    // connections that had an entry

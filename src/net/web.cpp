@@ -140,6 +140,10 @@ WebServer::~WebServer() {
 void WebServer::sync() {
   const bool want = web_enabled() && !web_token().empty();
   if (want && lfd_ >= 0 && port_ == web_port()) return;
+  // A port that could not be had is not tried again every turn of the loop:
+  // only once the setting changes.
+  if (want && lfd_ < 0 && failed_port_ == web_port()) return;
+  if (!want) failed_port_ = 0;
   if (!want && lfd_ < 0) return;
   // Off, or moving to another port: let everything go.
   for (auto& c : conns_) close(c->fd);
@@ -161,8 +165,9 @@ void WebServer::sync() {
   if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0 || listen(fd, 16) != 0) {
     MLOG("web: cannot listen on 127.0.0.1:%d: %s", web_port(), strerror(errno));
     close(fd);
-    // Not retried every turn of the loop: a port in use stays in use.
-    set_web(false);
+    // Remembered here, not written to the settings: a port another process
+    // holds now is no reason to turn the web view off for good.
+    failed_port_ = web_port();
     return;
   }
   lfd_ = fd;
