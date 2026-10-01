@@ -24,6 +24,8 @@ bool image_size(std::string_view bytes, int* w, int* h);
 
 // Standard base64 (whitespace ignored). False on anything else.
 bool base64_decode(std::string_view in, std::string& out);
+// Appends `n` bytes as standard base64.
+void base64_encode(const uint8_t* p, size_t n, std::string& out);
 
 // A picture no wider than `max_cols` cells and no taller than `max_rows`,
 // never enlarged, cached under `key` (which names the source and its
@@ -38,5 +40,20 @@ const Image* picture(const std::string& key, const std::function<bool(std::strin
 // longer decode), and the picture is not drawn. True at once for anything
 // that is not a picture.
 bool pixels(const Image& im);
+
+// Makes sure `im.wire` holds what kitty is sent for a picture, without
+// holding up the frame. A PNG kitty can take as it is (`wire_png`): its
+// bytes, at once. Anything else is decoded, fitted and compressed on a worker
+// thread: false until that is done (collect_prepared() says when), and for a
+// picture that cannot be decoded. True at once for anything not a picture.
+bool kitty_wire(const Image& im);
+// Hands what the workers finished to their pictures. True when any was: the
+// screen is to be drawn again, and sends them.
+bool collect_prepared();
+// Whether workers are busy on pictures, so the loop wakes soon to collect.
+bool preparing();
+// A picture about to scroll into view: where terminals take kitty's
+// protocol, its payload is made ready now (see kitty_wire()).
+void prefetch(uint32_t id);
 
 }  // namespace mico::math

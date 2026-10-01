@@ -212,8 +212,8 @@ const Image* store(const std::string& key, Image im, const std::string& lineage)
   const bool encode = !im.encoded && im.rgba.size() > kEncodeAbove;
   if (encode) {
     im.encoded = std::make_shared<const std::string>(png(im, 0));
-    im.fit_w = im.w;
-    im.fit_h = im.h;
+    im.fit_w = im.src_w = im.w;
+    im.fit_h = im.src_h = im.h;
   }
   s.bytes += cost(im);
   s.by_id.emplace(id, std::move(im));

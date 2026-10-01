@@ -749,6 +749,10 @@ it from the line only when it draws it. PNG, JPEG, GIF and BMP are decoded by
 stb_image in a throwaway child process, so a malformed image can only kill the
 child, never the daemon the agents run under; they are scaled down (never up)
 to fit the pane and 24 rows. Elsewhere an image is a line saying there is one.
+In kitty a PNG is not decoded by mico at all: the terminal is sent it as it is
+and fits it to its cells. Other formats are decoded and compressed on worker
+threads, never in the frame: a picture shows as soon as it is ready, and those
+a screen above and below the view are made ready before they scroll in.
 
 **Tool output.** Command output keeps its ANSI colours (mapped onto a
 sixteen-colour palette tuned to the theme, bold and dim included), and a
@@ -838,7 +842,9 @@ do when mico starts:
 
 - **kitty (0.28+) and Ghostty:** kitty's graphics protocol with Unicode
   placeholders. Each image is sent once, compressed, and from then on the
-  cells themselves name it; the terminal moves it with the text. An older
+  cells themselves name it; the terminal moves it with the text. A terminal
+  is left holding at most 192 MB of pictures: past that, the ones it showed
+  longest ago are freed, and sent again if they scroll back into view. An older
   kitty, which would draw placeholders as stray glyphs, is detected by its
   version and left on Unicode.
 - **Inside tmux:** the same, wrapped for tmux's passthrough, when the terminal

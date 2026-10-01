@@ -18,6 +18,7 @@ struct Config {
   bool enabled = false;  // every attached terminal can show images
   int cell_w = 10, cell_h = 20;
   Color fg = 0x56B6C2;
+  bool kitty = false;  // every attached terminal takes kitty's protocol
   bool operator==(const Config&) const = default;
 };
 
@@ -43,12 +44,15 @@ struct Image {
   // good all along, so no layout has to be redone.
   std::shared_ptr<const std::string> encoded;
   int fit_w = 0, fit_h = 0;
+  int src_w = 0, src_h = 0;    // the encoded picture's own size
   std::string src;             // what it was drawn from
   std::string copy;            // what selecting it copies
   bool display = false;
   // Its kitty transmission payload (compressed, base64), made once and sent
   // to every terminal that needs it.
   mutable std::string wire;
+  // `wire` is the encoded PNG as it is, for the terminal to decode (f=100).
+  mutable bool wire_png = false;
 };
 
 // A display equation (`display`) or inline math, drawn to fit `max_cols`.

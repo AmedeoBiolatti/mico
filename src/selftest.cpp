@@ -4,6 +4,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <unistd.h>
 
@@ -3800,7 +3801,7 @@ int run_selftest() {
     Surface screen;
     screen.resize(8, 1);
     screen.at(0, 0) = Cell{0, Style{Color(id), kDefaultColor, attr::kImage}, 1};
-    std::unordered_set<uint32_t> sent;
+    math::KittyHeld sent;
     std::string first, second;
     math::send_images(screen, sent, first);
     math::send_images(screen, sent, second);
@@ -3808,7 +3809,7 @@ int run_selftest() {
               second.empty(),
           "math: an image is transmitted once, with a virtual placement");
     std::string wrapped;
-    std::unordered_set<uint32_t> sent_tmux;
+    math::KittyHeld sent_tmux;
     math::send_images(screen, sent_tmux, wrapped, true);
     check(wrapped.starts_with("\x1bPtmux;\x1b\x1b_Ga=t") && wrapped.find("o=z") != std::string::npos,
           "math: inside tmux each command is wrapped for passthrough, data compressed");
@@ -4642,6 +4643,59 @@ int run_selftest() {
           "images: a picture is laid out from its size alone, fitted to whole cells, not enlarged");
     check(pic && math::pixels(*pic) && pic->rgba.size() == 10 * 20 * 4 && pic->rgba[0] == 255,
           "images: its pixels are decoded when a terminal needs them");
+    {
+      std::string round;
+      math::base64_encode(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), round);
+      std::string back;
+      check(round == png_b64 && math::base64_decode("aGk\\/\n", back) && back == "hi?" &&
+                !math::base64_decode("aGk*", back),
+            "images: base64 goes both ways; escapes and whitespace skipped, other bytes refused");
+    }
+    {
+      // kitty takes a PNG as it is, at once: nothing decoded here.
+      const math::Image* fresh = math::picture("test:png-wire", [&](std::string& b) { b = bytes; return true; }, 40, 10, "[image]");
+      check(fresh && math::kitty_wire(*fresh) && fresh->wire_png && fresh->rgba.empty() && fresh->wire == png_b64,
+            "images: kitty is sent a PNG as it is, without decoding it");
+      Surface one;
+      one.resize(4, 1);
+      one.at(0, 0) = Cell{0, Style{Color(fresh->id), kDefaultColor, attr::kImage}, 1};
+      math::KittyHeld held;
+      held.images[0xABCDE] = math::KittyHeld::Entry{300u << 20, 0};  // drawn long ago, and big
+      held.bytes = 300u << 20;
+      std::string out;
+      math::send_images(one, held, out);
+      check(out.find("f=100") != std::string::npos && out.find("U=1") != std::string::npos && held.has(fresh->id),
+            "images: and placed in its cells like any other");
+      check(!held.has(0xABCDE) && out.find("a=d,d=I,i=703710") != std::string::npos,
+            "images: past a terminal's budget, what it showed longest ago is freed from it");
+
+      // Any other format is decoded off the UI thread: the frame goes out
+      // without it, and a later one sends it.
+      std::string bmp(54, '\0');
+      const auto le32 = [&](size_t at, uint32_t v) { for (int i = 0; i < 4; i++) bmp[at + size_t(i)] = char(v >> (8 * i)); };
+      bmp[0] = 'B', bmp[1] = 'M';
+      le32(10, 54), le32(14, 40), le32(18, 2), le32(22, 1);
+      bmp[26] = 1, bmp[28] = 24;
+      bmp += std::string("\x00\x00\xFF\x00\xFF\x00\x00\x00", 8);  // red, green; padded to four bytes
+      le32(2, uint32_t(bmp.size()));
+      const math::Image* other = math::picture("test:bmp", [&](std::string& b) { b = bmp; return true; }, 40, 10, "[image]");
+      check(other && !math::kitty_wire(*other) && math::preparing(), "images: another format is prepared on a worker");
+      one.at(0, 0) = Cell{0, Style{Color(other->id), kDefaultColor, attr::kImage}, 1};
+      std::string before;
+      math::send_images(one, held, before);
+      check(before.find("a=t") == std::string::npos && !held.has(other->id), "images: no frame waits for it");
+      bool got = false;
+      for (int i = 0; i < 500 && !got; i++) {
+        got = math::collect_prepared();
+        if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      std::string after;
+      math::send_images(one, held, after);
+      check(got && !other->wire_png && other->rgba.size() == size_t(other->w) * size_t(other->h) * 4 &&
+                other->rgba[0] == 255 && other->rgba[1] == 0 && other->rgba[4] == 0 && other->rgba[5] == 255 &&
+                after.find("f=32") != std::string::npos && held.has(other->id) && !math::preparing(),
+            "images: once ready, the next frame sends its pixels");
+    }
     {
       // A chat full of big screenshots: laying them all out drops nothing,
       // so no chat has to lay itself out again; decoded, only the ones used

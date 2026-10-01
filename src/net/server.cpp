@@ -51,7 +51,7 @@ struct Client {
   bool mouse_on = true;   // what this terminal was last told
   bool mouse_any = false; // 1003 (any-event) vs 1002 (button-event) tracking
   GfxCaps caps{};
-  std::unordered_set<uint32_t> images;  // image ids this terminal already holds
+  math::KittyHeld images;  // the images this terminal already holds
 };
 
 bool set_nonblock(int fd) {
@@ -161,6 +161,9 @@ int run_daemon() {
       for (const auto& c : clients)
         if (c->hello && c->caps.sixel && (c->caps.cell_w != cw || c->caps.cell_h != ch)) all = false;
       mc.enabled = any && all;
+      mc.kitty = mc.enabled;
+      for (const auto& c : clients)
+        if (c->hello && !c->caps.kitty) mc.kitty = false;
       if (cw > 0) { mc.cell_w = cw; mc.cell_h = ch; }
       mc.fg = active_theme().math;
       const uint64_t gen = math::generation();

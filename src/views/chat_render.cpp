@@ -1706,7 +1706,7 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
     invalidate_rows();
   }
   if (anchor != UINT32_MAX) restore_anchor(anchor, anchor_into, w, p.height(), f);
-  ensure_rows(w, size_t(p.height() + scroll_), f);
+  ensure_rows(w, size_t(2 * p.height() + scroll_), f);
   // Resolve after loading the lazy transcript window, including on the first
   // frame. When the call finishes, its history row becomes visible again.
   uint64_t activity_tool = 0;
@@ -1714,7 +1714,7 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
   if (activity_tool != activity_tool_) {
     activity_tool_ = activity_tool;
     invalidate_rows();
-    ensure_rows(w, size_t(p.height() + scroll_), f);
+    ensure_rows(w, size_t(2 * p.height() + scroll_), f);
   }
 
   resolve_moves(w, p.height(), f);
@@ -1906,6 +1906,23 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
     }
   } else {
     bar_col_ = -1;
+  }
+
+  // Pictures a screen above and below the view are made ready before they
+  // scroll in, so reading back through a chat finds them drawn.
+  if (math::config().kitty) {
+    uint32_t last = 0;
+    for (int i = std::max(0, first - p.height()); i < std::min(total, first + 2 * p.height()); i++) {
+      const Row& r = rows_[size_t(i)];
+      for (uint16_t k = 0; k < r.seg_count; k++) {
+        const md::Seg& sg = segs_[r.seg_first + k];
+        uint32_t id;
+        int irow, icols;
+        if (sg.ink != md::Ink::MathImage || !md::image_ref(scratch_, sg, &id, &irow, &icols) || id == last) continue;
+        last = id;
+        math::prefetch(id);
+      }
+    }
   }
 
   trim_window();

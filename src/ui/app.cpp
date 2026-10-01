@@ -17,6 +17,7 @@
 #include "core/settings.h"
 #include "core/web_access.h"
 #include "core/x11_clipboard.h"
+#include "math/picture.h"
 #include "term/kitty.h"
 #include "math/math.h"
 #include "term/sixel.h"
@@ -285,6 +286,8 @@ bool App::service() {
   // The activity index is shown only by Tools and Diff.
   if (moved & ~unsigned(Workspace::kActivity)) changed = true;
   if ((moved & Workspace::kActivity) && (tab_ == 3 || tab_ == 4)) changed = true;
+  // Pictures prepared off this thread: the frame that shows them.
+  if (math::collect_prepared()) changed = true;
 
   // Relative times in the sidebar ("3m", "2h") drift on their own, so nudge a
   // repaint occasionally even when nothing else moved.
@@ -314,7 +317,10 @@ bool App::service() {
   return std::exchange(dirty_, false);
 }
 
-int App::idle_timeout_ms() const { return ws_.idle_timeout_ms(tab_ == 1); }
+int App::idle_timeout_ms() const {
+  const int ms = ws_.idle_timeout_ms(tab_ == 1);
+  return math::preparing() ? std::min(ms, 10) : ms;
+}
 
 void App::collect_session_fds(std::vector<int>& out) const {
   ws_.collect_fds(out);
@@ -1482,7 +1488,7 @@ int App::run() {
 
   Surface s;
   std::vector<pollfd> fds;
-  std::unordered_set<uint32_t> images_sent;
+  math::KittyHeld images_sent;
   std::vector<uint32_t> evicted;
   while (running_) {
     bool dirty = service();
@@ -1498,6 +1504,7 @@ int App::run() {
     // Equations become images when this terminal can show them.
     math::Config mc = math::config();
     mc.enabled = term_.caps().any();
+    mc.kitty = mc.enabled && term_.caps().kitty;
     if (term_.caps().cell_w > 0) {
       mc.cell_w = term_.caps().cell_w;
       mc.cell_h = term_.caps().cell_h;
