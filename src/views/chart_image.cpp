@@ -123,7 +123,7 @@ struct Style {
 };
 
 Style theme_style() {
-  const Theme th{};
+  const Theme& th = active_theme();
   // The same inks the cell chart uses, so a chart keeps its colours when it
   // falls back to text.
   return Style{th.text, th.dim, th.border, th.heading,

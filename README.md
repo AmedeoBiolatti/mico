@@ -525,22 +525,40 @@ a slow disk never stalls the UI. `r` forces a rescan.
 
 ## Settings
 
-The Settings tab switches each part of the chat's rendering on or off, and
-what agents are given. A change applies at once (every chat lays itself out
-again) and is kept in `~/.config/mico/render`, one `name on|off` per line.
+The Settings tab (`:settings`) chooses the theme, how each part of the chat
+is drawn, and what agents are given. Every setting lists its ways side by
+side, the one in force filled in. A change applies at once (every chat lays
+itself out again) and is kept in `~/.config/mico/render`, one `name way` per
+line; a file from when each part was `on` or `off` still reads as it meant.
 
-- **Rendering:** pictures, LaTeX, charts, diagrams, code colours, JSON
-  results, notebooks, output colours, links, progress bars. Off, each falls
-  back to plain text: an equation to Unicode, a chart or diagram to its
-  source, a picture to a `▣ image` line.
+- **Appearance:** the theme — `dark` (mico's own), `light`, `high contrast`,
+  `warm`. Also `:theme <name>`. The terminal's own background follows it.
+- **Rendering**, the plainest way first:
+
+  | | |
+  |---|---|
+  | Pictures | off · small (12 rows) · medium (24) · large (48) |
+  | Equations | source (the LaTeX as written) · unicode · typeset |
+  | Charts | source (the JSON) · text (in characters) · pictures |
+  | Diagrams | source · drawn |
+  | Code colours | off · blocks (fenced code) · everywhere (also files a tool printed) |
+  | JSON results | raw · laid out |
+  | Notebooks | raw · cells |
+  | Output colours | plain · kept |
+  | Links | off · urls · urls and paths |
+  | Progress | off · bar |
+
+  Typeset equations and charts as pictures need a terminal that shows
+  pictures; elsewhere they are drawn in text.
 - **Agents:** the agent hints (the note on what mico draws, added to their
-  system prompt) and the plot tool (mico's MCP server). These apply to agents
-  started from then on.
+  system prompt) and the plot tool (mico's MCP server), off or on. These apply
+  to agents started from then on.
 
-Pictures are their own axis, not part of density: on, a screenshot or plot
-shows at every density, even among the folded steps of a finished turn;
+Pictures are their own axis, not part of density: shown, a screenshot or plot
+appears at every density, even among the folded steps of a finished turn;
 density decides how much of the conversation is shown, the settings how it
-is drawn. `↑`/`↓` (or `j`/`k`) choose, Space, Enter or a click switches.
+is drawn. `↑`/`↓` (or `j`/`k`) choose a setting, `←`/`→` (or `h`/`l`) or a
+click choose a way, Space or Enter take the next.
 
 ## Diff
 

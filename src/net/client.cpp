@@ -100,7 +100,7 @@ int run_client(bool allow_spawn) {
   signal(SIGPIPE, SIG_IGN);  // a daemon that dies must not kill us by signal
   tty::install_winch(on_winch);
   // The daemon's theme is compiled in, so the client can colour the margins.
-  tty::write_all(STDOUT_FILENO, tty::init_seq(Theme{}.bg));
+  tty::write_all(STDOUT_FILENO, tty::init_seq(active_theme().bg));
 
   int w = 80, h = 24;
   tty::query_size(&w, &h);

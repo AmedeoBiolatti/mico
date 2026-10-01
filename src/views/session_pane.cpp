@@ -1418,7 +1418,7 @@ class SessionPane final : public Pane {
     // as the command says, else estimated from how fast it has been going.
     progress::Progress prog;
     bool has_prog = false;
-    if (tool_id && render_settings().progress) {
+    if (tool_id && render_settings().progress() == Progress::Bar) {
       const Vt& vt = s_->vt();
       std::string line;
       for (int y = vt.total_rows() - 1; y >= std::max(0, vt.total_rows() - vt.height()) && !has_prog; y--) {

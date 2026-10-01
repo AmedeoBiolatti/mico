@@ -14,6 +14,7 @@
 #include "base/log.h"
 #include "core/opener.h"
 #include "core/pty.h"
+#include "core/settings.h"
 #include "core/web_access.h"
 #include "core/x11_clipboard.h"
 #include "term/kitty.h"
@@ -625,15 +626,15 @@ void App::render_prompt(Surface& s) {
   const int x = (s.width() - w) / 2;
   const int y = std::max(0, s.height() / 3);
   Painter box(s, Rect{x, y, w, 4});
-  box.clear(Style{theme_.text, theme_.menu_bg});
-  box.box(Rect{0, 0, w, 4}, Style{theme_.border_focus, theme_.menu_bg});
-  box.text(2, 0, " " + p.label + " ", Style{theme_.border_focus, theme_.menu_bg, attr::kBold});
+  box.clear(Style{theme().text, theme().menu_bg});
+  box.box(Rect{0, 0, w, 4}, Style{theme().border_focus, theme().menu_bg});
+  box.text(2, 0, " " + p.label + " ", Style{theme().border_focus, theme().menu_bg, attr::kBold});
 
-  Style field{theme_.text, theme_.sel_bg};
+  Style field{theme().text, theme().sel_bg};
   box.fill(Rect{2, 1, w - 4, 1}, field);
   int used = box.text_clipped(2, 1, p.text, field, w - 5);
-  box.put(2 + used, 1, U'\u258f', Style{theme_.accent, field.bg});
-  box.text(2, 2, "enter to run · esc to cancel", Style{theme_.dim, theme_.menu_bg});
+  box.put(2 + used, 1, U'\u258f', Style{theme().accent, field.bg});
+  box.text(2, 2, "enter to run · esc to cancel", Style{theme().dim, theme().menu_bg});
 }
 
 void App::open_menu(Pane* owner, Point pos, std::vector<MenuItem> items, std::string title) {
@@ -705,10 +706,10 @@ void App::render_chrome(Surface& s, const Node::Placed& p, bool focused) {
   // No clear here: the surface was already cleared, box() paints every cell of
   // the border ring, and the pane clears its own interior. Filling the whole
   // pane as well meant writing most cells three times before any content.
-  Style border{theme_.border, theme_.panel};
+  Style border{theme().border, theme().panel};
   frame.box(Rect{0, 0, p.rect.w, p.rect.h}, border);
   if (focused) frame.hline(1, 0, std::max(0, p.rect.w - 2), U'─',
-                           Style{theme_.border_focus, theme_.panel});
+                           Style{theme().border_focus, theme().panel});
 
   // The badge is placed first and the title takes what is left of the bar: a
   // long chat title is clipped before a state is hidden.
@@ -718,12 +719,12 @@ void App::render_chrome(Surface& s, const Node::Placed& p, bool focused) {
     const int bw = text::str_width(bt);
     if (bw + 8 < p.rect.w) {
       const int bx = p.rect.w - 2 - bw;
-      frame.text(bx, 0, bt, Style{b.color, theme_.panel});
+      frame.text(bx, 0, bt, Style{b.color, theme().panel});
       title_room = bx - 3;
     }
   }
   std::string t = " " + p.pane->title() + " ";
-  Style ts{focused ? theme_.accent : theme_.text, theme_.panel, attr::kBold};
+  Style ts{focused ? theme().accent : theme().text, theme().panel, attr::kBold};
   frame.text_clipped(2, 0, t, ts, title_room);
 }
 
@@ -731,7 +732,7 @@ void App::render(Surface& s) {
   viewport_w_ = s.width();
   viewport_h_ = s.height();
   reap_sessions();
-  s.clear(Style{theme_.text, theme_.bg});
+  s.clear(Style{theme().text, theme().bg});
 
   // Chrome claims rows from the outside in, and gives them up on a screen too
   // small to spare them.
@@ -802,7 +803,7 @@ void App::render_dividers(Surface& s) {
     const bool active = drag_ && drag_->node == d.owner && drag_->index == d.index;
     // Keep the grip solid in both states; dashed box characters make the idle
     // handle look broken. Colour alone indicates an active drag.
-    Style st{active ? theme_.border_focus : theme_.dim, theme_.panel,
+    Style st{active ? theme().border_focus : theme().dim, theme().panel,
              attr::kNone};
 
     // A small centred grip, not a line across the seam: a full-width bar reads
@@ -828,16 +829,16 @@ void App::render_tabs(Surface& s) {
   tab_hit_.clear();
   if (tab_row_ < 0) return;
   Painter p(s, Rect{0, tab_row_, s.width(), 1});
-  p.clear(Style{theme_.dim, theme_.bg});
+  p.clear(Style{theme().dim, theme().bg});
 
-  int x = p.text(1, 0, "mico", Style{theme_.accent, theme_.bg, attr::kBold}) + 4;
+  int x = p.text(1, 0, "mico", Style{theme().accent, theme().bg, attr::kBold}) + 4;
   // The tabs head the column they switch; the sidebar is not theirs.
   if (placed_.size() >= 2) x = std::max(x, placed_.back().rect.x + 1);
   for (size_t i = 0; i < tabs_.size(); i++) {
     const bool on = i == tab_;
     const std::string label = " " + tabs_[i].name + " ";
     const int wide = text::str_width(label);
-    Style st{on ? theme_.text : theme_.dim, on ? theme_.panel : theme_.bg,
+    Style st{on ? theme().text : theme().dim, on ? theme().panel : theme().bg,
              on ? attr::kBold : attr::kNone};
     p.fill(Rect{x, 0, wide, 1}, st);
     p.text(x, 0, label, st);
@@ -848,7 +849,7 @@ void App::render_tabs(Surface& s) {
   // A hint at the right edge, where there is room for it.
   const char* hint = "F1 or : for commands";
   const int hw = text::str_width(hint);
-  if (s.width() - hw - 2 > x) p.text(s.width() - hw - 1, 0, hint, Style{theme_.dim, theme_.bg});
+  if (s.width() - hw - 2 > x) p.text(s.width() - hw - 1, 0, hint, Style{theme().dim, theme().bg});
 }
 
 void App::render_command(Surface& s) {
@@ -857,14 +858,14 @@ void App::render_command(Surface& s) {
   Painter p(s, Rect{0, y, s.width(), 1});
   if (!cmd_active_ && cmd_text_.empty()) {
     // Idle, only the colon stays: where to click, without a sentence saying so.
-    p.put(0, 0, U':', Style{theme_.dim, theme_.panel, attr::kBold});
+    p.put(0, 0, U':', Style{theme().dim, theme().panel, attr::kBold});
     return;
   }
-  const Color bg = theme_.menu_bg;
-  p.clear(Style{theme_.text, bg});
-  p.put(0, 0, U':', Style{cmd_active_ ? theme_.accent : theme_.dim, bg, attr::kBold});
-  int used = p.text_clipped(2, 0, cmd_text_, Style{theme_.text, bg}, s.width() - 3);
-  if (cmd_active_) p.put(2 + used, 0, U'▏', Style{theme_.accent, bg});
+  const Color bg = theme().menu_bg;
+  p.clear(Style{theme().text, bg});
+  p.put(0, 0, U':', Style{cmd_active_ ? theme().accent : theme().dim, bg, attr::kBold});
+  int used = p.text_clipped(2, 0, cmd_text_, Style{theme().text, bg}, s.width() - 3);
+  if (cmd_active_) p.put(2 + used, 0, U'▏', Style{theme().accent, bg});
 }
 
 // One place that knows every command, so :help cannot drift from what works.
@@ -882,6 +883,8 @@ constexpr Command kCommands[] = {
     {"fork", "fork the selected chat into a new one"},
     {"resume", "resume the selected chat"},
     {"density", "minimal | normal | full"},
+    {"theme", "the colours: theme <name>, or theme to list them"},
+    {"settings", "open the Settings tab: rendering, theme, agents"},
     {"select", "selection mode, so the terminal can copy"},
     {"usage", "show the usage tab"},
     {"search", "search every chat: search <text>"},
@@ -981,6 +984,25 @@ void App::run_command(std::string line) {
     spawn_continuation(sess->agent, sess->id, sess->cwd, cmd == "fork");
     return;
   }
+  if (cmd == "settings") {
+    show_tab(5);
+    return;
+  }
+  if (cmd == "theme") {
+    std::string names;
+    for (const auto& t : themes()) {
+      if (arg == t.name) {
+        RenderSettings rs = render_settings();
+        rs.theme = t.name;
+        set_render_settings(rs);
+        set_status(std::string("theme: ") + t.name + " \xE2\x80\x94 " + t.detail);
+        return;
+      }
+      names += (names.empty() ? "" : " \xC2\xB7 ") + std::string(t.name);
+    }
+    set_status((arg.empty() ? "theme " + render_settings().theme : "no theme \"" + arg + "\"") + "  (" + names + ")");
+    return;
+  }
   if (cmd == "density") {
     if (arg.empty() || arg[0] == 'n') filters_.density = Density::Normal;
     else if (arg[0] == 'm') filters_.density = Density::Minimal;
@@ -1073,7 +1095,7 @@ bool App::command_key(const KeyEvent& k) {
 void App::render_status(Surface& s) {
   int y = s.height() - 1;
   Painter bar(s, Rect{0, y, s.width(), 1});
-  bar.clear(Style{theme_.dim, theme_.panel});
+  bar.clear(Style{theme().dim, theme().panel});
 
   std::string left = " ";
 
@@ -1081,7 +1103,7 @@ void App::render_status(Surface& s) {
   // opposite of what fits-if-there-is-room gives you on a narrow terminal.
   if (!status_.empty() && tick_ - status_at_ < 5) {
     bar.text(text::str_width(left), 0, " " + status_,
-             Style{theme_.attention, theme_.panel, attr::kBold});
+             Style{theme().attention, theme().panel, attr::kBold});
     return;
   }
   status_.clear();
@@ -1106,7 +1128,7 @@ void App::render_status(Surface& s) {
                     attention == 1 ? "s" : "");
     snprintf(buf + n, sizeof buf - size_t(n), " · density: %s", density_name(filters_.density));
   }
-  int x = bar.text(text::str_width(left), 0, buf, Style{theme_.text, theme_.panel});
+  int x = bar.text(text::str_width(left), 0, buf, Style{theme().text, theme().panel});
 
   std::string help = selection_
                          ? "SELECT — drag to copy with your terminal · F8 to resume"
@@ -1114,13 +1136,13 @@ void App::render_status(Surface& s) {
                              ? "F3 focus · F2 terminal · F10 detach"
                              : status_;
   if (selection_) {
-    bar.fill(Rect{0, 0, s.width(), 1}, Style{theme_.bg, theme_.attention});
-    bar.text(1, 0, help, Style{theme_.bg, theme_.attention, attr::kBold});
+    bar.fill(Rect{0, 0, s.width(), 1}, Style{theme().bg, theme().attention});
+    bar.text(1, 0, help, Style{theme().bg, theme().attention, attr::kBold});
     return;
   }
   int hw = text::str_width(help);
   if (s.width() - hw - 1 > text::str_width(left) + x)
-    bar.text(s.width() - hw - 1, 0, help, Style{theme_.dim, theme_.panel});
+    bar.text(s.width() - hw - 1, 0, help, Style{theme().dim, theme().panel});
 }
 
 void App::render_menu(Surface& s) {
@@ -1132,7 +1154,7 @@ void App::render_menu(Surface& s) {
     const int y = std::max(1, s.height() / 6);
     const int h = m.picker.rows(w, std::max(3, s.height() - y - 1));
     m.rect = Rect{(s.width() - w) / 2, y, w, h};
-    m.picker.render(Painter(s, m.rect), theme_);
+    m.picker.render(Painter(s, m.rect), theme());
     return;
   }
   if (m.above) {
@@ -1141,7 +1163,7 @@ void App::render_menu(Surface& s) {
     const int w = std::min(m.picker.natural_width(), s.width());
     const int h = m.picker.rows(w, std::max(3, m.at.y));
     m.rect = Rect{std::clamp(m.at.x, 0, std::max(0, s.width() - w)), std::max(0, m.at.y - h), w, h};
-    m.picker.render(Painter(s, m.rect), theme_);
+    m.picker.render(Painter(s, m.rect), theme());
     return;
   }
   const int w = std::min(m.picker.natural_width(), s.width());
@@ -1150,7 +1172,7 @@ void App::render_menu(Surface& s) {
   // every frame, since typing into it changes its height.
   m.rect = Rect{std::min(m.at.x, std::max(0, s.width() - w)),
                 std::min(m.at.y, std::max(0, s.height() - h)), w, h};
-  m.picker.render(Painter(s, m.rect), theme_);
+  m.picker.render(Painter(s, m.rect), theme());
 }
 
 // ------------------------------------------------------------------- input
@@ -1452,10 +1474,11 @@ void App::handle_paste(const std::string& t) {
 // -------------------------------------------------------------------- loops
 
 int App::run() {
-  if (!term_.start(theme_.bg)) {
+  if (!term_.start(theme().bg)) {
     fprintf(stderr, "mico: stdin/stdout is not a terminal (try --dump)\n");
     return 1;
   }
+  Color shown_bg = theme().bg;
 
   Surface s;
   std::vector<pollfd> fds;
@@ -1464,6 +1487,14 @@ int App::run() {
   while (running_) {
     bool dirty = service();
 
+    // A new theme: the terminal is given its background and repainted.
+    if (const Color bg = theme().bg; bg != shown_bg) {
+      shown_bg = bg;
+      term_.queue(tty::background_seq(bg));
+      force_redraw();
+      dirty = true;
+    }
+
     // Equations become images when this terminal can show them.
     math::Config mc = math::config();
     mc.enabled = term_.caps().any();
@@ -1471,7 +1502,7 @@ int App::run() {
       mc.cell_w = term_.caps().cell_w;
       mc.cell_h = term_.caps().cell_h;
     }
-    mc.fg = theme_.math;
+    mc.fg = theme().math;
     const uint64_t gen = math::generation();
     math::configure(mc);
     if (math::generation() != gen) dirty = true;

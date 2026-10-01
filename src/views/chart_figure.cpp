@@ -2,6 +2,7 @@
 #include <cmath>
 #include <string>
 
+#include "core/settings.h"
 #include "math/math.h"
 #include "base/text.h"
 #include "views/chart.h"
@@ -162,14 +163,17 @@ void figure(const Spec& in, std::string_view identity, int cols, Figure& out) {
   // A histogram is drawn from its bins.
   const Spec hist = in.kind == Spec::Kind::Hist ? binned(in) : Spec{};
   const Spec& s = in.kind == Spec::Kind::Hist ? hist : in;
-  if (math::config().enabled && (s.kind == Spec::Kind::Hist || s.kind == Spec::Kind::Heatmap)) {
+  // Pictures only where the terminal shows them and the settings want them;
+  // otherwise all in characters.
+  const bool pictures = math::config().enabled && render_settings().charts() == Charts::Pictures;
+  if (pictures && (s.kind == Spec::Kind::Hist || s.kind == Spec::Kind::Heatmap)) {
     if (cells_figure(s, identity, cols, out)) return;
     Canvas c;
     draw(in, cols, c);
     from_canvas(c, out);
     return;
   }
-  if (math::config().enabled) {
+  if (pictures) {
     if (s.font == Spec::Font::Math) {
       if (const math::Image* im = image(s, identity, cols)) {
         from_image(*im, out);

@@ -20,6 +20,9 @@ extern const char* const kFini;  // undoes kInit, and any background init_seq se
 // that the terminal fills with its default background; no cell reaches it, so
 // without this it shows as a line in the terminal's own colour.
 std::string init_seq(Color bg);
+// OSC 11: the terminal's own background, so what the screen leaves at the
+// terminal default matches the theme. Empty for the default colour.
+std::string background_seq(Color bg);
 bool enter_raw();   // false if stdin/stdout is not a tty
 void leave_raw();
 bool query_size(int* w, int* h);

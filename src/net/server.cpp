@@ -23,6 +23,7 @@
 #include "term/kitty.h"
 #include "math/math.h"
 #include "term/sixel.h"
+#include "term/term.h"
 #include "net/web.h"
 #include "ui/app.h"
 #include "ui/theme.h"
@@ -45,6 +46,7 @@ struct Client {
   int w = 0, h = 0;
   bool hello = false;
   bool needs_full = true;
+  bool set_background = true;  // tell the terminal the theme's background
   bool dead = false;
   bool mouse_on = true;   // what this terminal was last told
   bool mouse_any = false; // 1003 (any-event) vs 1002 (button-event) tracking
@@ -134,6 +136,7 @@ int run_daemon() {
   int last_w = 0, last_h = 0;
 
   std::vector<uint32_t> evicted;
+  Color theme_bg = active_theme().bg;
   while (!g_stop && app.running()) {
     bool dirty = app.service();
     web.sync();
@@ -159,10 +162,20 @@ int run_daemon() {
         if (c->hello && c->caps.sixel && (c->caps.cell_w != cw || c->caps.cell_h != ch)) all = false;
       mc.enabled = any && all;
       if (cw > 0) { mc.cell_w = cw; mc.cell_h = ch; }
-      mc.fg = Theme{}.math;
+      mc.fg = active_theme().math;
       const uint64_t gen = math::generation();
       math::configure(mc);
       if (math::generation() != gen) dirty = true;
+    }
+
+    // A new theme: every terminal is given its background and repainted.
+    if (const Color bg = active_theme().bg; bg != theme_bg) {
+      theme_bg = bg;
+      for (auto& c : clients) {
+        c->set_background = true;
+        c->needs_full = true;
+      }
+      dirty = true;
     }
 
     // Every attached terminal sees the same layout, so the surface is sized to
@@ -207,6 +220,10 @@ int run_daemon() {
           c->needs_full = true;  // repaint once, then hold still
         }
         if (!clip.empty()) frame += clipboard_seq(clip);
+        if (c->set_background) {
+          frame += tty::background_seq(theme_bg);
+          c->set_background = false;
+        }
 
         // While selecting, the screen must not move: a repaint clears the
         // terminal's own selection out from under the drag.

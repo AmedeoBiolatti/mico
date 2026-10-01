@@ -141,6 +141,7 @@ target_link_libraries(mico_term PUBLIC mico_vt mico_math)
 
 add_library(mico_tui STATIC
   src/ui/layout.cpp
+  src/ui/theme.cpp
   src/ui/app.cpp
   src/ui/picker.cpp
   src/ui/app_flows.cpp

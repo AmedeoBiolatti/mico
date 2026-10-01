@@ -209,7 +209,7 @@ void highlight(std::string_view s, const Lang* L, State& st, std::vector<Run>& r
   runs.clear();
   Out out{runs};
   const size_t n = s.size();
-  if (!L || !render_settings().highlight) {
+  if (!L || render_settings().code_colours() == CodeColours::Off) {
     out.push(0, n, Tok::Text);
     return;
   }

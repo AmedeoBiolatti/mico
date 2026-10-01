@@ -1,4 +1,6 @@
 #pragma once
+#include <vector>
+
 #include "vt/surface.h"
 
 namespace mico {
@@ -62,6 +64,18 @@ struct Theme {
   // its own surface below the chat, not as one more row of conversation.
   Color strip_bg = 0x1D2732;
 };
+
+// The themes to choose from, the first the default. The settings name the one
+// in use (RenderSettings::theme).
+struct NamedTheme {
+  const char* name;
+  const char* detail;
+  Theme theme;
+};
+const std::vector<NamedTheme>& themes();
+// The theme the settings name, or the first. Its contents change in place
+// when the settings do, so a reference to it stays good.
+const Theme& active_theme();
 
 // How much of the conversation the chat view shows. This is the feature the
 // PTY plane cannot provide, so it is first-class state rather than a toggle

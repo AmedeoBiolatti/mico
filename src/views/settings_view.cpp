@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -11,44 +12,81 @@
 namespace mico {
 namespace {
 
-// One switch: its label, what it does, and how to read and flip it.
-struct Toggle {
-  const char* label;
-  const char* detail;
-  bool RenderSettings::*render = nullptr;  // a rendering switch, or…
-  bool (*get)() = nullptr;                 // …an agent one, kept in its own file
-  void (*set)(bool) = nullptr;
+// One setting: its label, the ways it can be, and how to read and set it.
+// Every row is a choice among a few named ways; a switch is just "off · on".
+struct Row {
+  std::string label;
+  std::vector<std::string> names;    // the ways, as shown
+  std::vector<std::string> details;  // what each way does
+  std::function<int()> get;
+  std::function<void(int)> set;
 };
 
 struct Section {
   const char* title;
   const char* note;
-  std::vector<Toggle> toggles;
+  std::vector<Row> rows;
 };
 
-const std::vector<Section>& sections() {
-  static const std::vector<Section> s = {
-      {"Rendering", "how the chat draws what agents write; applies at once",
-       {
-           {"Pictures", "screenshots, image files and plots, at every density", &RenderSettings::pictures},
-           {"LaTeX", "equations typeset as pictures (off: Unicode text)", &RenderSettings::math},
-           {"Charts", "```chart blocks and the plot tool drawn (off: their JSON)", &RenderSettings::charts},
-           {"Diagrams", "```mermaid flowcharts, sequences, states (off: the source)", &RenderSettings::diagrams},
-           {"Code colours", "code coloured by its language", &RenderSettings::highlight},
-           {"JSON results", "tool results that are JSON laid out, foldable", &RenderSettings::json},
-           {"Notebooks", "notebooks read as cells, outputs, tables and plots", &RenderSettings::notebooks},
-           {"Output colours", "command output keeps its ANSI colours", &RenderSettings::ansi},
-           {"Links", "URLs and file paths found in text, clickable", &RenderSettings::links},
-           {"Progress bars", "a running command's progress drawn in the activity row", &RenderSettings::progress},
-       }},
-      {"Agents", "what agents are told and given; applies to agents started from now on",
-       {
-           {"Agent hints", "a short note in their system prompt on the charts and diagrams mico draws", nullptr,
-            agent_hints_enabled, set_agent_hints},
-           {"Plot tool", "mico's MCP server, giving agents a tool that draws charts", nullptr, mcp_tools_enabled,
-            set_mcp_tools},
-       }},
+// A rendering choice, read from and written to the render settings.
+Row render_row(size_t part) {
+  const RenderChoice& c = render_choices()[part];
+  Row r;
+  r.label = c.label;
+  for (const auto& v : c.variants) {
+    r.names.emplace_back(v.name);
+    r.details.emplace_back(v.detail);
+  }
+  r.get = [part] { return int(render_settings().way[part]); };
+  r.set = [part](int i) {
+    RenderSettings s = render_settings();
+    s.way[part] = uint8_t(i);
+    set_render_settings(s);
   };
+  return r;
+}
+
+// An agent switch, kept in its own file.
+Row switch_row(const char* label, const char* off, const char* on, bool (*get)(), void (*set)(bool)) {
+  Row r;
+  r.label = label;
+  r.names = {"off", "on"};
+  r.details = {off, on};
+  r.get = [get] { return get() ? 1 : 0; };
+  r.set = [set](int i) { set(i == 1); };
+  return r;
+}
+
+std::vector<Section> sections() {
+  std::vector<Section> s;
+  Row theme;
+  theme.label = "Theme";
+  for (const auto& t : themes()) {
+    theme.names.emplace_back(t.name);
+    theme.details.emplace_back(t.detail);
+  }
+  theme.get = [] {
+    const auto& all = themes();
+    for (size_t i = 0; i < all.size(); i++)
+      if (render_settings().theme == all[i].name) return int(i);
+    return 0;
+  };
+  theme.set = [](int i) {
+    RenderSettings rs = render_settings();
+    rs.theme = themes()[size_t(i)].name;
+    set_render_settings(rs);
+  };
+  s.push_back({"Appearance", "the colours everything is drawn in; applies at once", {}});
+  s.back().rows.push_back(std::move(theme));
+
+  s.push_back({"Rendering", "how the chat draws what agents write; applies at once", {}});
+  for (size_t part = 0; part < render_choices().size(); part++) s.back().rows.push_back(render_row(part));
+
+  s.push_back({"Agents", "what agents are told and given; applies to agents started from now on", {}});
+  s.back().rows.push_back(switch_row("Agent hints", "not told", "a short note in their system prompt on the charts and diagrams mico draws",
+                                     agent_hints_enabled, set_agent_hints));
+  s.back().rows.push_back(switch_row("Plot tool", "not given", "mico's MCP server, giving agents a tool that draws charts",
+                                     mcp_tools_enabled, set_mcp_tools));
   return s;
 }
 
@@ -59,39 +97,51 @@ class SettingsView final : public Pane {
   void render(Painter& p, bool focused) override {
     const Theme& th = app_->theme();
     p.clear(Style{th.text, th.panel});
+    hits_.clear();
     rows_.clear();
+    sections_ = sections();
     const int W = p.width();
     int y = -scroll_, index = 0, label_w = 0;
-    for (const auto& sec : sections())
-      for (const auto& t : sec.toggles) label_w = std::max(label_w, text::str_width(t.label));
-    const auto row = [&](auto&& draw) {
+    for (const auto& sec : sections_)
+      for (const auto& r : sec.rows) label_w = std::max(label_w, text::str_width(r.label));
+    const auto line = [&](auto&& draw) {
       if (y >= 0 && y < p.height()) draw(y);
       y++;
     };
-    row([&](int r) {
+    line([&](int r) {
       const int x = p.text(1, r, "Settings", Style{th.text, th.panel, attr::kBold}) + 3;
-      p.text_clipped(x, r, "\xE2\x86\x91\xE2\x86\x93 choose \xC2\xB7 Space or click to switch", Style{th.dim, th.panel},
-                     std::max(0, W - x - 1));
+      p.text_clipped(x, r, "\xE2\x86\x91\xE2\x86\x93 choose \xC2\xB7 \xE2\x86\x90\xE2\x86\x92 or click a way \xC2\xB7 Space next",
+                     Style{th.dim, th.panel}, std::max(0, W - x - 1));
     });
-    row([&](int r) { p.hline(1, r, std::max(0, W - 2), U'─', Style{th.border, th.panel}); });
-    for (const auto& sec : sections()) {
-      row([](int) {});
-      row([&](int r) {
+    line([&](int r) { p.hline(1, r, std::max(0, W - 2), U'─', Style{th.border, th.panel}); });
+    for (const auto& sec : sections_) {
+      line([](int) {});
+      line([&](int r) {
         const int x = p.text(1, r, sec.title, Style{th.heading, th.panel, attr::kBold}) + 2;
         p.text_clipped(x, r, sec.note, Style{th.dim, th.panel}, std::max(0, W - x - 1));
       });
-      for (const auto& t : sec.toggles) {
-        const bool on = value(t), sel = index == sel_;
+      for (const auto& row : sec.rows) {
         const int me = index++;
-        row([&](int r) {
+        const bool sel = me == sel_;
+        const int cur = std::clamp(row.get(), 0, int(row.names.size()) - 1);
+        line([&](int r) {
           rows_.push_back({r, me});
-          const Style base{th.text, sel && focused ? th.sel_bg : th.panel};
-          if (sel && focused) p.hline(0, r, W, U' ', base);
+          const Color bg = sel && focused ? th.sel_bg : th.panel;
+          if (sel && focused) p.hline(0, r, W, U' ', Style{th.text, bg});
           int x = 3;
-          x += p.text(x, r, on ? "\xE2\x97\x89 " : "\xE2\x97\x8B ", Style{on ? th.ok : th.dim, base.bg, attr::kBold});  // ◉ ○
-          x += p.text(x, r, t.label, Style{on ? th.text : th.dim, base.bg, sel ? attr::kBold : uint16_t(0)});
-          const int col = std::max(x + 2, 3 + 2 + label_w + 3);
-          if (col < W - 2) p.text_clipped(col, r, t.detail, Style{th.dim, base.bg}, W - col - 1);
+          x += p.text(x, r, row.label, Style{th.text, bg, sel ? attr::kBold : uint16_t(0)});
+          x = std::max(x + 2, 3 + label_w + 3);
+          // The ways side by side, the one in force filled in.
+          for (size_t i = 0; i < row.names.size() && x < W - 2; i++) {
+            const std::string pill = " " + row.names[i] + " ";
+            const bool on = int(i) == cur;
+            const Style st = on ? Style{th.panel, th.accent, attr::kBold} : Style{th.dim, bg};
+            const int w = p.text_clipped(x, r, pill, st, W - x - 1);
+            hits_.push_back({r, x, x + w, me, int(i)});
+            x += w + 1;
+          }
+          if (x + 3 < W - 2)
+            p.text_clipped(x + 2, r, row.details[size_t(cur)], Style{th.dim, bg}, W - x - 3);
         });
       }
     }
@@ -106,12 +156,16 @@ class SettingsView final : public Pane {
       case Key::Down: sel_ = std::min(count_ - 1, sel_ + 1); return true;
       case Key::Home: sel_ = 0; return true;
       case Key::End: sel_ = count_ - 1; return true;
-      case Key::Enter: flip(sel_); return true;
+      case Key::Left: step(sel_, -1, false); return true;
+      case Key::Right: step(sel_, +1, false); return true;
+      case Key::Enter: step(sel_, +1, true); return true;
       default: break;
     }
-    if (k.is(' ')) { flip(sel_); return true; }
+    if (k.is(' ')) { step(sel_, +1, true); return true; }
     if (k.is('k')) { sel_ = std::max(0, sel_ - 1); return true; }
     if (k.is('j')) { sel_ = std::min(count_ - 1, sel_ + 1); return true; }
+    if (k.is('h')) { step(sel_, -1, false); return true; }
+    if (k.is('l')) { step(sel_, +1, false); return true; }
     return false;
   }
 
@@ -119,37 +173,55 @@ class SettingsView final : public Pane {
     if (m.kind == MouseKind::WheelUp) { scroll_ = std::max(0, scroll_ - 3); return true; }
     if (m.kind == MouseKind::WheelDown) { scroll_ = std::min(std::max(0, content_h_ - view_h_), scroll_ + 3); return true; }
     if (m.kind != MouseKind::Press || m.button != MouseButton::Left) return false;
+    for (const auto& h : hits_)
+      if (h.y == local.y && local.x >= h.x0 && local.x < h.x1) {
+        sel_ = h.row;
+        choose(h.row, h.way);
+        return true;
+      }
     for (const auto& [y, i] : rows_)
       if (y == local.y) {
         sel_ = i;
-        flip(i);
+        step(i, +1, true);
         return true;
       }
     return false;
   }
 
  private:
-  static bool value(const Toggle& t) { return t.render ? render_settings().*t.render : t.get(); }
-
-  void flip(int index) {
+  Row* row_at(int index) {
     int i = 0;
-    for (const auto& sec : sections())
-      for (const auto& t : sec.toggles) {
-        if (i++ != index) continue;
-        if (t.render) {
-          RenderSettings s = render_settings();
-          s.*t.render = !(s.*t.render);
-          set_render_settings(s);
-        } else {
-          t.set(!t.get());
-        }
-        app_->set_status(std::string(t.label) + (value(t) ? ": on" : ": off"));
-        return;
-      }
+    for (auto& sec : sections_)
+      for (auto& r : sec.rows)
+        if (i++ == index) return &r;
+    return nullptr;
   }
 
+  // Moves `index`'s choice by `delta`, around the ends when `wrap`.
+  void step(int index, int delta, bool wrap) {
+    Row* r = row_at(index);
+    if (!r) return;
+    const int n = int(r->names.size());
+    int i = r->get() + delta;
+    if (wrap) i = (i % n + n) % n;
+    else i = std::clamp(i, 0, n - 1);
+    choose(index, i);
+  }
+
+  void choose(int index, int way) {
+    Row* r = row_at(index);
+    if (!r || way < 0 || way >= int(r->names.size())) return;
+    r->set(way);
+    app_->set_status(r->label + ": " + r->names[size_t(way)] + " \xE2\x80\x94 " + r->details[size_t(way)]);
+  }
+
+  struct Hit {
+    int y, x0, x1, row, way;
+  };
+  std::vector<Section> sections_;
   int sel_ = 0, count_ = 0, scroll_ = 0, view_h_ = 0, content_h_ = 0;
-  std::vector<std::pair<int, int>> rows_;  // screen row, toggle index
+  std::vector<std::pair<int, int>> rows_;  // screen row, setting index
+  std::vector<Hit> hits_;                  // where each way was drawn
 };
 
 }  // namespace

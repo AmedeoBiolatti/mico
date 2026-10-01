@@ -264,7 +264,7 @@ std::vector<PickItem> App::switcher_items() const {
     const LiveSession& s = *sp;
     live_keys.insert(s.agent() + "\t" + s.session_id());
     if (s.exited() && ws_.store().archived(s.agent(), s.session_id())) continue;
-    const ChatState cs = chat_state(&s, theme_);
+    const ChatState cs = chat_state(&s, theme());
     PickItem it;
     it.label = session_title(s);
     it.lead = std::string();
@@ -293,7 +293,7 @@ std::vector<PickItem> App::switcher_items() const {
     if (const std::string* n = ws_.store().custom_name(s->agent, s->id)) it.label = *n;
     else it.label = s->title.empty() ? s->id : text::oneline(s->title, 200);
     it.lead = "\xC2\xB7";  // ·
-    it.lead_color = theme_.dim;
+    it.lead_color = theme().dim;
     it.detail = folder_name(s->cwd) + " \xC2\xB7 " + agent_label(s->agent);
     it.hint = rel_time(s->mtime);
     it.id = "path:" + s->path;

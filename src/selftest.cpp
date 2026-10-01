@@ -413,6 +413,27 @@ int run_selftest() {
       }
       check(inline_math, "$...$ renders inline as math, not literal dollar signs");
       check(display_math, "a $$ ... $$ block renders as math");
+
+      // Equations as their source: the LaTeX as written, dollars and all.
+      {
+        const RenderSettings saved = render_settings();
+        RenderSettings src = saved;
+        src.way[kEquations] = uint8_t(Equations::Source);
+        set_render_settings(src, false);
+        lines.clear();
+        segs.clear();
+        md::render(msrc.view(mt), mt.off, false, 60, mout);
+        std::string all;
+        bool math_ink = false;
+        for (const auto& sg : segs) {
+          // This text's own spans are in msrc, not in the earlier test's src.
+          all += (sg.off & md::kScratchBit) ? text_of(sg) : msrc.view(Str{sg.off, sg.len});
+          math_ink |= sg.ink == md::Ink::Math;
+        }
+        set_render_settings(saved, false);
+        check(!math_ink && all.find("$E = mc^2$") != std::string::npos && all.find("\\alpha + \\beta") != std::string::npos,
+              "equations as source: $...$ and $$ blocks shown as written");
+      }
     }
 
     // Tables. The invariant that matters is that the dividers line up: rows
@@ -4547,8 +4568,9 @@ int run_selftest() {
     check(c.take_url().empty(), "links: pressing on one and letting go elsewhere opens nothing");
   }
 
-  // Render settings: saved as "name on|off" lines, unknown names ignored,
-  // missing ones at their defaults.
+  // Render settings: saved as "name way" lines, unknown names and ways
+  // ignored, missing ones at their defaults, and the old "on"/"off" read as
+  // they meant.
   {
     char tmpl[] = "/tmp/mico_settings_XXXXXX";
     const char* dir = mkdtemp(tmpl);
@@ -4558,21 +4580,29 @@ int run_selftest() {
     reload_render_settings();
     const RenderSettings defaults = render_settings();
     RenderSettings s = defaults;
-    s.math = false;
-    s.links = false;
+    s.way[kEquations] = uint8_t(Equations::Source);
+    s.way[kLinks] = uint8_t(Links::Urls);
+    s.way[kPictures] = uint8_t(Pictures::Large);
+    s.theme = "warm";
     const uint64_t g = render_settings_generation();
     set_render_settings(s);
     check(render_settings_generation() != g, "settings: a change bumps the generation");
     reload_render_settings();
-    check(!render_settings().math && !render_settings().links && render_settings().pictures && render_settings().charts,
-          "settings: saved and read back");
-    put_file(config_dir() + "/render", "math off\nbogus on\n");
+    check(render_settings().equations() == Equations::Source && render_settings().links() == Links::Urls &&
+              render_settings().pictures() == Pictures::Large && render_settings().picture_rows() == 48 &&
+              render_settings().charts() == Charts::Pictures && render_settings().theme == "warm",
+          "settings: every way and the theme saved and read back");
+    check(active_theme().bg == themes()[3].theme.bg, "settings: the theme named is the one in use");
+    put_file(config_dir() + "/render", "math off\ncharts on\nlinks sideways\nbogus on\n");
     reload_render_settings();
-    check(!render_settings().math && render_settings().links, "settings: unknown names ignored, missing ones default");
+    check(render_settings().equations() == Equations::Source && render_settings().charts() == Charts::Pictures &&
+              render_settings().links() == Links::UrlsAndPaths,
+          "settings: old on/off files still read; unknown names and ways keep the default");
+    check(render_settings().theme == "dark" && active_theme().bg == Theme{}.bg, "settings: no theme named, the default");
     if (old_home) setenv("XDG_CONFIG_HOME", keep.c_str(), 1);
     else unsetenv("XDG_CONFIG_HOME");
     set_render_settings(defaults, false);
-    check(defaults == RenderSettings{}, "settings: the tests run with every part on");
+    check(defaults == RenderSettings{}, "settings: the tests run with every part at its default");
   }
 
   // Images, file links and tool output.
@@ -4670,14 +4700,18 @@ int run_selftest() {
         return n;
       };
       const RenderSettings saved = render_settings();
-      RenderSettings on = saved, off = saved;
-      on.pictures = true;
-      off.pictures = false;
+      RenderSettings on = saved, off = saved, small = saved;
+      on.way[kPictures] = uint8_t(Pictures::Large);
+      off.way[kPictures] = uint8_t(Pictures::Off);
+      small.way[kPictures] = uint8_t(Pictures::Small);
       set_render_settings(on, false);
       const int shown = image_cells();
+      set_render_settings(small, false);
+      const int shown_small = image_cells();
       set_render_settings(off, false);
       const int hidden = image_cells();
       set_render_settings(saved, false);
+      check(shown_small > 0 && shown_small <= shown, "pictures: small draws no more than large");
       check(shown > 0 && hidden == 0, "pictures: a separate setting from density, shown inside a folded turn");
       unlink(path.c_str());
     }

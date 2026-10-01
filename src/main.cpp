@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
       fprintf(stderr, "mico: %s\n", why.c_str());
       return 1;
     }
-    mico::math::configure(mico::math::Config{true, cw, ch, mico::Theme{}.math});
+    mico::math::configure(mico::math::Config{true, cw, ch, mico::active_theme().math});
     const mico::math::Image* im = mico::chart::image(spec, argv[2], cols);
     if (!im) return 1;
     const std::string png = mico::math::png(*im, 0);

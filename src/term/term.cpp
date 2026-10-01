@@ -35,15 +35,14 @@ const char* const kInit = "\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h
 const char* const kFini =
     "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[0m\x1b]111\x1b\\\x1b[?1049l";
 
-std::string init_seq(Color bg) {
-  std::string s = kInit;
-  if (bg != kDefaultColor) {
-    char osc[32];
-    snprintf(osc, sizeof osc, "\x1b]11;#%06x\x1b\\", unsigned(bg) & 0xFFFFFFu);
-    s += osc;
-  }
-  return s;
+std::string background_seq(Color bg) {
+  if (bg == kDefaultColor) return {};
+  char osc[32];
+  snprintf(osc, sizeof osc, "\x1b]11;#%06x\x1b\\", unsigned(bg) & 0xFFFFFFu);
+  return osc;
 }
+
+std::string init_seq(Color bg) { return kInit + background_seq(bg); }
 
 bool enter_raw() {
   if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return false;

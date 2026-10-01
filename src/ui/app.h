@@ -65,7 +65,7 @@ class App {
   void collect_session_fds(std::vector<int>& out) const;
   bool running() const { return running_; }
   Store& store() { return ws_.store(); }
-  const Theme& theme() const { return theme_; }
+  const Theme& theme() const { return active_theme(); }
   Filters& filters() { return filters_; }
   // Advances a few times a second while an agent is working, so a spinner can
   // turn. It stops when nothing is busy, keeping an idle daemon free.
@@ -378,7 +378,6 @@ class App {
     std::string query;
   };
   std::optional<Reveal> reveal_;
-  Theme theme_;
   Filters filters_;
   Term term_;
   LiveSession* focus_after_build_ = nullptr;  // pane to focus once layout rebuilds

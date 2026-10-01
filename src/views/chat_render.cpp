@@ -309,7 +309,7 @@ bool ChatRenderer::visible(size_t i, const Filters& f) const {
   const Event& e = conv_.events()[i];
   // Pictures are their own setting: on, they show at every density, even
   // among a folded turn's steps.
-  if (e.kind == EventKind::Image && render_settings().pictures) return true;
+  if (e.kind == EventKind::Image && render_settings().pictures() != Pictures::Off) return true;
   if (folded_away(i, f)) return false;
   switch (e.kind) {
     case EventKind::User:
@@ -392,7 +392,7 @@ void ChatRenderer::emit_text(Str text, RowStyle base, int indent, int w, size_t 
     // is collapsed, the whole of it indented once expanded.
     std::string pretty;
     // A notebook the agent read is shown as one: cells, outputs, plots.
-    if (base == RowStyle::Result && render_settings().notebooks &&
+    if (base == RowStyle::Result && render_settings().notebooks() == Notebooks::Cells &&
         ((notebook::is_claude_read(body) && notebook::from_claude(conv_.file().line(cur_line_), pretty)) ||
          (body.size() < (16u << 20) && body.find("\"nbformat\"") != std::string_view::npos &&
           notebook::from_ipynb(body, pretty)))) {
@@ -400,7 +400,7 @@ void ChatRenderer::emit_text(Str text, RowStyle base, int indent, int w, size_t 
       const Str s = scratch_.add(pretty);
       md::render(pretty, s.off, true, cols, out);
     } else if (json_view::Folding fold;
-               render_settings().json && !output_lang_ && body.size() < (8u << 20) &&
+               render_settings().json() == JsonResults::Laid && !output_lang_ && body.size() < (8u << 20) &&
                json_view::pretty(body, cap <= kCollapsedResultRows, pretty,
                                  cap > kCollapsedResultRows && tool_id ? &fold : nullptr)) {
       if (cap > kCollapsedResultRows && tool_id)
@@ -460,6 +460,8 @@ void ChatRenderer::emit_text(Str text, RowStyle base, int indent, int w, size_t 
 // read (Read's path), or what a shell command printed (cat, head, tail, sed
 // -n on one file). Null for anything else.
 const code::Lang* ChatRenderer::result_lang(size_t index) const {
+  // Coloured only when code colours reach beyond fenced blocks.
+  if (render_settings().code_colours() != CodeColours::Everywhere) return nullptr;
   const Event& r = conv_.events()[index];
   for (size_t k = index; k-- > 0 && index - k < 400;) {
     const Event& c = conv_.events()[k];
@@ -498,13 +500,13 @@ void ChatRenderer::layout_image(const Event& e, int w) {
   const math::Image* im = nullptr;
   mdlines_.clear();
   md::Out out{kMaxRowsPerEvent, &scratch_, &segs_, &mdlines_, &spans_, &inline_, &md_work_};
-  if (render_settings().pictures && transcript_image(line, n, &media, &b64)) {
+  if (render_settings().pictures() != Pictures::Off && transcript_image(line, n, &media, &b64)) {
     // Named by the data itself, so the same screenshot twice is drawn once,
     // and a window shifted by older history still finds it.
     const std::string key = "tx:" + std::to_string(b64.size()) + ":" +
                             std::string(b64.substr(0, 40)) + std::string(b64.substr(b64.size() - std::min<size_t>(40, b64.size())));
     im = math::picture(key, [b64](std::string& bytes) { return math::base64_decode(b64, bytes); },
-                       std::max(4, w - indent - 3), 24, "[image]");
+                       std::max(4, w - indent - 3), render_settings().picture_rows(), "[image]");
   }
   if (im) {
     md::picture_rows(*im, 0, out);
@@ -582,7 +584,8 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
         {
           const std::string_view path = conv_.arena().view(e.summary);
           const size_t dot = path.rfind('.');
-          output_lang_ = dot != std::string_view::npos && path.find('/', dot) == std::string_view::npos
+          output_lang_ = dot != std::string_view::npos && path.find('/', dot) == std::string_view::npos &&
+                                 render_settings().code_colours() == CodeColours::Everywhere
                              ? code::lang_of(path.substr(dot + 1))
                              : nullptr;
         }

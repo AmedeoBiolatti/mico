@@ -104,7 +104,8 @@ void emit_image(const math::Image& im, uint8_t indent, Out& out);
 // image file on disk. The file is watched like a chart's data, so an image the
 // agent writes again (a plot it regenerates) is drawn again.
 bool emit_picture_line(std::string_view alt, std::string_view target, int cols, Out& out) {
-  if (!render_settings().pictures) return false;
+  const int rows = render_settings().picture_rows();
+  if (rows == 0) return false;
   if (target.starts_with("data:image/")) {
     // Inline data (a notebook's plot): named by the data itself.
     const size_t comma = target.find(',');
@@ -114,7 +115,7 @@ bool emit_picture_line(std::string_view alt, std::string_view target, int cols, 
     const std::string key = "data:" + std::to_string(b64.size()) + ":" + std::string(b64.substr(0, 40)) +
                             std::string(b64.substr(b64.size() - 40));
     const math::Image* im = math::picture(
-        key, [b64](std::string& bytes) { return math::base64_decode(b64, bytes); }, cols - 2, 24,
+        key, [b64](std::string& bytes) { return math::base64_decode(b64, bytes); }, cols - 2, rows,
         "[" + std::string(alt.empty() ? "image" : alt) + "]");
     if (!im) return false;
     emit_image(*im, 2, out);
@@ -142,7 +143,7 @@ bool emit_picture_line(std::string_view alt, std::string_view target, int cols, 
         bytes.assign(std::istreambuf_iterator<char>(f), {});
         return !bytes.empty();
       },
-      cols - 2, 24, "![" + std::string(alt) + "](" + std::string(target) + ")");
+      cols - 2, rows, "![" + std::string(alt) + "](" + std::string(target) + ")");
   if (!im) return false;
   emit_image(*im, 2, out);
   return true;
@@ -159,7 +160,7 @@ void emit_image(const math::Image& im, uint8_t indent, Out& out) {
 // A display equation as image rows. False when it is not drawn as an image
 // (no graphics, or too wide), and the caller shows it as Unicode instead.
 bool emit_display_math(std::string_view src, int cols, uint8_t indent, Out& out) {
-  if (!render_settings().math) return false;
+  if (render_settings().equations() != Equations::Typeset) return false;
   const math::Image* im = math::image(src, true, cols - indent);
   if (!im) return false;
   emit_image(*im, indent, out);
@@ -196,7 +197,7 @@ void emit_figure(const chart::Figure& f, int indent, Out& out) {
 // false when it is not a chart after all, and it is shown as code instead,
 // with the reason under it.
 bool render_chart(std::string_view body, int cols, Out& out, std::string* error) {
-  if (!render_settings().charts) return false;
+  if (render_settings().charts() == Charts::Source) return false;
   chart::Spec spec;
   if (!chart::parse(body, spec, error)) return false;
   const std::string base = out.charts ? out.charts->base_dir : std::string();
@@ -212,7 +213,7 @@ bool render_chart(std::string_view body, int cols, Out& out, std::string* error)
 // A ```mermaid block drawn in box-drawing cells. False (shown as code) when
 // it is a kind not drawn, or too wide.
 bool render_diagram(std::string_view body, int cols, Out& out) {
-  if (!render_settings().diagrams) return false;
+  if (render_settings().diagrams() == Diagrams::Source) return false;
   chart::Figure f;
   if (!diagram::draw(body, cols - 2, f)) return false;
   emit_figure(f, 2, out);
@@ -263,6 +264,8 @@ void split_inline(std::string_view s, Ink base, std::vector<Seg>& out, Arena* sc
   enum : unsigned { kDollar = 1, kParen = 2, kTick = 4, kStar = 8, kStar2 = 16,
                     kUnder = 32, kUnder2 = 64, kBracket = 128 };
   unsigned absent = 0;
+  // Equations as their source: $…$ and \(…\) are text like any other.
+  const bool math_source = render_settings().equations() == Equations::Source;
   const auto find = [&](std::string_view needle, size_t from, unsigned bit) {
     if (absent & bit) return std::string_view::npos;
     const size_t at = s.find(needle, from);
@@ -276,13 +279,13 @@ void split_inline(std::string_view s, Ink base, std::vector<Seg>& out, Arena* sc
   while (i < s.size()) {
     char c = s[i];
 
-    if (scratch && c == '$' && i + 1 < s.size() && s[i + 1] != '$') {
+    if (scratch && !math_source && c == '$' && i + 1 < s.size() && s[i + 1] != '$') {
       // $...$ inline math. $$ is display math, handled by the caller instead.
       size_t close = find("$", i + 1, kDollar);
       if (close != std::string_view::npos && close > i + 1) {
         flush(i);
         if (const math::Image* im =
-                max_cols > 0 && render_settings().math ? math::image(s.substr(i + 1, close - i - 1), false, max_cols) : nullptr) {
+                max_cols > 0 && render_settings().equations() == Equations::Typeset ? math::image(s.substr(i + 1, close - i - 1), false, max_cols) : nullptr) {
           out.push_back(image_seg(*scratch, im->id, im->base_row, im->cols));
           i = run_start = close + 1;
           continue;
@@ -296,12 +299,12 @@ void split_inline(std::string_view s, Ink base, std::vector<Seg>& out, Arena* sc
         i = run_start = close + 1;
         continue;
       }
-    } else if (scratch && c == '\\' && i + 2 < s.size() && s[i + 1] == '(') {
+    } else if (scratch && !math_source && c == '\\' && i + 2 < s.size() && s[i + 1] == '(') {
       size_t close = find("\\)", i + 2, kParen);
       if (close != std::string_view::npos) {
         flush(i);
         if (const math::Image* im =
-                max_cols > 0 && render_settings().math ? math::image(s.substr(i + 2, close - i - 2), false, max_cols) : nullptr) {
+                max_cols > 0 && render_settings().equations() == Equations::Typeset ? math::image(s.substr(i + 2, close - i - 2), false, max_cols) : nullptr) {
           out.push_back(image_seg(*scratch, im->id, im->base_row, im->cols));
           i = run_start = close + 2;
           continue;
@@ -1072,6 +1075,8 @@ void render(std::string_view text, uint32_t base, bool in_scratch, int cols, Out
   std::vector<Seg>& runs = wk.runs;
   bool in_fence = false;
   bool in_mathblock = false;  // between a line that is just "$$" and its close
+  // Equations as their source: $$ blocks are text like any other.
+  const bool math_source = render_settings().equations() == Equations::Source;
   const std::string link_base = out.charts ? out.charts->base_dir : std::string();  // where paths are found
   int item_indent = -1;   // the open list item's text column, for its continuation lines
   Ink callout = Ink::Rule;  // the open quote's bar: a callout's colour, else the rule's
@@ -1150,7 +1155,7 @@ void render(std::string_view text, uint32_t base, bool in_scratch, int cols, Out
     }
     // A display block over several lines, drawn whole once it has closed.
     // Until then (still streaming) it is shown line by line as Unicode.
-    if (!in_fence && !in_mathblock && math::config().enabled) {
+    if (!in_fence && !in_mathblock && !math_source && math::config().enabled) {
       std::string_view body;
       size_t after = 0;
       if (display_block(text, line, &body, &after) && emit_display_math(body, cols, 2, out)) {
@@ -1158,7 +1163,7 @@ void render(std::string_view text, uint32_t base, bool in_scratch, int cols, Out
         continue;
       }
     }
-    if (!in_fence && trim(line) == "$$") {
+    if (!in_fence && !math_source && trim(line) == "$$") {
       in_mathblock = !in_mathblock;
       pos = nl == std::string_view::npos ? text.size() + 1 : nl + 1;
       continue;
@@ -1176,7 +1181,7 @@ void render(std::string_view text, uint32_t base, bool in_scratch, int cols, Out
       runs.push_back(Seg{r.off | kScratchBit, r.len, Ink::Math});
       indent = 2;
       emit_block(text, base, in_scratch, runs, cols - indent, indent, out);
-    } else if (std::string_view inner; display_math_line(line, &inner)) {
+    } else if (std::string_view inner; !math_source && display_math_line(line, &inner)) {
       if (emit_display_math(inner, cols, 2, out)) {
         if (nl == std::string_view::npos) break;
         pos = nl + 1;
@@ -1549,11 +1554,12 @@ void strip_ansi(std::string_view in, std::string& text, std::vector<Seg>& runs) 
 
 void find_links(std::string_view s, const std::string& base, std::vector<LinkHit>& out) {
   out.clear();
-  if (!render_settings().links) return;
+  if (render_settings().links() == Links::Off) return;
   std::vector<std::pair<size_t, size_t>> urls;
   find_urls(s, urls);
   for (auto [a, b] : urls) out.push_back(LinkHit{a, b, url_target(s.substr(a, b - a))});
-  if (s.find('.') != std::string_view::npos || s.find('/') != std::string_view::npos) {
+  if (render_settings().links() == Links::UrlsAndPaths &&
+      (s.find('.') != std::string_view::npos || s.find('/') != std::string_view::npos)) {
     std::vector<LinkHit> paths;
     find_paths(s, base, out, paths);
     out.insert(out.end(), paths.begin(), paths.end());
@@ -1573,7 +1579,7 @@ void render_output(std::string_view text, uint32_t base, bool in_scratch, int co
   std::string_view body;
   if (text.find('\x1b') != std::string_view::npos || text.find('\r') != std::string_view::npos) {
     strip_ansi(text, clean, colour);
-    if (!render_settings().ansi) colour.assign(1, Seg{0, uint32_t(clean.size()), Ink::Text});
+    if (render_settings().output_colours() == OutputColours::Plain) colour.assign(1, Seg{0, uint32_t(clean.size()), Ink::Text});
     ref = out.scratch->add(clean).off | kScratchBit;
     body = clean;
   } else {
