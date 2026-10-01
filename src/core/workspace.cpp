@@ -3,6 +3,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <time.h>
+
 #include <algorithm>
 #include <cstdlib>
 
@@ -10,6 +12,15 @@
 #include "base/text.h"
 
 namespace mico {
+namespace {
+
+int64_t now_ms() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return int64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+}  // namespace
 
 Workspace::Workspace() { store_.scan(); }
 
@@ -53,6 +64,7 @@ Workspace::Started Workspace::start_agent(const std::string& agent, const std::s
   r.session = s.get();
   r.how = Started::How::Started;
   r.moved = dir != cwd;
+  launched_later(s.get());
   live_.push_back(std::move(s));
   ++sessions_version_;
   return r;
@@ -96,6 +108,7 @@ Workspace::Started Workspace::continue_session(const std::string& agent, const s
       if (!previous->restart(l)) continue;
       r.session = previous.get();
       r.how = Started::How::Restarted;
+      launched_later(previous.get());
       ++sessions_version_;
       return r;
     }
@@ -107,6 +120,7 @@ Workspace::Started Workspace::continue_session(const std::string& agent, const s
   }
   r.session = s.get();
   r.how = Started::How::Started;
+  launched_later(s.get());
   live_.push_back(std::move(s));
   ++sessions_version_;
   return r;
@@ -120,6 +134,7 @@ LiveSession* Workspace::start_command(std::vector<std::string> argv, const std::
   l.cwd = cwd;
   l.argv = std::move(argv);
   if (!s->start(l)) return nullptr;
+  launched_later(s.get());
   live_.push_back(std::move(s));
   ++sessions_version_;
   return live_.back().get();
@@ -131,6 +146,7 @@ bool Workspace::reap(const std::function<void(LiveSession*)>& gone) {
     for (size_t i = 0; i < live_.size(); i++) {
       if (live_[i].get() != s) continue;
       gone(s);
+      unlaunched_.erase(s);
       live_[i]->pty().terminate();
       live_.erase(live_.begin() + long(i));
       ++sessions_version_;
@@ -171,8 +187,30 @@ std::string Workspace::title_of(const LiveSession& session) const {
   return "New " + session.agent() + " chat";
 }
 
+void Workspace::launched_later(LiveSession* s) { unlaunched_[s] = now_ms(); }
+
+void Workspace::launch_unsized() {
+  const int64_t now = now_ms();
+  for (auto it = unlaunched_.begin(); it != unlaunched_.end();) {
+    LiveSession* s = it->first;
+    if (s->spawned()) {
+      it = unlaunched_.erase(it);
+    } else if (now - it->second >= kLaunchWaitMs) {
+      s->set_geometry(kDefaultCols, kDefaultRows);
+      it = unlaunched_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 unsigned Workspace::service(bool usage_wanted) {
   unsigned changed = 0;
+  if (!unlaunched_.empty()) {
+    const size_t before = unlaunched_.size();
+    launch_unsized();
+    if (unlaunched_.size() != before) changed |= kSessions;
+  }
   for (auto& s : live_)
     if (s->pump()) changed |= kSessions;
 
@@ -223,6 +261,7 @@ unsigned Workspace::service(bool usage_wanted) {
 
 int Workspace::idle_timeout_ms(bool usage_wanted) const {
   int ms = 1000;
+  if (!unlaunched_.empty()) ms = 250;  // to launch what nothing sizes, on time
   if (!search_.complete()) ms = 1;  // a search in progress works between frames
   if (!activity_.complete() || (usage_wanted && !usage_.complete())) ms = 1;  // so does an index pass
   if (model_probe_.running() || commands_.probing()) ms = 30;

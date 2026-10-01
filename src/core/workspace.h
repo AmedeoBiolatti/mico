@@ -28,6 +28,10 @@ class Workspace {
   // How long an index pass reads between frames: short enough that a key is
   // answered at once, long enough that a gigabyte of transcripts takes seconds.
   static constexpr int kIndexSliceMs = 25;
+  // How long a new session waits for a front end to size it, and the size it
+  // gets when none does.
+  static constexpr int kLaunchWaitMs = 1500;
+  static constexpr int kDefaultCols = 120, kDefaultRows = 40;
 
   Workspace();  // scans the store
   ~Workspace();
@@ -143,6 +147,14 @@ class Workspace {
   // Started from the first live session so it inherits a directory the user
   // has already trusted — an untrusted one would only get a dialog.
   ModelProbe model_probe_;
+  // Sessions started but not yet launched, with when they were asked for. An
+  // agent is launched by the first front end that sizes it, so it starts at
+  // the size it is drawn at; one that nothing sizes (started from a client
+  // that draws no terminal, or not shown) is launched at a default size.
+  std::map<LiveSession*, int64_t> unlaunched_;
+  void launched_later(LiveSession* s);
+  void launch_unsized();
+
   // New chats started from a sub-project, filed under it once their agent
   // has told us their id: project path and sub-project name.
   std::map<LiveSession*, std::pair<std::string, std::string>> pending_subs_;

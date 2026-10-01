@@ -19,7 +19,8 @@ const st = {
   adapters: [],
   folders: [],
   agents: [],
-  chat: null,        // {path, title, start}
+  chat: null,        // {path, key, title, start}: a stored chat, or a running agent
+  openKey: null,     // an agent just started here, to open once it is listed
   calls: new Map(),  // tool id -> its <details>, so a result lands under its call
   rid: 0,
   pending: new Map(),  // rid -> what to do with the result
@@ -39,7 +40,7 @@ function connect() {
     st.backoff = 500;
     $("conn").className = "conn on";
     status("");
-    if (st.chat) send({ type: "open", path: st.chat.path });
+    if (st.chat && st.chat.path) send({ type: "open", path: st.chat.path });
     else if (startChat) openChat(startChat, "");
   };
   ws.onmessage = (e) => receive(JSON.parse(e.data));
@@ -67,7 +68,7 @@ function receive(m) {
   switch (m.type) {
     case "hello": st.adapters = m.adapters || []; renderFolders(); break;
     case "folders": st.folders = m.folders; renderFolders(); renderHead(); break;
-    case "agents": st.agents = m.agents; renderAgents(); renderHead(); break;
+    case "agents": st.agents = m.agents; agentsChanged(); break;
     case "chat": if (st.chat && m.path === st.chat.path) addEvents(m); break;
     case "chat_state": if (st.chat && m.path === st.chat.path) applyState(m); break;
     case "result": {
@@ -91,6 +92,25 @@ function ago(seconds) {
   return `${Math.floor(d / 86400)}d`;
 }
 
+function agentsChanged() {
+  if (st.openKey) {
+    const a = st.agents.find((x) => x.key === st.openKey);
+    if (a) { st.openKey = null; openAgent(a); }
+  }
+  // A new agent writes its transcript only with its first message: follow it
+  // there once it does.
+  if (st.chat && st.chat.key && !st.chat.path) {
+    const a = st.agents.find((x) => x.key === st.chat.key);
+    if (a && a.transcript) {
+      st.chat.path = a.transcript;
+      $("events").replaceChildren();
+      send({ type: "open", path: a.transcript });
+    }
+  }
+  renderAgents();
+  renderHead();
+}
+
 function renderAgents() {
   const ul = $("agents");
   ul.replaceChildren();
@@ -99,11 +119,9 @@ function renderAgents() {
     const li = el("li");
     li.append(el("span", `dot ${a.status}`), document.createTextNode(a.title || a.agent));
     li.title = `${a.agent} · ${a.status} · ${a.cwd}`;
-    if (st.chat && a.transcript === st.chat.path) li.classList.add("current");
-    li.onclick = () => {
-      if (a.transcript) openChat(a.transcript, a.title);
-      else status(`${a.title}: no transcript yet — it appears once the agent writes one`);
-    };
+    if (st.chat && (st.chat.key === a.key || (a.transcript && a.transcript === st.chat.path)))
+      li.classList.add("current");
+    li.onclick = () => openAgent(a);
     ul.append(li);
   }
 }
@@ -119,8 +137,11 @@ function renderFolders() {
     for (const a of st.adapters) {
       const b = el("button", "", `+ ${a.id}`);
       b.title = `start ${a.name} in ${f.path}`;
-      b.onclick = () => command({ type: "start", agent: a.id, cwd: f.path },
-                                () => status(`started ${a.id} in ${f.name}`));
+      b.onclick = () => command({ type: "start", agent: a.id, cwd: f.path }, (r) => {
+        status(`started ${a.id} in ${f.name}`);
+        st.openKey = r.key;  // opened once the agents list names it
+        agentsChanged();
+      });
       head.append(b);
     }
     div.append(head);
@@ -140,20 +161,28 @@ function renderFolders() {
 
 // ---------------------------------------------------------------------- chat
 
-function openChat(path, title) {
-  if (st.chat) send({ type: "close", path: st.chat.path });
-  st.chat = { path, title: title || "", start: false };
+function openChat(path, title, key) {
+  if (st.chat && st.chat.path) send({ type: "close", path: st.chat.path });
+  st.chat = { path, key: key || null, title: title || "", start: false };
   st.calls.clear();
   $("events").replaceChildren();
   $("older").hidden = true;
-  send({ type: "open", path });
+  if (path) send({ type: "open", path });
+  else $("events").append(el("div", "ev notice", "Nothing written yet: the chat starts with your first message."));
   renderHead();
   renderAgents();
   renderFolders();
 }
 
+// A running agent: its chat once it has one, or the agent itself before then.
+function openAgent(a) {
+  openChat(a.transcript || null, a.title, a.key);
+}
+
 function liveAgent() {
-  return st.chat && st.agents.find((a) => a.transcript === st.chat.path && a.status !== "exited");
+  if (!st.chat) return null;
+  return st.agents.find((a) => a.status !== "exited" &&
+                        (st.chat.key ? a.key === st.chat.key : a.transcript && a.transcript === st.chat.path));
 }
 
 function renderHead() {
@@ -164,7 +193,9 @@ function renderHead() {
       for (const c of f.chats) if (c.path === st.chat.path) st.chat.title = c.title;
   $("chat-title").textContent = (a && a.title) || st.chat.title || st.chat.path;
   $("chat-meta").textContent = a ? `${a.agent} · ${a.status} · ${a.cwd}` : "stored chat";
+  const wasHidden = $("prompt").hidden;
   $("prompt").hidden = !a;
+  if (a && wasHidden && !st.chat.path) $("prompt-text").focus();
 }
 
 // A paragraph with **bold** and `code` marked, each piece as text.
@@ -296,7 +327,7 @@ function applyState(m) {
 
 // -------------------------------------------------------------------- prompt
 
-$("older").onclick = () => { if (st.chat) send({ type: "older", path: st.chat.path }); };
+$("older").onclick = () => { if (st.chat && st.chat.path) send({ type: "older", path: st.chat.path }); };
 
 $("prompt").onsubmit = (e) => {
   e.preventDefault();

@@ -133,6 +133,21 @@ int run_api_test() {
   append(path, R"({"type":"user","cwd":")" + dir + R"(","message":{"role":"user","content":"after close"}})");
   check(!has(poll_all(c), "after close"), "a closed chat is no longer followed");
 
+  // --- a session no front end sizes still starts ------------------------------
+  {
+    LiveSession* s = ws.start_command({"/bin/cat"}, dir);
+    check(s && !s->spawned(), "a new session waits for a front end to size it");
+    for (int i = 0; i < 40 && s && !s->spawned(); i++) {
+      ws.service(false);
+      usleep(50 * 1000);
+    }
+    check(s && s->spawned() && !s->exited(), "one that nothing sizes is launched at a default size");
+    if (s) {
+      ws.close(s);
+      ws.reap([](LiveSession*) {});
+    }
+  }
+
   unlink(path.c_str());
   rmdir(dir.c_str());
   if (g_failures == 0) printf("api: all checks passed\n");
