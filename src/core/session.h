@@ -35,6 +35,9 @@ class LiveSession {
   // than no answer.
   enum class Status { Working, Idle, Waiting, Exited };
   ~LiveSession();
+  // Unique among every session this process has run, and never reused: how a
+  // client names a session across messages.
+  uint64_t serial() const { return serial_; }
   using Launch = mico::Launch;
 
 
@@ -175,6 +178,11 @@ class LiveSession {
   bool was_working_ = false;
   uint64_t work_generation_ = 0;
   uint64_t generation_ = 0;
+  const uint64_t serial_ = next_serial();
+  static uint64_t next_serial() {
+    static uint64_t n = 0;
+    return ++n;
+  }
   bool was_exited_ = false;
   int trust_tries_ = 0;
   int64_t trust_next_ms_ = 0;

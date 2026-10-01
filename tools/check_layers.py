@@ -21,6 +21,7 @@ LAYERS = [
     'model',
     'adapters',
     'core',
+    'api',
     'term',
     'tui',  # views/ and ui/
     'net',
@@ -29,7 +30,8 @@ LAYERS = [
 LIBRARY = {'views': 'tui', 'ui': 'tui'}
 # Pairs that sit side by side: neither may include the other. Math is
 # content layout; nothing below the renderers needs to draw.
-INDEPENDENT = [{'math', 'vt'}, {'math', 'model'}, {'math', 'adapters'}, {'math', 'core'}]
+INDEPENDENT = [{'math', 'vt'}, {'math', 'model'}, {'math', 'adapters'}, {'math', 'core'},
+               {'api', 'term'}, {'api', 'math'}]
 
 INCLUDE = re.compile(r'^\s*#\s*include\s+"([a-z_]+)/[^"]+"', re.M)
 

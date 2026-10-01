@@ -24,6 +24,7 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 #   model     mico's normalized types: Event, SessionState, Launch
 #   adapters  the Adapter interface, and one per agent: claude, codex, pi/omp
 #   core      sessions, the store, search, activity: everything but drawing
+#   api       the state protocol: a client's view of the workspace, as messages
 #   term      the host terminal mico draws on: output, input, kitty/sixel
 #   tui       views and the app, drawn into cells
 #   net       daemon and client
@@ -31,6 +32,7 @@ add_library(mico_base STATIC
   src/base/text.cpp
   src/base/uuid.cpp
   src/base/path.cpp
+  src/base/json_write.cpp
   src/base/json.cpp
   src/base/jsonl.cpp
   src/base/log.cpp
@@ -118,6 +120,11 @@ add_library(mico_core STATIC
 )
 target_link_libraries(mico_core PUBLIC mico_adapters mico_vt PRIVATE util)
 
+add_library(mico_api STATIC
+  src/api/client.cpp
+)
+target_link_libraries(mico_api PUBLIC mico_core)
+
 add_library(mico_term STATIC
   src/term/term.cpp
   src/term/encoder.cpp
@@ -163,7 +170,7 @@ add_library(mico_net STATIC
   src/net/server.cpp
   src/net/client.cpp
 )
-target_link_libraries(mico_net PUBLIC mico_tui)
+target_link_libraries(mico_net PUBLIC mico_tui mico_api)
 
 add_executable(mico
   src/main.cpp
@@ -171,6 +178,7 @@ add_executable(mico
   src/bench.cpp
   src/selftest.cpp
   src/regression_test.cpp
+  src/api_test.cpp
 )
 target_link_libraries(mico PRIVATE mico_net)
 # Resolve every symbol at load time: lazy PLT binding showed up at ~10% of
@@ -194,6 +202,8 @@ set(MICO_TEST_ENV
 
 add_test(NAME selftest COMMAND mico --selftest)
 set_tests_properties(selftest PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
+add_test(NAME api COMMAND mico --api-test)
+set_tests_properties(api PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)

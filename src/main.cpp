@@ -19,6 +19,7 @@
 namespace mico {
 int run_bench();
 int run_selftest();
+int run_api_test();
 int run_daemon();
 int run_client(bool allow_spawn);
 int kill_daemon();
@@ -128,6 +129,8 @@ int main(int argc, char** argv) {
       return mico::run_bench();
     } else if (!strcmp(argv[i], "--selftest")) {
       return mico::run_selftest();
+    } else if (!strcmp(argv[i], "--api-test")) {
+      return mico::run_api_test();
     } else if (!strcmp(argv[i], "--spawn-agent") && i + 1 < argc) {
       spawn_agent = argv[++i];
     } else if (!strcmp(argv[i], "--vt") && i + 1 < argc) {
