@@ -17,16 +17,23 @@ void ClaudeAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& 
   // "tool_use" or "tool_result", in one scan.
   if (!text::contains(raw, "\"tool_"))
     return;
+  // Stops once it has both: what follows them, toolUseResult above all,
+  // often repeats the whole of a tool's output.
   int64_t at = 0;
-  js::Value message{};
-  js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
-    if (k == "timestamp") at = parse_time(v.body());
-    else if (k == "message") message = v;
-    return true;
+  bool stamped = false;
+  std::string_view message;
+  js::scan_keys(raw, [&](std::string_view k, std::string_view rest) {
+    if (k == "timestamp") {
+      at = parse_time(js::string_body(rest));
+      stamped = true;
+    } else if (k == "message") {
+      message = rest;
+    }
+    return !(stamped && !message.empty());
   });
-  if (!message.is_object()) return;
+  if (!message.starts_with('{')) return;
   js::Value content{};
-  js::scan_object(message.raw, [&](std::string_view k, const js::Value& v) {
+  js::scan_object(message, [&](std::string_view k, const js::Value& v) {
     if (k == "content") { content = v; return false; }
     return true;
   });

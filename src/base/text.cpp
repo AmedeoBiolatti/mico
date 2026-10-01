@@ -290,15 +290,21 @@ size_t find_impl(std::string_view hay, std::string_view needle, size_t from) {
     size_t i1, i2;
     anchors(needle, false, i1, i2);
     const __m128i c1 = _mm_set1_epi8(nd[i1]), c2 = _mm_set1_epi8(nd[i2]);
+    // memchr is called only after a block holding no first byte at all, so a
+    // stretch dense with it (JSON's quotes) stays in the vector loop.
     const size_t last = n - k;  // the last possible start
+    bool skip = true;
     while (i <= last) {
-      const void* q = memchr(h + i, nd[0], last - i + 1);
-      if (!q) return std::string_view::npos;
-      i = size_t(static_cast<const char*>(q) - h);
+      if (skip) {
+        const void* q = memchr(h + i, nd[0], last - i + 1);
+        if (!q) return std::string_view::npos;
+        i = size_t(static_cast<const char*>(q) - h);
+      }
       if (i + k - 1 + 16 > n) break;  // too near the end for a block: the loop below
-      const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(h + i + i1));
-      const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(h + i + i2));
-      unsigned mask = unsigned(_mm_movemask_epi8(_mm_and_si128(_mm_cmpeq_epi8(a, c1), _mm_cmpeq_epi8(b, c2))));
+      const __m128i a = _mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(h + i + i1)), c1);
+      const __m128i b = _mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(h + i + i2)), c2);
+      skip = _mm_movemask_epi8(a) == 0;
+      unsigned mask = unsigned(_mm_movemask_epi8(_mm_and_si128(a, b)));
       while (mask) {
         const size_t at = i + size_t(__builtin_ctz(mask));
         if (match(at)) return at;

@@ -91,8 +91,24 @@ void scan_claude_message(std::string_view raw, UsageEntry& e, UsageResume& r) {
 
 }  // namespace
 
+namespace {
+
+// True when the record's head names it a user record: the first "type" in its
+// first few hundred bytes reads "user". A user record — most of a transcript's
+// bytes, being tool output — carries no usage. Other records cannot be told
+// apart this way (an assistant's message, with its own "type", comes first),
+// so a head that says anything else proves nothing.
+bool head_says_user(std::string_view raw) {
+  const std::string_view head = raw.substr(0, 400);
+  const size_t at = head.find("\"type\":\"");
+  return at != std::string_view::npos && head.substr(at + 8).starts_with("user\"");
+}
+
+}  // namespace
+
 void ClaudeAdapter::read_usage(LineReader& j, UsageEntry& e, UsageResume& r) const {
   scan_forward(j, r, [&](std::string_view raw) {
+    if (head_says_user(raw)) return;
     if (text::contains(raw, "\"usage\"")) scan_claude_message(raw, e, r);
     else if (text::contains(raw, "cost-state")) scan_claude_cost_state(raw, e);
   });

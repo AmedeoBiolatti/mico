@@ -54,6 +54,11 @@ class CodexAdapter final : public Adapter {
   ChipControl chip_control(std::string_view key) const override;
 };
 
+// The type of a rollout record's payload, read from the record's head, where
+// codex writes it: {"timestamp":…,"type":…,"payload":{"type":"function_call",….
+// Empty when the head does not have that shape; a caller then reads the line.
+std::string_view codex_payload_type(std::string_view raw);
+
 // Reading its screen (screen.cpp).
 
 // Codex's "Working (12s • esc to interrupt)" line, just above its input box.

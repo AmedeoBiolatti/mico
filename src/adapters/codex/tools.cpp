@@ -14,28 +14,49 @@ using namespace tools;
 // Newer rollouts record each command with its duration and exit
 // code; older ones a function call, and an output headed "Exit code: N /
 // Wall time: X seconds".
+std::string_view codex_payload_type(std::string_view raw) {
+  const std::string_view head = raw.substr(0, 256);
+  constexpr std::string_view kKey = "\"payload\":{\"type\":\"";
+  const size_t at = head.find(kKey);
+  if (at == std::string_view::npos) return {};
+  const size_t from = at + kKey.size();
+  const size_t end = head.find('"', from);
+  return end == std::string_view::npos ? std::string_view() : head.substr(from, end - from);
+}
+
 void CodexAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const {
-  const bool item = text::contains(raw, "\"item_completed\"");
-  if (!item && !text::contains(raw, "function_call") && !text::contains(raw, "custom_tool_call"))
+  // Most records are no tool call. Told by the head's payload type when it
+  // has one, rather than by scanning a line that can run to megabytes.
+  if (const std::string_view pt = codex_payload_type(raw); !pt.empty()) {
+    if (pt != "item_completed" && pt != "function_call" && pt != "function_call_output" &&
+        pt != "custom_tool_call" && pt != "custom_tool_call_output")
+      return;
+  } else if (!text::contains(raw, "\"item_completed\"") && !text::contains(raw, "function_call") &&
+             !text::contains(raw, "custom_tool_call")) {
     return;
+  }
+  // The payload is most of the record: stop at it rather than measure it, and
+  // read it once, below.
   int64_t at = 0;
-  js::Value payload{};
-  js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
-    if (k == "timestamp") at = parse_time(v.body());
-    else if (k == "payload") payload = v;
+  std::string_view payload;
+  js::scan_keys(raw, [&](std::string_view k, std::string_view rest) {
+    if (k == "timestamp") at = parse_time(js::string_body(rest));
+    else if (k == "payload") { payload = rest; return false; }
     return true;
   });
-  if (!payload.is_object()) return;
+  if (!payload.starts_with('{')) return;
   std::string_view ptype;
   std::string name, call_id, output, input_text;
   js::Value it{}, args{};
-  js::scan_object(payload.raw, [&](std::string_view k, const js::Value& v) {
+  js::scan_object(payload, [&](std::string_view k, const js::Value& v) {
     if (k == "type") ptype = v.body();
     else if (k == "item") it = v;
     else if (k == "name") name = text_of(v);
     else if (k == "call_id") call_id = text_of(v);
     else if (k == "arguments") args = v;
-    else if (k == "output") output = v.is_string() ? text_of(v) : std::string(v.raw);
+    // Only its head is read, for an exit code and a time: not the whole of
+    // what the command printed.
+    else if (k == "output") output = v.is_string() ? js::string_prefix(v.raw, 1024) : std::string(v.raw.substr(0, 1024));
     else if (k == "input") input_text = text_of(v);
     return true;
   });

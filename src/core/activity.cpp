@@ -408,7 +408,9 @@ struct Reader final : ToolSink {
     tr.offset = offset;
     // Classified on the command as written, line breaks and all; shown on one.
     size_t from = 0;
-    tr.kind = reading ? ToolKind::Read : classify_tool(tool, command, &tr.group, &from);
+    tr.kind = classify_tool(tool, command, &tr.group, &from);
+    // The agent's own word that the command only read: the kind, not the group.
+    if (reading) tr.kind = ToolKind::Read;
     tr.failed = failed;
     // A file tool takes milliseconds. One that took many seconds sat on a
     // permission prompt: that time was spent waiting for the user.

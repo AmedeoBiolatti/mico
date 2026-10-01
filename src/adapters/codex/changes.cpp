@@ -8,6 +8,12 @@ namespace mico {
 using namespace changes;
 
 bool CodexAdapter::may_have_changes(std::string_view raw) const {
+  // Only a completed item (FileChange) or an apply_patch call holds changes:
+  // the head's payload type says which a record is, when it has one.
+  const std::string_view pt = codex_payload_type(raw);
+  if (pt == "item_completed") return has(raw, "\"FileChange\"");
+  if (pt == "custom_tool_call") return has(raw, "\"apply_patch\"");
+  if (!pt.empty()) return false;
   return has(raw, "\"FileChange\"") || (has(raw, "\"apply_patch\"") && has(raw, "\"custom_tool_call\""));
 }
 

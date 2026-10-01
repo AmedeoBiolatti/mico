@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -186,6 +187,19 @@ bool scan_array(std::string_view s, F&& fn) {
 
 // Appends the unescaped body of a JSON string to `out`.
 void unescape_append(std::string_view body, std::string& out);
+
+// The JSON string at the start of `s`, unescaped, but no more than about its
+// first `max` bytes: for a field of which only the head is ever read, so that
+// a megabyte of tool output is neither walked to its end nor copied. Empty
+// when `s` does not start with a string.
+inline std::string string_prefix(std::string_view s, size_t max) {
+  std::string out;
+  if (s.empty() || s[0] != '"') return out;
+  const std::string_view window = s.substr(0, std::min(s.size(), max + 2));
+  const size_t end = detail::skip_string(window, 0);
+  unescape_append(end >= 2 && window[end - 1] == '"' ? window.substr(1, end - 2) : window.substr(1), out);
+  return out;
+}
 // `s` as a JSON string, quotes included.
 std::string quote(std::string_view s);
 

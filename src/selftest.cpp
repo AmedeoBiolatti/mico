@@ -1514,6 +1514,11 @@ int run_selftest() {
           "tools: codex commands carry their own duration and exit code");
     check(a.runs.size() == 2 && a.runs[1].dur_ms == 2500 && !a.runs[1].failed && a.runs[1].kind == ToolKind::Build &&
               a.runs[1].group == "npm run build", "tools: older codex: Wall time is the duration");
+    put_file(cx,
+             R"({"timestamp":"2026-09-20T10:00:05.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":["/bin/bash","-lc","rg -n foo src"],"parsed_cmd":[{"type":"search"}],"exit_code":0,"duration":{"secs":0,"nanos":2000000},"status":"completed"}}})" "\n");
+    a = ActivityIndex::read_file(cx, "codex");
+    check(a.runs.size() == 1 && a.runs[0].kind == ToolKind::Read && a.runs[0].group == "rg",
+          "tools: a command codex says only searched is a read, and keeps its group");
 
     const std::string pi = "/tmp/mico_activity_pi.jsonl";
     put_file(pi,
