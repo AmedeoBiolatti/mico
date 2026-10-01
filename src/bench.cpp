@@ -67,10 +67,14 @@ int run_bench() {
   // profile of them is not drowned out by the rest.
   const char* only = getenv("MICO_BENCH");
   const bool indexes_only = only && !strcmp(only, "indexes");
+  // MICO_BENCH=chat skips the pictures and the index passes, for profiling a
+  // chat's open, scroll and jump paths.
+  const bool chat_only = only && (!strcmp(only, "chat") || !strcmp(only, "jump"));
+  const bool jump_only = only && !strcmp(only, "jump");  // and stop after the jump
 
   // Pictures: what the first sight of an equation or a chart costs, at a
   // HiDPI cell size (the expensive case). Each is drawn once and cached.
-  if (!indexes_only) {
+  if (!indexes_only && !chat_only) {
     printf("  pictures (18x38 px cells)\n\n");
     char note[96];
     const auto avg = [](auto&& fn, int n) {
@@ -128,7 +132,7 @@ int run_bench() {
 
   // The indexes behind Usage, Tools, Diff and Search each read every
   // transcript; a full pass is what the first look at those tabs waits for.
-  {
+  if (!chat_only) {
     size_t bytes = 0;
     for (const auto& p : store.projects())
       for (const auto& sr : p.sessions) bytes += sr.bytes;
@@ -192,6 +196,7 @@ int run_bench() {
   chat.set_scroll(5000);
   { Painter p(s, r); chat.render(p, th, f); }
   line("jump to scroll 5000", ms_since(t));
+  if (jump_only) return 0;
 
   t = Clock::now();
   for (int i = 0; i < kFrames; i++) { Painter p(s, r); chat.render(p, th, f); }
