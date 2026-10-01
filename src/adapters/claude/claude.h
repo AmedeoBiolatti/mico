@@ -18,6 +18,23 @@ class ClaudeAdapter final : public Adapter {
   void observe(std::string_view raw, SessionState& st) const override;
   void seed_state(SessionState& st) const override;
 
+  // tools.cpp
+  void read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const override;
+
+  // usage.cpp
+  void read_usage(Jsonl& j, UsageEntry& e, UsageResume& r) const override;
+  bool resumes_usage() const override { return true; }
+  bool prices_from_samples() const override { return true; }
+
+  // changes.cpp
+  bool may_have_changes(std::string_view raw) const override;
+  void read_changes(std::string_view raw, std::string_view cwd, bool text,
+                    std::vector<LineChanges>& out) const override;
+
+  // list.cpp
+  void list_sessions(const std::function<void(SessionRef&&)>& add) const override;
+  void trust_folder(const std::string& path) const override;
+
   // session.cpp
   void prepare(Launch& l, const LaunchExtras& x) const override;
   bool continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const override;

@@ -6,8 +6,12 @@
 #include <string_view>
 #include <vector>
 
+#include "model/changes.h"
 #include "model/event.h"
 #include "model/launch.h"
+#include "model/session_ref.h"
+#include "model/tools.h"
+#include "model/usage.h"
 #include "model/state.h"
 
 namespace mico {
@@ -29,6 +33,7 @@ inline void make_chart_event(Event& e, Arena& arena, std::string_view args_json)
 
 
 class Vt;
+class Jsonl;
 struct PermissionPrompt;
 struct BtwPanel;
 
@@ -112,6 +117,47 @@ class Adapter {
   // chip bar appear before the first turn, so model/effort can be set on a
   // fresh session the way omp's harness does it.
   virtual void seed_state(SessionState& st) const {}
+
+  // --- Tool runs -----------------------------------------------------------
+
+  // Reports the tool calls and results one transcript line records, the line
+  // starting at byte `offset`. The activity index times and classifies them.
+  virtual void read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const {}
+
+  // --- Usage ---------------------------------------------------------------
+
+  // Adds the tokens (and, where the agent writes them, the dollars and the
+  // rate limit) a transcript records to `e`. An agent that resumes_usage()
+  // reads only from `r.offset` on and advances it; others read it all.
+  virtual void read_usage(Jsonl& j, UsageEntry& e, UsageResume& r) const {}
+  // Whether read_usage() can pick up where an earlier read of a growing
+  // transcript stopped, so a running session costs only its new lines.
+  virtual bool resumes_usage() const { return false; }
+  // Whether the agent's dollars come from a PriceBook fitted to the price
+  // samples it records, rather than from the transcript itself.
+  virtual bool prices_from_samples() const { return false; }
+
+  // --- File changes --------------------------------------------------------
+
+  // A cheap test, before any parsing: false when `raw` cannot hold a change.
+  virtual bool may_have_changes(std::string_view raw) const { return false; }
+  // The file changes one transcript line records, a group per call. `cwd`
+  // resolves the relative paths some agents write; `text` false counts lines
+  // without keeping them, which is what an index over every chat wants.
+  virtual void read_changes(std::string_view raw, std::string_view cwd, bool text,
+                            std::vector<LineChanges>& out) const {}
+
+  // --- Stored sessions -----------------------------------------------------
+
+  // Every session the agent has stored, read off the head of each transcript:
+  // what the chat list shows. Read-only: mico never writes into an agent's
+  // store.
+  virtual void list_sessions(const std::function<void(SessionRef&&)>& add) const {}
+
+  // Tells the agent that `path`, a folder the user just tracked, is trusted,
+  // so it does not ask. The one place mico writes into an agent's own config,
+  // and only for an agent that would otherwise stop at a dialog there.
+  virtual void trust_folder(const std::string& path) const {}
 
   // --- Launching -----------------------------------------------------------
 

@@ -6,19 +6,9 @@
 #include <vector>
 
 #include "adapters/adapter.h"
+#include "model/session_ref.h"
 
 namespace mico {
-
-struct SessionRef {
-  std::string id;     // agent session uuid
-  std::string path;   // transcript file
-  std::string title;  // ai-title, else first user turn
-  std::string agent;  // "claude" | "codex" | "pi" | "omp"
-  std::string cwd;
-  int64_t mtime = 0;
-  uint64_t bytes = 0;
-  std::string sub{};  // the sub-project it belongs to, empty for none
-};
 
 // A part of a project: a name, and the folder its chats run in — the
 // project's own folder, or one under it. mico's own grouping; the agents
@@ -94,12 +84,6 @@ class Store {
   static std::string mark_key(const std::string& agent, const std::string& id) {
     return agent + "\t" + id;
   }
-  void scan_claude();
-  void scan_codex();
-  // pi (earendil-works/pi-coding-agent) and Oh My Pi both write the same
-  // session-record JSONL under sessions/<cwd-slug>/<timestamp>_<uuid>.jsonl,
-  // so one scan covers both; only the root and the agent label differ.
-  void scan_pi_family(const std::string& root, const char* agent);
   void add(SessionRef s);
   Project* project_for(const std::string& cwd);
 

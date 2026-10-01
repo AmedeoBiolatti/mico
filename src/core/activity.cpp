@@ -1,5 +1,9 @@
 #include "core/activity.h"
 
+#include "adapters/adapters.h"
+#include "adapters/tool_calls.h"
+#include "base/time.h"
+
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -373,96 +377,17 @@ ToolKind classify_tool(std::string_view tool, std::string_view command, std::str
 
 namespace {
 
-// "2026-09-17T18:11:23.637Z" -> unix milliseconds. 0 when it is not one.
-int64_t parse_time(std::string_view s) {
-  if (s.size() < 19 || s[4] != '-' || s[10] != 'T') return 0;
-  const auto num = [&](size_t at, size_t n) {
-    int v = 0;
-    for (size_t i = at; i < at + n; i++) {
-      if (s[i] < '0' || s[i] > '9') return -1;
-      v = v * 10 + (s[i] - '0');
-    }
-    return v;
-  };
-  const int Y = num(0, 4), M = num(5, 2), D = num(8, 2), h = num(11, 2), m = num(14, 2), sec = num(17, 2);
-  if (Y < 0 || M < 1 || D < 1 || h < 0 || m < 0 || sec < 0) return 0;
-  // Days from the civil date (Howard Hinnant's algorithm).
-  const int y = Y - (M <= 2);
-  const int era = (y >= 0 ? y : y - 399) / 400;
-  const unsigned yoe = unsigned(y - era * 400);
-  const unsigned doy = unsigned((153 * (M + (M > 2 ? -3 : 9)) + 2) / 5 + D - 1);
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  const int64_t days = int64_t(era) * 146097 + int64_t(doe) - 719468;
-  int64_t ms = ((days * 24 + h) * 60 + m) * 60000 + int64_t(sec) * 1000;
-  if (s.size() > 20 && s[19] == '.') {
-    int frac = 0, digits = 0;
-    for (size_t i = 20; i < s.size() && s[i] >= '0' && s[i] <= '9' && digits < 3; i++, digits++)
-      frac = frac * 10 + (s[i] - '0');
-    while (digits++ < 3) frac *= 10;
-    ms += frac;
-  }
-  return ms;
-}
-
-std::string one_line(std::string_view s, size_t max = 300) {
-  std::string out;
-  bool space = false;
-  for (size_t i = 0; i < s.size() && out.size() < max; i++) {
-    const char c = s[i];
-    if (c == '\n' || c == '\t' || c == '\r' || c == ' ') {
-      if (!out.empty()) space = true;
-      continue;
-    }
-    if (space) out += ' ', space = false;
-    out += c;
-  }
-  // Never end inside a character.
-  while (!out.empty() && (uint8_t(out.back()) & 0xC0) == 0x80) out.pop_back();
-  if (!out.empty() && (uint8_t(out.back()) & 0x80)) out.pop_back();
-  return out;
-}
-
-std::string text_of(const js::Value& v) {
-  std::string s;
-  if (v.is_string()) js::unescape_append(v.body(), s);
-  return s;
-}
-
-// What a call works on, from its arguments: the command line, else a file,
-// a pattern or a URL.
-std::string subject(const js::Value& input) {
-  std::string cmd, other;
-  if (input.is_object()) {
-    js::scan_object(input.raw, [&](std::string_view k, const js::Value& v) {
-      if ((k == "command" || k == "cmd") && v.is_string()) cmd = text_of(v);
-      else if ((k == "command" || k == "cmd") && v.is_array()) {
-        // ["bash", "-lc", "make"]: the script is what ran.
-        std::vector<std::string> parts;
-        js::scan_array(v.raw, [&](const js::Value& p) { parts.push_back(text_of(p)); return true; });
-        if (parts.size() >= 3 && (parts[1] == "-lc" || parts[1] == "-c")) cmd = parts.back();
-        else for (const auto& p : parts) cmd += (cmd.empty() ? "" : " ") + p;
-      } else if (other.empty() && (k == "file_path" || k == "path" || k == "notebook_path" || k == "pattern" ||
-                                   k == "url" || k == "query" || k == "description")) {
-        other = text_of(v);
-      }
-      return true;
-    });
-  }
-  std::string& s = cmd.empty() ? other : cmd;
-  if (s.size() > 4096) s.resize(4096);
-  return s;
-}
-
-struct Reader {
+struct Reader final : ToolSink {
   ChatActivity& out;
   ActivityIndex::Resume& r;
+  Reader(ChatActivity& o, ActivityIndex::Resume& rs) : out(o), r(rs) {}
 
-  void call(std::string id, int64_t at, uint64_t offset, std::string tool, std::string command) {
+  void call(std::string id, int64_t at, uint64_t offset, std::string tool, std::string command) override {
     r.pending[std::move(id)] = ActivityIndex::Pending{at, offset, std::move(tool), std::move(command)};
   }
   // A result: the call it answers becomes a run. `exact_ms` is the agent's own
   // measure when it gives one.
-  void result(const std::string& id, int64_t at, bool failed, int64_t exact_ms = -1) {
+  void result(const std::string& id, int64_t at, bool failed, int64_t exact_ms) override {
     if (auto pe = r.pending_edits.find(id); pe != r.pending_edits.end()) {
       if (!failed)
         for (FileEdit& e : pe->second) out.edits.push_back(std::move(e));
@@ -470,27 +395,28 @@ struct Reader {
     }
     auto it = r.pending.find(id);
     if (it == r.pending.end()) return;
-    add(it->second.start_ms, exact_ms >= 0 ? exact_ms : std::max<int64_t>(0, at - it->second.start_ms),
-        it->second.offset, std::move(it->second.tool), std::move(it->second.command), failed);
+    run(it->second.start_ms, exact_ms >= 0 ? exact_ms : std::max<int64_t>(0, at - it->second.start_ms),
+        it->second.offset, std::move(it->second.tool), std::move(it->second.command), failed, false);
     r.pending.erase(it);
   }
-  void add(int64_t start, int64_t dur, uint64_t offset, std::string tool, std::string command, bool failed) {
-    ToolRun run;
-    run.start_ms = start;
-    run.dur_ms = dur;
-    run.offset = offset;
+  void run(int64_t start, int64_t dur, uint64_t offset, std::string tool, std::string command, bool failed,
+           bool reading) override {
+    ToolRun tr;
+    tr.start_ms = start;
+    tr.dur_ms = dur;
+    tr.offset = offset;
     // Classified on the command as written, line breaks and all; shown on one.
     size_t from = 0;
-    run.kind = classify_tool(tool, command, &run.group, &from);
-    run.failed = failed;
+    tr.kind = reading ? ToolKind::Read : classify_tool(tool, command, &tr.group, &from);
+    tr.failed = failed;
     // A file tool takes milliseconds. One that took many seconds sat on a
     // permission prompt: that time was spent waiting for the user.
-    run.waited = dur > 15000 && (run.kind == ToolKind::Read || run.kind == ToolKind::Edit) &&
+    tr.waited = dur > 15000 && (tr.kind == ToolKind::Read || tr.kind == ToolKind::Edit) &&
                  command.find('\n') == std::string::npos && !one_of(lower(tool), {"bash", "exec", "shell"});
-    run.tool = std::move(tool);
+    tr.tool = std::move(tool);
     // Shown from the step that said what it is for, not from `S=/tmp/x; cd y &&`.
-    run.command = one_line(std::string_view(command).substr(std::min(from, command.size())));
-    out.runs.push_back(std::move(run));
+    tr.command = tools::one_line(std::string_view(command).substr(std::min(from, command.size())));
+    out.runs.push_back(std::move(tr));
   }
 
   // The file changes a line records. A result's are known to have gone
@@ -538,216 +464,8 @@ struct Reader {
     }
   }
 
-  // claude: tool_use blocks in assistant messages, tool_result blocks in
-  // user messages, each record stamped.
-  void claude(std::string_view raw, uint64_t offset) {
-    if (raw.find("\"tool_use") == std::string_view::npos && raw.find("\"tool_result\"") == std::string_view::npos)
-      return;
-    int64_t at = 0;
-    js::Value message{};
-    js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "timestamp") at = parse_time(v.body());
-      else if (k == "message") message = v;
-      return true;
-    });
-    if (!message.is_object()) return;
-    js::Value content{};
-    js::scan_object(message.raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "content") { content = v; return false; }
-      return true;
-    });
-    if (!content.is_array()) return;
-    js::scan_array(content.raw, [&](const js::Value& b) {
-      if (!b.is_object()) return true;
-      std::string_view type;
-      std::string id, name, use_id;
-      js::Value input{};
-      bool error = false;
-      js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
-        if (k == "type") type = v.body();
-        else if (k == "id") id = text_of(v);
-        else if (k == "name") name = text_of(v);
-        else if (k == "input") input = v;
-        else if (k == "tool_use_id") use_id = text_of(v);
-        else if (k == "is_error") error = v.is_true();
-        return true;
-      });
-      if (type == "tool_use" && !id.empty()) call(id, at, offset, name, subject(input));
-      else if (type == "tool_result" && !use_id.empty()) result(use_id, at, error);
-      return true;
-    });
-  }
 
-  // codex: newer rollouts record each command with its duration and exit
-  // code; older ones a function call, and an output headed "Exit code: N /
-  // Wall time: X seconds".
-  void codex(std::string_view raw, uint64_t offset) {
-    const bool item = raw.find("\"item_completed\"") != std::string_view::npos;
-    if (!item && raw.find("function_call") == std::string_view::npos &&
-        raw.find("custom_tool_call") == std::string_view::npos)
-      return;
-    int64_t at = 0;
-    js::Value payload{};
-    js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "timestamp") at = parse_time(v.body());
-      else if (k == "payload") payload = v;
-      return true;
-    });
-    if (!payload.is_object()) return;
-    std::string_view ptype;
-    std::string name, call_id, output, input_text;
-    js::Value it{}, args{};
-    js::scan_object(payload.raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "type") ptype = v.body();
-      else if (k == "item") it = v;
-      else if (k == "name") name = text_of(v);
-      else if (k == "call_id") call_id = text_of(v);
-      else if (k == "arguments") args = v;
-      else if (k == "output") output = v.is_string() ? text_of(v) : std::string(v.raw);
-      else if (k == "input") input_text = text_of(v);
-      return true;
-    });
 
-    if (ptype == "item_completed" && it.is_object()) {
-      std::string_view itype;
-      js::Value command{}, duration{}, parsed{}, changes{};
-      int exit_code = 0;
-      std::string status, server, tool;
-      js::scan_object(it.raw, [&](std::string_view k, const js::Value& v) {
-        if (k == "type") itype = v.body();
-        else if (k == "command") command = v;
-        else if (k == "duration") duration = v;
-        else if (k == "exit_code" && v.type == js::Type::Number) exit_code = std::atoi(std::string(v.raw).c_str());
-        else if (k == "status") status = text_of(v);
-        else if (k == "parsed_cmd") parsed = v;
-        else if (k == "changes") changes = v;
-        else if (k == "server") server = text_of(v);
-        else if (k == "tool") tool = text_of(v);
-        return true;
-      });
-      int64_t dur = -1;
-      if (duration.is_object()) {
-        int64_t secs = 0, nanos = 0;
-        js::scan_object(duration.raw, [&](std::string_view k, const js::Value& v) {
-          if (k == "secs") secs = std::atoll(std::string(v.raw).c_str());
-          else if (k == "nanos") nanos = std::atoll(std::string(v.raw).c_str());
-          return true;
-        });
-        dur = secs * 1000 + nanos / 1000000;
-      }
-      const int64_t start = dur > 0 ? at - dur : at;
-      if (itype == "CommandExecution") {
-        std::string cmd;
-        if (command.is_array()) {
-          std::string obj = "{\"command\":" + std::string(command.raw) + "}";
-          cmd = subject(js::Value{obj, js::Type::Object});
-        } else {
-          cmd = text_of(command);
-        }
-        // codex's own reading of the command: read / search / list_files.
-        std::string hint;
-        js::scan_array(parsed.raw, [&](const js::Value& p) {
-          js::scan_object(p.raw, [&](std::string_view k, const js::Value& v) {
-            if (k == "type") hint = text_of(v);
-            return true;
-          });
-          return false;
-        });
-        add(start, std::max<int64_t>(0, dur), offset, "exec", cmd, exit_code != 0 || status == "failed");
-        if (one_of(hint, {"read", "search", "list_files"})) out.runs.back().kind = ToolKind::Read;
-      } else if (itype == "McpToolCall") {
-        add(start, std::max<int64_t>(0, dur), offset, server + "." + tool, "", status == "failed");
-      } else if (itype == "FileChange") {
-        std::string files;
-        int n = 0;
-        js::scan_object(changes.raw, [&](std::string_view k, const js::Value&) {
-          if (n++ < 3) files += (files.empty() ? "" : ", ") + std::string(basename(k));
-          return true;
-        });
-        if (n > 3) files += ", +" + std::to_string(n - 3) + " more";
-        add(at, 0, offset, "FileChange", files, status == "failed");
-      }
-      return;
-    }
-    if (ptype == "function_call" && !call_id.empty()) {
-      // Arguments arrive as a JSON string.
-      std::string a = text_of(args);
-      std::string cmd = a.empty() ? std::string() : subject(js::Value{a, js::Type::Object});
-      if (name == "request_user_input_async") return;  // the agent does not wait on it
-      call(call_id, at, offset, name, cmd);
-    } else if (ptype == "custom_tool_call" && !call_id.empty() && name == "apply_patch") {
-      std::string files;
-      for (size_t p = input_text.find("*** "); p != std::string::npos; p = input_text.find("*** ", p + 4)) {
-        for (std::string_view tag : {"*** Update File: ", "*** Add File: ", "*** Delete File: "})
-          if (input_text.compare(p, tag.size(), tag) == 0) {
-            const size_t e = input_text.find('\n', p);
-            const std::string f(basename(std::string_view(input_text).substr(p + tag.size(), e - p - tag.size())));
-            if (files.find(f) == std::string::npos) files += (files.empty() ? "" : ", ") + f;
-          }
-      }
-      call(call_id, at, offset, "apply_patch", one_line(files));
-    } else if ((ptype == "function_call_output" || ptype == "custom_tool_call_output") && !call_id.empty()) {
-      // "Exit code: 1\nWall time: 2.5 seconds", or JSON with a metadata block.
-      int64_t exact = -1;
-      bool failed = false;
-      if (const size_t e = output.find("Exit code: "); e != std::string::npos && e < 64)
-        failed = std::atoi(output.c_str() + e + 11) != 0;
-      if (const size_t w = output.find("Wall time: "); w != std::string::npos && w < 128)
-        exact = int64_t(std::strtod(output.c_str() + w + 11, nullptr) * 1000);
-      if (const size_t m = output.find("\"exit_code\":"); m != std::string::npos && m < 512)
-        failed = std::atoi(output.c_str() + m + 12) != 0;
-      if (const size_t d = output.find("\"duration_seconds\":"); d != std::string::npos && d < 512)
-        exact = int64_t(std::strtod(output.c_str() + d + 19, nullptr) * 1000);
-      // A patch that did not apply says so in words, with no exit code.
-      if (output.find("verification failed") < 256 || output.starts_with("Failed to"))
-        failed = true;
-      result(call_id, at, failed, exact);
-    }
-  }
-
-  // pi and omp: toolCall blocks in assistant messages, and toolResult
-  // messages that name the call.
-  void pi(std::string_view raw, uint64_t offset) {
-    if (raw.find("\"toolCall\"") == std::string_view::npos && raw.find("\"toolResult\"") == std::string_view::npos)
-      return;
-    int64_t at = 0;
-    js::Value message{};
-    js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "timestamp") at = parse_time(v.body());
-      else if (k == "message") message = v;
-      return true;
-    });
-    if (!message.is_object()) return;
-    std::string role, call_id;
-    bool error = false;
-    js::Value content{};
-    js::scan_object(message.raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "role") role = text_of(v);
-      else if (k == "toolCallId") call_id = text_of(v);
-      else if (k == "isError") error = v.is_true();
-      else if (k == "content") content = v;
-      return true;
-    });
-    if (role == "toolResult") {
-      result(call_id, at, error);
-      return;
-    }
-    if (!content.is_array()) return;
-    js::scan_array(content.raw, [&](const js::Value& b) {
-      std::string_view type;
-      std::string id, name;
-      js::Value arguments{};
-      js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
-        if (k == "type") type = v.body();
-        else if (k == "id") id = text_of(v);
-        else if (k == "name") name = text_of(v);
-        else if (k == "arguments") arguments = v;
-        return true;
-      });
-      if (type == "toolCall" && !id.empty()) call(id, at, offset, name, subject(arguments));
-      return true;
-    });
-  }
 };
 
 // Reads the complete lines from r.offset on.
@@ -757,6 +475,7 @@ void read_from(Jsonl& j, const std::string& agent, ChatActivity& out, ActivityIn
   size_t i = r.offset ? j.line_at_byte(r.offset) : 0;
   while (i < n && j.line_offset(i) < r.offset) i++;
   Reader rd{out, r};
+  const Adapter* adapter = adapter_for(agent);
   constexpr size_t kChunk = 4096;
   for (; i < n; i++) {
     if (i % kChunk == 0) j.will_read(i, std::min(n, i + kChunk));
@@ -766,9 +485,7 @@ void read_from(Jsonl& j, const std::string& agent, ChatActivity& out, ActivityIn
     r.offset = j.line_offset(i + 1);
     // Before the calls: a result's changes look up the call it answers.
     rd.edits(agent, raw, at);
-    if (agent == "claude") rd.claude(raw, at);
-    else if (agent == "codex") rd.codex(raw, at);
-    else if (agent == "pi" || agent == "omp") rd.pi(raw, at);
+    if (adapter) adapter->read_tools(raw, at, rd);
   }
 }
 

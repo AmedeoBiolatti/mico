@@ -18,6 +18,23 @@ class PiFamilyAdapter : public Adapter {
   void observe(std::string_view raw, SessionState& st) const override;
   void seed_state(SessionState& st) const override;
 
+  // tools.cpp
+  void read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const override;
+
+  // usage.cpp
+  void read_usage(Jsonl& j, UsageEntry& e, UsageResume& r) const override;
+
+  // changes.cpp
+  bool may_have_changes(std::string_view raw) const override;
+  void read_changes(std::string_view raw, std::string_view cwd, bool text,
+                    std::vector<LineChanges>& out) const override;
+
+  // list.cpp
+  void list_sessions(const std::function<void(SessionRef&&)>& add) const override;
+
+  // Where the agent keeps its sessions, one folder per working directory.
+  virtual std::string sessions_dir() const = 0;
+
   // pi and omp render a complete chat of their own into the terminal. Splicing
   // its tail shows that rendering verbatim — a streaming reply, thinking, tool
   // output — beside mico's own rendering of the same turn, which is exactly
@@ -34,6 +51,7 @@ class PiAdapter final : public PiFamilyAdapter {
  public:
   std::string_view id() const override { return "pi"; }
   std::string_view label() const override { return "Pi"; }
+  std::string sessions_dir() const override;
 
   // session.cpp
   void prepare(Launch& l, const LaunchExtras& x) const override;
@@ -48,6 +66,7 @@ class OmpAdapter final : public PiFamilyAdapter {
   std::string_view id() const override { return "omp"; }
   std::string_view name() const override { return "Oh My Pi"; }
   std::string_view label() const override { return "OMP"; }
+  std::string sessions_dir() const override;
 
   // session.cpp
   bool continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const override;

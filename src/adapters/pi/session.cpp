@@ -21,6 +21,8 @@ void for_each_pi_family_session(const std::string& root,
 
 // --- pi ----------------------------------------------------------------------
 
+std::string PiAdapter::sessions_dir() const { return fs::home() + "/.pi/agent/sessions"; }
+
 void PiAdapter::prepare(Launch& l, const LaunchExtras&) const {
   if (l.argv.empty()) {
     // pi honours the same "use this exact id, creating it if missing" deal as
@@ -46,7 +48,7 @@ bool PiAdapter::continue_session(Launch& l, std::string_view id, bool fork, std:
 // know in advance: "<timestamp>_<session_id>.jsonl". The id suffix still
 // identifies it exactly.
 bool PiAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& out) const {
-  const std::string root = fs::home() + "/.pi/agent/sessions";
+  const std::string root = sessions_dir();
   const std::string suffix = "_" + q.session_id + ".jsonl";
   fs::list_dir(root, true, [&](const std::string& slug) {
     if (!out.path.empty()) return;
@@ -63,6 +65,8 @@ bool PiAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& out) 
 
 // --- omp ---------------------------------------------------------------------
 
+std::string OmpAdapter::sessions_dir() const { return fs::home() + "/.omp/agent/sessions"; }
+
 bool OmpAdapter::continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const {
   // omp has no fork flag of its own; resuming is all it offers.
   if (fork && note) *note = "omp has no fork — resuming instead";
@@ -73,8 +77,7 @@ bool OmpAdapter::continue_session(Launch& l, std::string_view id, bool fork, std
 }
 
 void OmpAdapter::snapshot_transcripts(std::vector<std::string>& out) const {
-  for_each_pi_family_session(fs::home() + "/.omp/agent/sessions",
-                             [&](const std::string& path) { out.push_back(path); });
+  for_each_pi_family_session(sessions_dir(), [&](const std::string& path) { out.push_back(path); });
 }
 
 // No pre-assignable id: find the newest unclaimed session that appeared after
@@ -84,7 +87,7 @@ void OmpAdapter::snapshot_transcripts(std::vector<std::string>& out) const {
 bool OmpAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& out) const {
   std::string best, best_sid;
   int64_t best_mtime = 0;
-  const std::string root = fs::home() + "/.omp/agent/sessions";
+  const std::string root = sessions_dir();
   for_each_pi_family_session(root, [&](const std::string& path) {
     const bool resuming = q.resuming();
     if (!resuming && q.existed(path)) return;

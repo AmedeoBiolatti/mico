@@ -30,6 +30,7 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 add_library(mico_base STATIC
   src/base/text.cpp
   src/base/uuid.cpp
+  src/base/path.cpp
   src/base/json.cpp
   src/base/jsonl.cpp
   src/base/log.cpp
@@ -67,14 +68,29 @@ add_library(mico_adapters STATIC
   src/adapters/cmdline.cpp
   src/adapters/registry.cpp
   src/adapters/screen.cpp
+  src/adapters/changes.cpp
+  src/adapters/tool_calls.cpp
+  src/adapters/usage_scan.cpp
   src/adapters/claude/transcript.cpp
   src/adapters/claude/session.cpp
   src/adapters/claude/screen.cpp
+  src/adapters/claude/list.cpp
+  src/adapters/claude/changes.cpp
+  src/adapters/claude/tools.cpp
+  src/adapters/claude/usage.cpp
   src/adapters/codex/transcript.cpp
   src/adapters/codex/session.cpp
   src/adapters/codex/screen.cpp
+  src/adapters/codex/list.cpp
+  src/adapters/codex/changes.cpp
+  src/adapters/codex/tools.cpp
+  src/adapters/codex/usage.cpp
   src/adapters/pi/transcript.cpp
   src/adapters/pi/session.cpp
+  src/adapters/pi/list.cpp
+  src/adapters/pi/changes.cpp
+  src/adapters/pi/tools.cpp
+  src/adapters/pi/usage.cpp
 )
 target_link_libraries(mico_adapters PUBLIC mico_model mico_vt)
 
