@@ -33,6 +33,7 @@ void Vt::resize(int w, int h) {
   w = std::max(1, w);
   h = std::max(1, h);
   if (w == w_ && h == h_ && !screen_.empty()) return;
+  gen_ = next_generation();
   w_ = w;
   h_ = h;
   screen_.resize(size_t(h_));
@@ -381,6 +382,7 @@ void Vt::exec_esc(char b) {
 
 void Vt::write(std::string_view bytes) {
   if (screen_.empty()) resize(w_, h_);
+  if (!bytes.empty()) gen_ = next_generation();
 
   for (size_t i = 0; i < bytes.size(); i++) {
     unsigned char b = (unsigned char)bytes[i];

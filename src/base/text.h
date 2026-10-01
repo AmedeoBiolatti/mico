@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,6 +24,15 @@ std::string ellipsize(std::string_view s, int max_cols);
 // so a miss over a large file costs little more than a plain memchr.
 std::string fold(std::string_view s);
 size_t find_folded(std::string_view hay, std::string_view needle, size_t from = 0);
+
+// Where `needle` first occurs in `hay` at or after `from`, or npos. What the
+// index passes scan a gigabyte of transcripts with: their needles start with
+// a quote, which JSON has every few bytes, and string_view::find stops at
+// each one. This tests sixteen positions at a time instead.
+size_t find(std::string_view hay, std::string_view needle, size_t from = 0);
+inline bool contains(std::string_view hay, std::string_view needle) {
+  return find(hay, needle) != std::string_view::npos;
+}
 
 // Collapses all whitespace runs to single spaces; used for one-line previews.
 std::string oneline(std::string_view s, int max_cols);

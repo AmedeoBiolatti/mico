@@ -17,6 +17,10 @@ class Vt {
  public:
   void resize(int w, int h);
   void write(std::string_view bytes);
+  // Moves whenever the screen may have changed, and is never the same for two
+  // different screens, even of two emulators: what reads of the screen are
+  // cached against, so a frame reads it once and an idle agent's not at all.
+  uint64_t generation() const { return gen_; }
 
   int width() const { return w_; }
   int height() const { return h_; }
@@ -92,6 +96,11 @@ class Vt {
   std::string intermediates_;
   std::vector<int> nums_;
   std::string utf8_;  // partial multi-byte character across write() calls
+  uint64_t gen_ = 0;
+  static uint64_t next_generation() {
+    static uint64_t n = 0;
+    return ++n;
+  }
 };
 
 }  // namespace mico

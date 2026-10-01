@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "base/path.h"
+#include "base/text.h"
 
 namespace mico::changes {
 
@@ -142,10 +143,6 @@ void parse_apply_patch(std::string_view patch, std::string_view cwd, bool text, 
   });
 }
 
-// memmem: two-way search, far quicker than string_view::find on lines where
-// the needle's first character, a quote, is on every other byte.
-bool has(std::string_view raw, std::string_view needle) {
-  return memmem(raw.data(), raw.size(), needle.data(), needle.size()) != nullptr;
-}
+bool has(std::string_view raw, std::string_view needle) { return text::contains(raw, needle); }
 
 }  // namespace mico::changes

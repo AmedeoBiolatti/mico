@@ -1797,6 +1797,29 @@ int run_selftest() {
                         std::chrono::steady_clock::now() - t0).count();
     check(at == big.size() - 2 && ms < 500, "find_folded stays linear on a one-sided first byte");
   }
+  // text::find and find_folded test sixteen positions at a time; checked here
+  // against the obvious loops on strings made to hold many near misses.
+  {
+    uint32_t seed = 12345;
+    const auto rnd = [&](uint32_t m) { seed = seed * 1103515245u + 12345u; return (seed >> 8) % m; };
+    const char alphabet[] = {'a', 'b', 'A', 'B', '"', '_', '\xC3', '\xA9', ' ', '\n'};
+    bool ok_find = true, ok_fold = true;
+    for (int round = 0; round < 20000 && ok_find && ok_fold; round++) {
+      std::string hay(rnd(80), ' '), needle(1 + rnd(6), ' ');
+      for (char& c : hay) c = alphabet[rnd(sizeof alphabet)];
+      for (char& c : needle) c = alphabet[rnd(sizeof alphabet)];
+      const size_t from = rnd(uint32_t(hay.size() + 2));
+      size_t want = std::string_view(hay).find(needle, from);
+      ok_find = text::find(hay, needle, from) == want;
+      const std::string lowered = text::fold(needle);
+      want = std::string_view::npos;
+      const std::string hay_lower = text::fold(hay);
+      if (from <= hay.size()) want = std::string_view(hay_lower).find(lowered, from);
+      ok_fold = text::find_folded(hay, lowered, from) == want;
+    }
+    check(ok_find, "text::find agrees with string_view::find");
+    check(ok_fold, "text::find_folded agrees with searching the folded text");
+  }
 
   // Find in one chat covers the whole file, counts only text the chat shows,
   // walks older then wraps, and leaves the match on screen.

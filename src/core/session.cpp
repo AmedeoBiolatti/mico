@@ -220,12 +220,27 @@ void LiveSession::discover_transcript() {
 bool LiveSession::busy() const {
   if (!spawned_) return false;
   if (pty_.exited()) return false;
-  return driver().busy(Liveness{vt_, now_ms() - last_output_ms_, turn_open_});
+  // Time enters only through thresholds of a second and more: a 16 ms tick is
+  // fresh enough.
+  const int64_t now = now_ms();
+  if (vt_.generation() == busy_gen_ && now / 16 == busy_tick_ && turn_open_ == busy_turn_ &&
+      last_output_ms_ == busy_out_)
+    return busy_;
+  busy_gen_ = vt_.generation();
+  busy_tick_ = now / 16;
+  busy_turn_ = turn_open_;
+  busy_out_ = last_output_ms_;
+  busy_ = driver().busy(Liveness{vt_, now - last_output_ms_, turn_open_});
+  return busy_;
 }
 
 bool LiveSession::needs_input() const {
   if (!spawned_ || pty_.exited()) return false;
-  return driver().awaits_input(vt_);
+  if (vt_.generation() != input_gen_) {
+    input_gen_ = vt_.generation();
+    input_ = driver().awaits_input(vt_);
+  }
+  return input_;
 }
 
 const Adapter& LiveSession::driver() const { return adapter_ ? *adapter_ : plain_adapter(); }

@@ -1,9 +1,11 @@
 #include "adapters/pi/pi.h"
+#include "base/text.h"
 
 #include <cstdlib>
 #include <string>
 
 #include "adapters/usage_scan.h"
+#include "base/line_reader.h"
 
 namespace mico {
 
@@ -13,11 +15,9 @@ using namespace usage;
 // per-message cost. Summing is the only way to a session total; the records are
 // interleaved with tool results and telemetry, so the usage substring is
 // rejected before anything is parsed.
-void PiFamilyAdapter::read_usage(Jsonl& j, UsageEntry& e, UsageResume&) const {
-  while (!j.complete()) j.extend_back();
-  for (size_t i = 0; i < j.line_count(); i++) {
-    std::string_view raw = j.line(i);
-    if (raw.find("\"usage\"") == std::string_view::npos) continue;
+void PiFamilyAdapter::read_usage(LineReader& j, UsageEntry& e, UsageResume&) const {
+  j.each(0, [&](std::string_view raw, uint64_t) {
+    if (!text::contains(raw, "\"usage\"")) return;
 
     std::string_view type;
     js::Value message{};
@@ -26,7 +26,7 @@ void PiFamilyAdapter::read_usage(Jsonl& j, UsageEntry& e, UsageResume&) const {
       if (k == "message") { message = v; return false; }
       return true;
     });
-    if (type != "message" || !message.is_object()) continue;
+    if (type != "message" || !message.is_object()) return;
 
     std::string_view role, model;
     js::Value usage{};
@@ -36,7 +36,7 @@ void PiFamilyAdapter::read_usage(Jsonl& j, UsageEntry& e, UsageResume&) const {
       else if (k == "usage") usage = v;
       return true;
     });
-    if (role != "assistant" || !usage.is_object()) continue;
+    if (role != "assistant" || !usage.is_object()) return;
 
     UsageStat s;
     js::Value cost{};
@@ -60,7 +60,7 @@ void PiFamilyAdapter::read_usage(Jsonl& j, UsageEntry& e, UsageResume&) const {
     }
     e.stat.add(s);
     add_model(e, model, s);
-  }
+  });
 }
 
 }  // namespace mico

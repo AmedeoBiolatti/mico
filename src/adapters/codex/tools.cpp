@@ -1,4 +1,5 @@
 #include "adapters/codex/codex.h"
+#include "base/text.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -14,9 +15,8 @@ using namespace tools;
 // code; older ones a function call, and an output headed "Exit code: N /
 // Wall time: X seconds".
 void CodexAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const {
-  const bool item = raw.find("\"item_completed\"") != std::string_view::npos;
-  if (!item && raw.find("function_call") == std::string_view::npos &&
-      raw.find("custom_tool_call") == std::string_view::npos)
+  const bool item = text::contains(raw, "\"item_completed\"");
+  if (!item && !text::contains(raw, "function_call") && !text::contains(raw, "custom_tool_call"))
     return;
   int64_t at = 0;
   js::Value payload{};

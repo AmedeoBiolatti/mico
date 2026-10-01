@@ -1,4 +1,5 @@
 #include "adapters/pi/pi.h"
+#include "base/text.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -13,7 +14,8 @@ using namespace tools;
 // toolCall blocks in assistant messages, and toolResult
 // messages that name the call.
 void PiFamilyAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const {
-  if (raw.find("\"toolCall\"") == std::string_view::npos && raw.find("\"toolResult\"") == std::string_view::npos)
+  // "toolCall" or "toolResult", in one scan.
+  if (!text::contains(raw, "\"tool"))
     return;
   int64_t at = 0;
   js::Value message{};

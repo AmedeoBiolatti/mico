@@ -3,6 +3,8 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "base/json.h"
@@ -11,6 +13,9 @@
 #include "vt/vt.h"
 #include "term/input.h"
 #include "core/store.h"
+#include "core/usage.h"
+#include "core/search.h"
+#include "core/activity.h"
 #include "base/text.h"
 #include "model/state.h"
 #include "views/markdown.h"
@@ -58,10 +63,14 @@ int run_bench() {
   Theme th;
   Filters f;
   printf("mico bench\n\n");
+  // MICO_BENCH=indexes runs only the store scan and the index passes, so a
+  // profile of them is not drowned out by the rest.
+  const char* only = getenv("MICO_BENCH");
+  const bool indexes_only = only && !strcmp(only, "indexes");
 
   // Pictures: what the first sight of an equation or a chart costs, at a
   // HiDPI cell size (the expensive case). Each is drawn once and cached.
-  {
+  if (!indexes_only) {
     printf("  pictures (18x38 px cells)\n\n");
     char note[96];
     const auto avg = [](auto&& fn, int n) {
@@ -116,6 +125,33 @@ int run_bench() {
   snprintf(note, sizeof note, "%zu projects, %zu sessions", store.projects().size(),
            store.session_count());
   line("Store::scan (cold listing)", scan_ms, note);
+
+  // The indexes behind Usage, Tools, Diff and Search each read every
+  // transcript; a full pass is what the first look at those tabs waits for.
+  {
+    size_t bytes = 0;
+    for (const auto& p : store.projects())
+      for (const auto& sr : p.sessions) bytes += sr.bytes;
+    char what[96];
+    snprintf(what, sizeof what, "%.0f MB of transcripts", bytes / 1048576.0);
+    t = Clock::now();
+    ActivityIndex activity;
+    activity.start(store.projects(), store);
+    while (!activity.step(1000)) {}
+    line("activity index: full pass", ms_since(t), what);
+    t = Clock::now();
+    UsageIndex usage;
+    usage.start(store.projects());
+    while (!usage.step(1000)) {}
+    line("usage index: full pass", ms_since(t));
+    t = Clock::now();
+    ChatSearch search;
+    search.start(store.projects(), store, "learning rate");
+    while (!search.complete()) search.step(1000);
+    snprintf(what, sizeof what, "%zu hits in %zu chats", search.total_hits(), search.chats_with_hits());
+    line("search \"learning rate\": all chats", ms_since(t), what);
+  }
+  if (indexes_only) return 0;
 
   // Pick the largest transcript available; that is the case that has to stay fast.
   const SessionRef* big = nullptr;

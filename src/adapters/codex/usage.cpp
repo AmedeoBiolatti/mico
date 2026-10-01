@@ -1,4 +1,5 @@
 #include "adapters/codex/codex.h"
+#include "base/text.h"
 
 #include <cstdlib>
 #include <string>
@@ -57,8 +58,8 @@ void scan_codex_rate_limit(const js::Value& limits, UsageEntry& e) {
 }
 
 void scan_codex_line(std::string_view raw, UsageEntry& e, UsageResume& r) {
-  const bool turn = raw.find("\"turn_context\"") != std::string_view::npos;
-  if (!turn && raw.find("\"token_count\"") == std::string_view::npos) return;
+  const bool turn = text::contains(raw, "\"turn_context\"");
+  if (!turn && !text::contains(raw, "\"token_count\"")) return;
   js::Value payload{};
   js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
     if (k == "payload") { payload = v; return false; }
@@ -115,7 +116,7 @@ void scan_codex_line(std::string_view raw, UsageEntry& e, UsageResume& r) {
 
 }  // namespace
 
-void CodexAdapter::read_usage(Jsonl& j, UsageEntry& e, UsageResume& r) const {
+void CodexAdapter::read_usage(LineReader& j, UsageEntry& e, UsageResume& r) const {
   scan_forward(j, r, [&](std::string_view raw) { scan_codex_line(raw, e, r); });
 }
 

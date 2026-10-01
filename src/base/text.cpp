@@ -1,5 +1,9 @@
 #include "base/text.h"
 
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 #include <cstring>
 #include <algorithm>
 
@@ -212,35 +216,72 @@ std::string fold(std::string_view s) {
   return out;
 }
 
-size_t find_folded(std::string_view hay, std::string_view needle, size_t from) {
-  if (needle.empty()) return from <= hay.size() ? from : std::string_view::npos;
-  if (hay.size() < needle.size()) return std::string_view::npos;
-  const auto lower = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : char(c); };
-  const char c0 = needle[0];
-  const char c1 = c0 >= 'a' && c0 <= 'z' ? char(c0 - 'a' + 'A') : c0;
-  const size_t last = hay.size() - needle.size();
-  const char* base = hay.data();
-  const char* end = base + last + 1;  // candidate starts lie in [base, end)
-  // The next occurrence of each case of the first byte, kept between
-  // candidates: re-searching both from every candidate turns a first byte
-  // that is common in one case and absent in the other into a quadratic scan.
-  const auto next = [&](char c, const char* from) {
-    if (from >= end) return end;
-    const void* p = memchr(from, c, size_t(end - from));
-    return p ? static_cast<const char*>(p) : end;
+namespace {
+
+// Where a substring search spends its time is in rejecting positions. Testing
+// sixteen at once against the needle's first and last byte (Muła's filter)
+// leaves a handful of candidates per kilobyte of JSON, where testing the first
+// byte alone stops at every quote. SSE2 is part of x86-64 itself, so this
+// needs no flags and no dispatch. `fold` compares letters case-insensitively:
+// the needle is lower-case, and a hay byte OR 0x20 equals a lower-case letter
+// only when it is that letter in either case.
+template <bool kFold>
+size_t find_impl(std::string_view hay, std::string_view needle, size_t from) {
+  const size_t n = hay.size(), k = needle.size();
+  if (k == 0) return from <= n ? from : std::string_view::npos;
+  if (n < k || from > n - k) return std::string_view::npos;
+  const char* h = hay.data();
+  const char* nd = needle.data();
+  const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c; };
+  const auto letter = [](char c) { return c >= 'a' && c <= 'z'; };
+  const auto match = [&](size_t i) {
+    if constexpr (kFold) {
+      for (size_t j = 0; j < k; j++)
+        if (lower(h[i + j]) != nd[j]) return false;
+      return true;
+    } else {
+      return memcmp(h + i, nd, k) == 0;
+    }
   };
-  const char* pa = next(c0, base + from);
-  const char* pb = c1 != c0 ? next(c1, base + from) : end;
-  while (true) {
-    const char* p = std::min(pa, pb);
-    if (p >= end) return std::string_view::npos;
-    size_t k = 1;
-    while (k < needle.size() && lower(static_cast<unsigned char>(p[k])) == needle[k]) k++;
-    if (k == needle.size()) return size_t(p - base);
-    if (p == pa) pa = next(c0, p + 1);
-    if (p == pb) pb = next(c1, p + 1);
+  size_t i = from;
+#if defined(__SSE2__)
+  if (k >= 2) {
+    const __m128i first = _mm_set1_epi8(nd[0]), last = _mm_set1_epi8(nd[k - 1]);
+    const __m128i fold_first = _mm_set1_epi8(kFold && letter(nd[0]) ? 0x20 : 0);
+    const __m128i fold_last = _mm_set1_epi8(kFold && letter(nd[k - 1]) ? 0x20 : 0);
+    for (; i + k - 1 + 16 <= n; i += 16) {
+      __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(h + i));
+      __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(h + i + k - 1));
+      if constexpr (kFold) {
+        a = _mm_or_si128(a, fold_first);
+        b = _mm_or_si128(b, fold_last);
+      }
+      unsigned mask = unsigned(_mm_movemask_epi8(_mm_and_si128(_mm_cmpeq_epi8(a, first), _mm_cmpeq_epi8(b, last))));
+      while (mask) {
+        const size_t at = i + size_t(__builtin_ctz(mask));
+        if (match(at)) return at;
+        mask &= mask - 1;
+      }
+    }
   }
+#endif
+  for (; i + k <= n; i++)
+    if ((kFold ? lower(h[i]) : h[i]) == nd[0] && match(i)) return i;
   return std::string_view::npos;
+}
+
+}  // namespace
+
+size_t find(std::string_view hay, std::string_view needle, size_t from) {
+  // glibc's memmem is vectorised, and measured three times quicker than the
+  // filter above on transcript text; the filter earns its keep folded.
+  if (from > hay.size()) return std::string_view::npos;
+  const void* p = memmem(hay.data() + from, hay.size() - from, needle.data(), needle.size());
+  return p ? size_t(static_cast<const char*>(p) - hay.data()) : std::string_view::npos;
+}
+
+size_t find_folded(std::string_view hay, std::string_view needle, size_t from) {
+  return find_impl<true>(hay, needle, from);
 }
 
 }  // namespace mico::text

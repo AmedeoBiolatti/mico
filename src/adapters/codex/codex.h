@@ -22,7 +22,7 @@ class CodexAdapter final : public Adapter {
   void read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const override;
 
   // usage.cpp
-  void read_usage(Jsonl& j, UsageEntry& e, UsageResume& r) const override;
+  void read_usage(LineReader& j, UsageEntry& e, UsageResume& r) const override;
   bool resumes_usage() const override { return true; }
 
   // changes.cpp

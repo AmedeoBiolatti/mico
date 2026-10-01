@@ -2,6 +2,7 @@
 
 #include "adapters/adapters.h"
 #include "adapters/tool_calls.h"
+#include "base/line_reader.h"
 #include "base/time.h"
 
 #include <algorithm>
@@ -469,24 +470,14 @@ struct Reader final : ToolSink {
 };
 
 // Reads the complete lines from r.offset on.
-void read_from(Jsonl& j, const std::string& agent, ChatActivity& out, ActivityIndex::Resume& r) {
-  while (!j.complete() && j.indexed_from() > r.offset) j.extend_back();
-  const size_t n = j.line_count();
-  size_t i = r.offset ? j.line_at_byte(r.offset) : 0;
-  while (i < n && j.line_offset(i) < r.offset) i++;
+void read_from(LineReader& j, const std::string& agent, ChatActivity& out, ActivityIndex::Resume& r) {
   Reader rd{out, r};
   const Adapter* adapter = adapter_for(agent);
-  constexpr size_t kChunk = 4096;
-  for (; i < n; i++) {
-    if (i % kChunk == 0) j.will_read(i, std::min(n, i + kChunk));
-    const std::string_view raw = j.line(i);
-    if (j.line_offset(i) + raw.size() >= j.line_offset(i + 1)) break;  // still being written
-    const uint64_t at = j.line_offset(i);
-    r.offset = j.line_offset(i + 1);
+  r.offset = j.each(r.offset, [&](std::string_view raw, uint64_t at) {
     // Before the calls: a result's changes look up the call it answers.
     rd.edits(agent, raw, at);
     if (adapter) adapter->read_tools(raw, at, rd);
-  }
+  });
 }
 
 }  // namespace
@@ -497,8 +488,8 @@ ChatActivity ActivityIndex::read_file(const std::string& path, const std::string
   a.agent = agent;
   a.cwd = cwd;
   Resume r;
-  Jsonl j;
-  if (j.open(path)) read_from(j, agent, a, r);
+  LineReader j(path);
+  read_from(j, agent, a, r);
   return a;
 }
 
@@ -536,8 +527,8 @@ bool ActivityIndex::step(int budget_ms) {
     c.data.title = job.title;
     c.data.project = job.project;
     c.data.cwd = job.s.cwd.empty() ? "/" : job.s.cwd;
-    Jsonl j;
-    if (j.open(job.s.path)) read_from(j, job.s.agent, c.data, c.resume);
+    LineReader j(job.s.path);
+    read_from(j, job.s.agent, c.data, c.resume);
     chats_.push_back(&c.data);
     if (std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(budget_ms)) break;
   }

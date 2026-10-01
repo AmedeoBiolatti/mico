@@ -178,6 +178,13 @@ class LiveSession {
   bool was_working_ = false;
   uint64_t work_generation_ = 0;
   uint64_t generation_ = 0;
+  // busy() and needs_input() read the screen, and a frame asks each a dozen
+  // times: the answers are kept until the screen, the turn or the clock moves.
+  mutable uint64_t input_gen_ = UINT64_MAX;
+  mutable bool input_ = false;
+  mutable uint64_t busy_gen_ = UINT64_MAX;
+  mutable int64_t busy_tick_ = -1, busy_out_ = -1;
+  mutable bool busy_turn_ = false, busy_ = false;
   const uint64_t serial_ = next_serial();
   static uint64_t next_serial() {
     static uint64_t n = 0;

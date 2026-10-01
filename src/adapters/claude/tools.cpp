@@ -1,4 +1,5 @@
 #include "adapters/claude/claude.h"
+#include "base/text.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -13,7 +14,8 @@ using namespace tools;
 // tool_use blocks in assistant messages, tool_result blocks in
 // user messages, each record stamped.
 void ClaudeAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const {
-  if (raw.find("\"tool_use") == std::string_view::npos && raw.find("\"tool_result\"") == std::string_view::npos)
+  // "tool_use" or "tool_result", in one scan.
+  if (!text::contains(raw, "\"tool_"))
     return;
   int64_t at = 0;
   js::Value message{};

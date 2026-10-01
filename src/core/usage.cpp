@@ -9,6 +9,7 @@
 
 #include "base/json.h"
 #include "base/jsonl.h"
+#include "base/line_reader.h"
 
 namespace mico {
 
@@ -135,8 +136,7 @@ UsageEntry usage_for_file(const std::string& path, const std::string& agent,
   e.project = project;
   e.mtime = mtime;
 
-  Jsonl j;
-  if (!j.open(path)) return e;
+  LineReader j(path);
   if (adapter) adapter->read_usage(j, e, r);
   return e;
 }

@@ -111,9 +111,7 @@ class SessionPane final : public Pane {
     {
       const auto now = std::chrono::steady_clock::now();
       if (s_->busy()) draft_until_ = now + std::chrono::seconds(3);
-      chat_.set_draft(!showing_raw() && s_->adapter() && now < draft_until_
-                          ? s_->driver().screen_reply(s_->vt())
-                          : std::string());
+      chat_.set_draft(!showing_raw() && s_->adapter() && now < draft_until_ ? screen_draft() : std::string_view());
     }
     // A question's answer stops once its result lands; a permission answer
     // has no transcript result to wait for and runs to its last key.
@@ -310,7 +308,7 @@ class SessionPane final : public Pane {
   // closes the dialog, whoever answered it.
   void refresh_permission() {
     perm_live_ = s_->spawned() && !s_->exited() && !chat_.has_pending_question() &&
-                 s_->driver().permission_prompt(s_->vt(), perm_);
+                 screen_permission();
     if (!perm_live_) {
       if (!s_->answer_sending()) perm_key_.clear();
       return;
@@ -361,7 +359,7 @@ class SessionPane final : public Pane {
   // of the chat; while the box is empty, the panel's keys go through to it.
   void refresh_btw() {
     btw_live_ = s_->spawned() && !s_->exited() && !perm_live_ &&
-                s_->driver().side_panel(s_->vt(), btw_);
+                screen_side_panel();
     if (!btw_live_) {
       if (chat_.aside_shown()) chat_.set_aside({}, {}, {});
       return;
@@ -1333,7 +1331,10 @@ class SessionPane final : public Pane {
   // Picks the emulator rows worth showing as the live tail: the last few
   // non-blank ones, with trailing blanks trimmed so the strip does not float.
   int live_range() const {
-    s_->driver().live_rows(s_->vt(), live_, 4);
+    if (s_->vt().generation() != live_gen_) {
+      live_gen_ = s_->vt().generation();
+      s_->driver().live_rows(s_->vt(), live_, 4);
+    }
     return int(live_.size());
   }
 
@@ -1366,7 +1367,11 @@ class SessionPane final : public Pane {
     uint64_t tool_id = 0;
     // Compaction is its own kind of wait, and can run for minutes: say so,
     // rather than "Thinking".
-    const bool compacting = s_->driver().compacting(s_->vt());
+    if (s_->vt().generation() != compact_gen_) {
+      compact_gen_ = s_->vt().generation();
+      compacting_ = s_->driver().compacting(s_->vt());
+    }
+    const bool compacting = compacting_;
     if (compacting) {
       action = "Compacting\xE2\x80\xA6";
     } else if (chat_.in_flight_tool(&name, &summary, &tool_id)) {
@@ -1614,6 +1619,35 @@ class SessionPane final : public Pane {
   double progress_f0_ = 0;
   std::vector<ChatRenderer::Chip> chips_;
   mutable std::vector<int> live_;
+  // What the agent's screen says, read once per change of it (Vt::generation)
+  // rather than every frame: the dialogs, the side panel, the reply being
+  // written, the live rows, compaction.
+  mutable uint64_t live_gen_ = UINT64_MAX, compact_gen_ = UINT64_MAX;
+  mutable bool compacting_ = false;
+  uint64_t perm_gen_ = UINT64_MAX, btw_gen_ = UINT64_MAX, draft_gen_ = UINT64_MAX;
+  bool perm_seen_ = false, btw_seen_ = false;
+  std::string draft_screen_;
+  bool screen_permission() {
+    if (s_->vt().generation() != perm_gen_) {
+      perm_gen_ = s_->vt().generation();
+      perm_seen_ = s_->driver().permission_prompt(s_->vt(), perm_);
+    }
+    return perm_seen_;
+  }
+  bool screen_side_panel() {
+    if (s_->vt().generation() != btw_gen_) {
+      btw_gen_ = s_->vt().generation();
+      btw_seen_ = s_->driver().side_panel(s_->vt(), btw_);
+    }
+    return btw_seen_;
+  }
+  std::string_view screen_draft() {
+    if (s_->vt().generation() != draft_gen_) {
+      draft_gen_ = s_->vt().generation();
+      draft_screen_ = s_->driver().screen_reply(s_->vt());
+    }
+    return draft_screen_;
+  }
   int chip_row_ = -1;
   int body_top_ = 0;
   PromptEditor prompt_;

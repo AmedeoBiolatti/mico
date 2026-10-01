@@ -1,4 +1,5 @@
 #include "adapters/claude/claude.h"
+#include "base/text.h"
 
 #include <cstdlib>
 #include <string>
@@ -90,10 +91,10 @@ void scan_claude_message(std::string_view raw, UsageEntry& e, UsageResume& r) {
 
 }  // namespace
 
-void ClaudeAdapter::read_usage(Jsonl& j, UsageEntry& e, UsageResume& r) const {
+void ClaudeAdapter::read_usage(LineReader& j, UsageEntry& e, UsageResume& r) const {
   scan_forward(j, r, [&](std::string_view raw) {
-    if (raw.find("\"usage\"") != std::string_view::npos) scan_claude_message(raw, e, r);
-    else if (raw.find("cost-state") != std::string_view::npos) scan_claude_cost_state(raw, e);
+    if (text::contains(raw, "\"usage\"")) scan_claude_message(raw, e, r);
+    else if (text::contains(raw, "cost-state")) scan_claude_cost_state(raw, e);
   });
 }
 

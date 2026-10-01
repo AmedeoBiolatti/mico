@@ -34,7 +34,7 @@ inline void make_chart_event(Event& e, Arena& arena, std::string_view args_json)
 
 
 class Vt;
-class Jsonl;
+class LineReader;
 struct PermissionPrompt;
 struct BtwPanel;
 
@@ -138,7 +138,7 @@ class Adapter {
   // Adds the tokens (and, where the agent writes them, the dollars and the
   // rate limit) a transcript records to `e`. An agent that resumes_usage()
   // reads only from `r.offset` on and advances it; others read it all.
-  virtual void read_usage(Jsonl& j, UsageEntry& e, UsageResume& r) const {}
+  virtual void read_usage(LineReader& j, UsageEntry& e, UsageResume& r) const {}
   // Whether read_usage() can pick up where an earlier read of a growing
   // transcript stopped, so a running session costs only its new lines.
   virtual bool resumes_usage() const { return false; }
