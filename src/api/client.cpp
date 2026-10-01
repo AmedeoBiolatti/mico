@@ -91,7 +91,13 @@ void Client::poll(std::vector<std::string>& out) {
   if (!hello_) {
     hello_ = true;
     std::string m;
-    jw::Writer(m).begin_object().field("type", "hello").field("protocol", kProtocol).end_object();
+    jw::Writer w(m);
+    w.begin_object().field("type", "hello").field("protocol", kProtocol);
+    // The agents a client can start, as menus name them.
+    w.key("adapters").begin_array();
+    for (const Adapter* a : all_adapters())
+      w.begin_object().field("id", a->id()).field("name", a->name()).end_object();
+    w.end_array().end_object();
     out.push_back(std::move(m));
   }
   if (ws_.store().version() != store_seen_) send_folders(out);

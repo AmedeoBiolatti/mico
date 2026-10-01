@@ -23,6 +23,7 @@
 #include "term/kitty.h"
 #include "math/math.h"
 #include "term/sixel.h"
+#include "net/web.h"
 #include "ui/app.h"
 #include "ui/theme.h"
 
@@ -123,6 +124,9 @@ int run_daemon() {
   // its clients see them. Today every client shares that one view.
   Workspace workspace;
   App app(workspace);
+  // The web view, when it is turned on (:web on): a second kind of client,
+  // given state rather than frames.
+  WebServer web(workspace);
   Surface back;
   std::vector<std::unique_ptr<Client>> clients;
   std::vector<pollfd> fds;
@@ -132,6 +136,8 @@ int run_daemon() {
   std::vector<uint32_t> evicted;
   while (!g_stop && app.running()) {
     bool dirty = app.service();
+    web.sync();
+    web.pump();
 
     // Equations are drawn as images only when every attached terminal can
     // show them: the layout is shared, and a placeholder means nothing to a
@@ -237,6 +243,7 @@ int run_daemon() {
     session_fds.clear();
     app.collect_session_fds(session_fds);
     for (int fd : session_fds) fds.push_back(pollfd{fd, POLLIN, 0});
+    web.add_fds(fds);
 
     // With nobody watching there is nothing to draw, so idle cheaply; agents
     // keep running either way, which is the entire point of the daemon.
@@ -247,6 +254,8 @@ int run_daemon() {
     for (auto& c : clients)
       if (c->dec.pending_escape()) timeout = std::min(timeout, 25);
     if (::poll(fds.data(), fds.size(), timeout) < 0 && errno != EINTR) break;
+
+    web.handle(fds);
 
     if (fds[0].revents & POLLIN) {
       for (;;) {

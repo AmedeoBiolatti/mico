@@ -168,6 +168,34 @@ The client cannot decode input and does not try: sending raw bytes keeps one
 implementation of escape-sequence parsing, in one place, whether mico is running
 locally or across an ssh connection.
 
+## Web view
+
+`:web on` has the daemon serve a web page on `127.0.0.1:7311` (`:web on PORT`
+for another port; `:web off` stops it). `:web` puts the page's address on the
+clipboard. The address carries a token, `#token=…`, which the page needs to
+connect; add `&chat=<transcript path>` to open a chat directly.
+
+The page lists the tracked folders and the running agents, shows a chat as it
+grows, loads older history on request, starts agents, and sends a running one a
+message. Questions and permission dialogs are still answered in mico itself.
+
+It is a client of mico's state protocol (`src/api/client.h`): JSON over a
+WebSocket, carrying chats and agents rather than terminal frames, so any program
+can be another client. It is for this machine only:
+
+- the daemon listens on 127.0.0.1, never on a network address;
+- the WebSocket needs the token, kept in `$XDG_CONFIG_HOME/mico/web-token`,
+  readable by you alone, and it never travels in a request: it rides in the
+  page address's fragment;
+- a request naming any other host is refused, so a web page that points its own
+  name at 127.0.0.1 gets nowhere, and so is a WebSocket opened from any other
+  origin;
+- a client can open only chats mico lists, and start only agents mico has an
+  adapter for, in folders you track.
+
+Reaching it from another machine means TLS and a login in front of the same
+protocol; until then, forward the port over ssh.
+
 ## Three data planes
 
 An observer of agents it does not control has exactly three sources:

@@ -14,6 +14,7 @@
 #include "base/log.h"
 #include "core/opener.h"
 #include "core/pty.h"
+#include "core/web_access.h"
 #include "core/x11_clipboard.h"
 #include "term/kitty.h"
 #include "math/math.h"
@@ -888,6 +889,7 @@ constexpr Command kCommands[] = {
     {"diff", "show what the agents changed in files, and which chat did"},
     {"charts", "tell agents they can draw charts: charts on|off"},
     {"mcp", "give agents mico's tools (plot) over MCP: mcp on|off"},
+    {"web", "the web view, served by the daemon: web on [port] | off, or web to copy its address"},
     {"sessions", "show the sessions tab"},
     {"redraw", "repaint everything"},
     {"log", "show where the log file is"},
@@ -992,6 +994,20 @@ void App::run_command(std::string line) {
   if (cmd == "tools") { show_tab(3); return; }
   if (cmd == "diff") { show_tab(4); return; }
   if (cmd == "search") { open_search(arg); return; }
+  if (cmd == "web") {
+    if (arg == "off") set_web(false);
+    else if (arg == "on" || arg.starts_with("on ")) set_web(true, arg.size() > 3 ? std::atoi(arg.c_str() + 3) : 0);
+    if (!web_enabled()) {
+      set_status("web view off  (:web on serves it on 127.0.0.1:" + std::to_string(web_port()) + ")");
+      return;
+    }
+    // The address carries the token: copied rather than only shown, so it
+    // need not be typed, and it stays out of the screen's scrollback.
+    copy_to_clipboard(web_url());
+    set_status("web view on 127.0.0.1:" + std::to_string(web_port()) +
+               " \xE2\x80\x94 its address (with the token) is on the clipboard");
+    return;
+  }
   if (cmd == "mcp") {
     if (arg == "on" || arg == "off") set_mcp_tools(arg == "on");
     set_status(std::string("mcp: mico's tools (plot) are ") + (mcp_tools_enabled() ? "" : "not ") +

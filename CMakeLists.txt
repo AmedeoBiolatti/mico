@@ -117,6 +117,7 @@ add_library(mico_core STATIC
   src/core/files.cpp
   src/core/workspace.cpp
   src/core/conversation.cpp
+  src/core/web_access.cpp
 )
 target_link_libraries(mico_core PUBLIC mico_adapters mico_vt PRIVATE util)
 
@@ -169,7 +170,13 @@ add_library(mico_net STATIC
   src/net/proto.cpp
   src/net/server.cpp
   src/net/client.cpp
+  src/net/web.cpp
 )
+# The web view's page, script and styles are linked in by .incbin in web.cpp.
+set(MICO_WEB_DIR ${CMAKE_SOURCE_DIR}/web)
+set_source_files_properties(src/net/web.cpp PROPERTIES
+  COMPILE_DEFINITIONS MICO_WEB_DIR="${MICO_WEB_DIR}"
+  OBJECT_DEPENDS "${MICO_WEB_DIR}/index.html;${MICO_WEB_DIR}/app.js;${MICO_WEB_DIR}/app.css")
 target_link_libraries(mico_net PUBLIC mico_tui mico_api)
 
 add_executable(mico
@@ -211,10 +218,12 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_layers.py ${CMAKE_SOURCE_DIR}/src)
   add_test(NAME daemon-input
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_input.py $<TARGET_FILE:mico>)
+  add_test(NAME web-view
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_view.py $<TARGET_FILE:mico>)
   foreach(check claude_questions claude_permission claude_paste)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(daemon-input claude-questions claude-permission claude-paste
+  set_tests_properties(daemon-input web-view claude-questions claude-permission claude-paste
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

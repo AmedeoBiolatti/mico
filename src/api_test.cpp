@@ -92,7 +92,8 @@ int run_api_test() {
   api::Client c(ws);
 
   std::string got = poll_all(c);
-  check(has(got, R"("type":"hello","protocol":1)"), "hello comes first");
+  check(has(got, R"("type":"hello","protocol":1)") && has(got, R"({"id":"claude","name":"Claude Code"})"),
+        "hello comes first, naming the agents a client can start");
   check(has(got, R"("type":"folders")") && has(got, "\"path\":\"" + path + "\"") &&
             has(got, R"("title":"draw the loss curve")"),
         "the listing names the fixture chat by its first message");

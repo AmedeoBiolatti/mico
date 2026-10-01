@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>mico</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <header id="brand">mico <span id="conn" class="conn off" title="connection">●</span></header>
+    <section>
+      <h2>Running</h2>
+      <ul id="agents" class="list"></ul>
+    </section>
+    <section>
+      <h2>Folders</h2>
+      <div id="folders"></div>
+    </section>
+  </aside>
+  <main id="main">
+    <header id="chat-head">
+      <div id="chat-title">Pick a chat</div>
+      <div id="chat-meta"></div>
+    </header>
+    <div id="chat" tabindex="-1">
+      <button id="older" hidden>Load older messages</button>
+      <div id="events"></div>
+    </div>
+    <form id="prompt" hidden>
+      <textarea id="prompt-text" rows="2" placeholder="Message the agent — Enter sends, Shift+Enter for a new line"></textarea>
+      <button type="submit">Send</button>
+    </form>
+    <div id="status" role="status"></div>
+  </main>
+</div>
+</body>
+</html>

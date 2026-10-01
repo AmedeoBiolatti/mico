@@ -14,7 +14,7 @@
 // feeds receive() and sends what poll() returns, one JSON object each.
 //
 // Server to client:
-//   hello      {protocol}                                      first, once
+//   hello      {protocol, adapters: [{id, name}]}              first, once
 //   folders    {folders: [{path, name, subs: [{name, path}],   whenever the
 //               chats: [{agent, id, path, title, cwd, mtime,    listing changed
 //               bytes, sub, archived}]}]}
