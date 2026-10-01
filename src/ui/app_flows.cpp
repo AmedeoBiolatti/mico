@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <set>
 
+#include "adapters/adapters.h"
 #include "core/store.h"
 #include "base/text.h"
 #include "ui/app.h"
@@ -73,13 +74,8 @@ bool on_path(const std::string& bin) {
   return false;
 }
 
-constexpr const char* kAgents[][2] = {
-    {"claude", "Claude Code"}, {"codex", "Codex"}, {"pi", "pi"}, {"omp", "Oh My Pi"}};
-
 bool is_agent(const std::string& cmd) {
-  for (const auto& a : kAgents)
-    if (cmd == a[0]) return true;
-  return false;
+  return adapter_for(cmd) != nullptr;
 }
 
 }  // namespace
@@ -223,13 +219,14 @@ std::vector<PickItem> App::flow_items(const std::string& flow, const std::string
     }
   }
   std::vector<PickItem> out;
-  for (const auto& a : kAgents) {
+  for (const Adapter* a : all_adapters()) {
+    const std::string id(a->id());
     PickItem it;
-    it.label = a[0];
-    it.detail = a[1];
-    it.id = std::string("cmd:") + a[0];
+    it.label = id;
+    it.detail = a->name();
+    it.id = "cmd:" + id;
     it.group = "Agents";
-    if (!on_path(a[0])) it.hint = "not on PATH";
+    if (!on_path(id.c_str())) it.hint = "not on PATH";
     out.push_back(std::move(it));
   }
   for (const auto& c : recent_commands_) {

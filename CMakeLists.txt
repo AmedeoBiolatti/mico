@@ -21,14 +21,15 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 #   vt        the cell grid, the emulator that fills one from an agent's pty,
 #             and the key/mouse encoding sent back to it
 #   math      equation and image layout and rasterizing (content, not terminal)
-#   model     mico's normalized types: Event, SessionState, the Adapter interface
-#   adapters  one per agent: claude, codex, pi/omp
+#   model     mico's normalized types: Event, SessionState, Launch
+#   adapters  the Adapter interface, and one per agent: claude, codex, pi/omp
 #   core      sessions, the store, search, activity: everything but drawing
 #   term      the host terminal mico draws on: output, input, kitty/sixel
 #   tui       views and the app, drawn into cells
 #   net       daemon and client
 add_library(mico_base STATIC
   src/base/text.cpp
+  src/base/uuid.cpp
   src/base/json.cpp
   src/base/jsonl.cpp
   src/base/log.cpp
@@ -62,12 +63,17 @@ add_library(mico_model INTERFACE)
 target_link_libraries(mico_model INTERFACE mico_base)
 
 add_library(mico_adapters STATIC
+  src/adapters/adapter.cpp
+  src/adapters/cmdline.cpp
   src/adapters/registry.cpp
-  src/adapters/claude.cpp
-  src/adapters/codex.cpp
-  src/adapters/pi.cpp
+  src/adapters/claude/transcript.cpp
+  src/adapters/claude/session.cpp
+  src/adapters/codex/transcript.cpp
+  src/adapters/codex/session.cpp
+  src/adapters/pi/transcript.cpp
+  src/adapters/pi/session.cpp
 )
-target_link_libraries(mico_adapters PUBLIC mico_model)
+target_link_libraries(mico_adapters PUBLIC mico_model mico_vt)
 
 add_library(mico_core STATIC
   src/core/pty.cpp

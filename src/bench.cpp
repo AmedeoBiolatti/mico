@@ -6,7 +6,7 @@
 #include <string>
 
 #include "base/json.h"
-#include "model/adapter.h"
+#include "adapters/adapter.h"
 #include "term/encoder.h"
 #include "vt/vt.h"
 #include "term/input.h"

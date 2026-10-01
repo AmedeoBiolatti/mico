@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <unordered_set>
 
+#include "adapters/adapters.h"
 #include "base/log.h"
 #include "core/opener.h"
 #include "core/pty.h"
@@ -234,42 +235,14 @@ bool App::spawn_continuation(const std::string& agent, const std::string& sessio
   l.origin = session_id;
   l.forked = fork;
 
-  if (agent == "claude") {
-    l.argv = {"claude", "--resume", session_id};
-    if (fork) {
-      // Verified: claude honours --session-id alongside --fork-session, so the
-      // branch is correlated exactly from the moment it is created.
-      l.session_id = make_uuid_v4();
-      l.argv.push_back("--fork-session");
-      l.argv.push_back("--session-id");
-      l.argv.push_back(l.session_id);
-    } else {
-      l.session_id = session_id;  // resuming keeps the original transcript
-    }
-  } else if (agent == "codex") {
-    l.argv = {"codex", fork ? "fork" : "resume", session_id};
-    if (!fork) l.session_id = session_id;
-  } else if (agent == "pi") {
-    if (fork) {
-      l.session_id = make_uuid_v4();
-      l.argv = {"pi", "--fork", session_id, "--session-id", l.session_id};
-    } else {
-      l.session_id = session_id;  // resuming keeps the original transcript
-      l.argv = {"pi", "--session", session_id};
-    }
-  } else if (agent == "omp") {
-    // omp has no fork flag of its own; resuming is all it offers.
-    if (fork) {
-      set_status("omp has no fork — resuming instead");
-      fork = false;
-    }
-    l.forked = false;
-    l.session_id = session_id;
-    l.argv = {"omp", "--resume", session_id};
-  } else {
+  const Adapter* adapter = adapter_for(agent);
+  std::string note;
+  if (!adapter || !adapter->continue_session(l, session_id, fork, &note)) {
     set_status("cannot continue a session for " + agent);
     return false;
   }
+  fork = l.forked;  // an agent that cannot fork resumes instead
+  if (!note.empty()) set_status(note);
 
   if (!fork) {
     for (const auto& previous : live_) {
@@ -1032,10 +1005,6 @@ constexpr Command kCommands[] = {
     {"new", "start an agent — :new, or :new <command>"},
     {"folder", "track another folder"},
     {"outline", "go to a message, edit or failure in this chat (Ctrl+G)"},
-    {"claude", "start claude in the selected project"},
-    {"codex", "start codex in the selected project"},
-    {"pi", "start pi in the selected project"},
-    {"omp", "start omp in the selected project"},
     {"fork", "fork the selected chat into a new one"},
     {"resume", "resume the selected chat"},
     {"density", "minimal | normal | full"},
@@ -1077,6 +1046,13 @@ void App::run_command(std::string line) {
       MenuItem it{c.name, c.name};
       it.detail = c.help;
       items.push_back(std::move(it));
+      if (std::string_view(c.name) != "outline") continue;
+      // Each agent is a command of its own, starting it.
+      for (const Adapter* a : all_adapters()) {
+        MenuItem ai{std::string(a->id()), std::string(a->id())};
+        ai.detail = "start " + std::string(a->id()) + " in the selected project";
+        items.push_back(std::move(ai));
+      }
     }
     open_menu(nullptr, Point{2, std::max(0, 4)}, std::move(items), "Commands");
     if (menu_) {
@@ -1112,7 +1088,7 @@ void App::run_command(std::string line) {
     open_new_agent(arg);
     return;
   }
-  if (cmd == "claude" || cmd == "codex" || cmd == "pi" || cmd == "omp") {
+  if (adapter_for(cmd)) {
     spawn_agent(cmd, arg.empty() ? selected_cwd() : arg);
     return;
   }

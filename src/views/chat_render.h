@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "base/front_vec.h"
-#include "model/adapter.h"
+#include "adapters/adapter.h"
 #include "base/jsonl.h"
 #include "vt/surface.h"
 #include "term/term.h"

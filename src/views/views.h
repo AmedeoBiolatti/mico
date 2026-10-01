@@ -1,4 +1,5 @@
 #pragma once
+#include "adapters/adapters.h"
 #include "ui/pane.h"
 #include "ui/picker.h"
 #include "ui/theme.h"
@@ -12,10 +13,7 @@ class ActivityIndex;
 struct SessionState;
 
 inline std::string agent_label(std::string_view agent) {
-  if (agent == "claude") return "Claude";
-  if (agent == "codex") return "Codex";
-  if (agent == "pi") return "Pi";
-  if (agent == "omp") return "OMP";
+  if (const Adapter* a = adapter_for(agent)) return std::string(a->label());
   return std::string(agent);
 }
 

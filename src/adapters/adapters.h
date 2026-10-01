@@ -3,7 +3,7 @@
 #include <string_view>
 #include <vector>
 
-#include "model/adapter.h"
+#include "adapters/adapter.h"
 
 namespace mico {
 
@@ -14,10 +14,17 @@ const Adapter& codex_adapter();
 const Adapter& pi_adapter();
 const Adapter& omp_adapter();
 
+// Every agent mico has an adapter for, in the order menus list them.
+const std::vector<const Adapter*>& all_adapters();
+
 // The adapter for an agent named as its command is ("claude", "codex", "pi",
 // "omp"), or null for one mico has no adapter for: that agent still gets a
 // pane, just no chat view.
 const Adapter* adapter_for(std::string_view agent);
+
+// The defaults alone, for a command mico has no adapter for: how to tell when
+// it is working or waiting, without a transcript to read.
+const Adapter& plain_adapter();
 
 // Codex's reply to an optional question (see is_async_question_tool) is an
 // envelope. One answer in it:

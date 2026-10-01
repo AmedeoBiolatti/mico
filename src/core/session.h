@@ -5,7 +5,8 @@
 #include <utility>
 #include <vector>
 
-#include "model/adapter.h"
+#include "adapters/adapter.h"
+#include "base/uuid.h"
 #include "model/message.h"
 #include "core/pty.h"
 #include "vt/vt.h"
@@ -34,20 +35,8 @@ class LiveSession {
   // than no answer.
   enum class Status { Working, Idle, Waiting, Exited };
   ~LiveSession();
-  // How to start an agent. Fresh sessions, resumes and forks differ only in
-  // argv and in whether the transcript id is known up front, so they share one
-  // path rather than three.
-  struct Launch {
-    std::string agent;  // "claude", "codex", or a bare command
-    std::string cwd;
-    std::vector<std::string> argv;  // empty means "the default new-session argv"
-    // Known transcript id. Claude honours --session-id even when forking, so a
-    // fork is still correlated exactly. Codex has no such flag, and its id must
-    // be discovered after the fact.
-    std::string session_id;
-    std::string origin;  // session this one continues from, for the title
-    bool forked = false;
-  };
+  using Launch = mico::Launch;
+
 
   // Prepares the launch but does not fork: the pty is spawned by the first
   // set_geometry() call, so the agent starts at the size it will actually be
@@ -159,6 +148,8 @@ class LiveSession {
 
  private:
   void discover_transcript();
+  // The adapter, or the defaults for a command mico has none for.
+  const Adapter& driver() const;
   void follow_turns();
 
   Pty pty_;
@@ -217,6 +208,5 @@ class LiveSession {
   int last_w_ = 0, last_h_ = 0;
 };
 
-std::string make_uuid_v4();
 
 }  // namespace mico

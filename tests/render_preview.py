@@ -19,7 +19,7 @@ out.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='mico-ui-preview-') as directory:
     root = Path(directory)
     binary = root / 'snapshot'
-    objects = [str(p) for p in (repo / 'build/CMakeFiles').glob('mico_*.dir/src/**/*.o')]
+    objects = ['-Wl,--start-group', *(str(p) for p in sorted((repo / 'build').glob('libmico_*.a'))), '-Wl,--end-group']
     subprocess.run(['c++', '-std=c++23', '-O2', '-I' + str(repo / 'src'),
                     str(repo / 'tests/ui_snapshot.cpp'), *objects, '-lutil', '-o', str(binary)], check=True)
     project = root / 'workspace/mico'

@@ -1,6 +1,6 @@
 #include <iterator>
 
-#include "adapters/adapters.h"
+#include "adapters/claude/claude.h"
 #include "adapters/user_text.h"
 
 namespace mico {
@@ -206,223 +206,214 @@ bool task_notification(Arena& arena, Event& e) {
   return true;
 }
 
-class ClaudeAdapter final : public Adapter {
- public:
-  std::string_view id() const override { return "claude"; }
-
-  void seed_state(SessionState& st) const override {
-    st.declare("model", "model");
-    st.declare("effort", "effort");
-    st.declare("mode", "mode");
-    st.declare("perm", "permissions");
-  }
-
-  void observe(std::string_view raw, SessionState& st) const override {
-    js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "type") {
-        // Mode records lead with their type, so they resolve immediately.
-        std::string_view t = v.body();
-        return t == "mode" || t == "permission-mode" || t == "assistant";
-      }
-      if (k == "mode") st.set("mode", "mode", v.body());
-      else if (k == "permissionMode") st.set("perm", "permissions", v.body());
-      else if (k == "effort") st.set("effort", "effort", v.body());
-      else if (k == "message") {
-        js::scan_object(v.raw, [&](std::string_view mk, const js::Value& mv) {
-          if (mk != "model") return true;
-          st.set("model", "model", mv.body());
-          return false;
-        });
-      }
-      return true;
-    });
-  }
-
-  void parse(std::string_view raw, Arena& arena, std::vector<Event>& out) const override {
-    // Metadata records (mode, permission-mode, ai-title, …) write "type" as
-    // their first key, so they are rejected after one member. User and
-    // assistant records lead with parentUuid, so their type is found later —
-    // but skipping the message object is a depth scan, not a parse.
-    js::Value message{};
-    bool is_user = false, is_assistant = false, is_meta = false;
-    bool is_system = false, compact_summary = false;
-    bool is_queue = false, is_attachment = false;
-    std::string_view queue_op;
-    js::Value queue_text{}, attachment{};
-
-    js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
-      // An attachment record writes its object before its type; take it
-      // whichever comes first and stop once both are in.
-      if (k == "attachment") { attachment = v; return !is_attachment; }
-      if (k == "type") {
-        std::string_view t = v.body();
-        is_user = t == "user";
-        is_assistant = t == "assistant";
-        is_system = t == "system";
-        is_queue = t == "queue-operation";
-        is_attachment = t == "attachment";
-        if (is_attachment) return attachment.type == js::Type::Null;
-        return is_user || is_assistant || is_system || is_queue;
-      }
-      if (is_queue) {
-        if (k == "operation") { queue_op = v.body(); return true; }
-        if (k == "content") { queue_text = v; return false; }
-        return true;
-      }
-      if (is_system) {
-        // Only a compaction boundary is of interest; its subtype follows type.
-        if (k == "subtype") {
-          if (v.body() == "compact_boundary") {
-            Event e;
-            e.kind = EventKind::Notice;
-            e.text = arena.add("Conversation compacted");
-            out.push_back(e);
-          }
-          return false;
-        }
-        return true;
-      }
-      if (k == "message") { message = v; return true; }
-      if (k == "isMeta") { is_meta = v.is_true(); return true; }
-      // The summary a compaction hands the model: pages of recap written for
-      // it, not for the reader. The boundary's notice already marks the spot.
-      if (k == "isCompactSummary") { compact_summary = v.is_true(); return !compact_summary; }
-      return true;
-    });
-
-    if (is_attachment) {
-      // Of attachments only one kind is conversation: a message the user sent
-      // mid-turn, handed to the model at a tool boundary (steering).
-      js::Value prompt{};
-      bool queued = false;
-      js::scan_object(attachment.raw, [&](std::string_view k, const js::Value& v) {
-        if (k == "type") { queued = v.body() == "queued_command"; return queued; }
-        if (k == "prompt") { prompt = v; return false; }
-        return true;
-      });
-      // Background-task notices ride the same queue; they are not the user.
-      if (queued && prompt.is_string() && !prompt.body().starts_with("<")) {
-        Event e;
-        e.kind = EventKind::User;
-        e.text = add_content(arena, prompt);
-        if (!e.text.empty()) out.push_back(e);
-      }
-      return;
-    }
-    if (is_queue) {
-      // What the user sent while the agent worked, until the agent takes it.
-      const bool add = queue_op == "enqueue";
-      if (!add && queue_op != "dequeue" && queue_op != "remove") return;
-      if (queue_text.is_string() && queue_text.body().starts_with("<")) return;  // a task notice
-      if (add && !queue_text.is_string()) return;
-      Event e;
-      e.kind = add ? EventKind::QueueAdd : EventKind::QueueTake;
-      if (queue_text.is_string()) e.text = arena.add_json(queue_text);
-      out.push_back(e);
-      return;
-    }
-    if ((!is_user && !is_assistant) || !message.is_object() || compact_summary) return;
-
-    js::Value content{};
-    std::string_view stop_reason;
-    js::scan_object(message.raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "content") content = v;
-      else if (k == "stop_reason") stop_reason = v.body();
-      return true;
-    });
-    if (content.type == js::Type::Null) return;
-
-    if (is_user) {
-      // A user record carrying tool_result blocks is the tool's output, not a
-      // human turn; it must not render as something the user said.
-      bool had_result = false;
-      if (content.is_array()) {
-        js::scan_array(content.raw, [&](const js::Value& b) {
-          if (!b.is_object()) return true;
-          js::Value inner{};
-          uint64_t id = 0;
-          bool is_result = false, err = false;
-          js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
-            if (k == "type") is_result = v.body() == "tool_result";
-            else if (k == "tool_use_id") id = hash_id(v.body());
-            else if (k == "is_error") err = v.is_true();
-            else if (k == "content") inner = v;
-            return true;
-          });
-          if (!is_result) return true;
-          Event e;
-          e.kind = EventKind::ToolResult;
-          e.tool_id = id;
-          e.ok = !err;
-          if (inner.type != js::Type::Null) e.text = add_content(arena, inner);
-          out.push_back(e);
-          had_result = true;
-          return true;
-        });
-      }
-      if (had_result) return;
-
-      Event e;
-      e.text = add_content(arena, content);
-      if (e.text.empty()) return;
-      e.kind = is_meta ? EventKind::Meta : classify_user_text(arena, e.text);
-      if (e.kind == EventKind::User) task_notification(arena, e);
-      if (e.kind == EventKind::User) e.text = unwrap_pasted_content(arena, e.text);
-      if (!e.text.empty()) out.push_back(e);
-      return;
-    }
-
-    // Assistant: one record holds thinking + prose + tool calls, in order.
-    if (!content.is_array()) return;
-    js::scan_array(content.raw, [&](const js::Value& b) {
-      if (!b.is_object()) return true;
-      js::Value text{}, thinking{}, name{}, id{}, input{};
-      std::string_view bt;
-      js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
-        if (k == "type") bt = v.body();
-        else if (k == "text") text = v;
-        else if (k == "thinking") thinking = v;
-        else if (k == "name") name = v;
-        else if (k == "id") id = v;
-        else if (k == "input") input = v;
-        return true;
-      });
-
-      Event e;
-      if (bt == "text" && text.is_string() && !text.body().empty()) {
-        e.kind = EventKind::Assistant;
-        e.text = arena.add_json(text);
-      } else if (bt == "thinking" && thinking.is_string() && !thinking.body().empty()) {
-        e.kind = EventKind::Thinking;
-        e.text = arena.add_json(thinking);
-      } else if (bt == "tool_use") {
-        e.kind = EventKind::ToolCall;
-        e.name = name.is_string() ? arena.add_json(name) : arena.add("?");
-        e.tool_id = hash_id(id.body());
-        if (is_mico_plot(arena.view(e.name)) && input.is_object()) {
-          make_chart_event(e, arena, input.raw);
-        } else if (!(is_question_tool(arena.view(e.name)) && build_question(e, arena, input))) {
-          e.summary = tool_arg_summary(arena, input);
-          e.detail = build_detail(arena, arena.view(e.name), input);
-        }
-      } else {
-        return true;
-      }
-      out.push_back(e);
-      return true;
-    });
-    if (stop_reason == "end_turn" || stop_reason == "stop_sequence") {
-      Event end;
-      end.kind = EventKind::TurnEnd;
-      out.push_back(end);
-    }
-  }
-};
-
-const ClaudeAdapter g_claude;
-
 }  // namespace
 
-const Adapter& claude_adapter() { return g_claude; }
+void ClaudeAdapter::seed_state(SessionState& st) const {
+  st.declare("model", "model");
+  st.declare("effort", "effort");
+  st.declare("mode", "mode");
+  st.declare("perm", "permissions");
+}
+
+void ClaudeAdapter::observe(std::string_view raw, SessionState& st) const {
+  js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
+    if (k == "type") {
+      // Mode records lead with their type, so they resolve immediately.
+      std::string_view t = v.body();
+      return t == "mode" || t == "permission-mode" || t == "assistant";
+    }
+    if (k == "mode") st.set("mode", "mode", v.body());
+    else if (k == "permissionMode") st.set("perm", "permissions", v.body());
+    else if (k == "effort") st.set("effort", "effort", v.body());
+    else if (k == "message") {
+      js::scan_object(v.raw, [&](std::string_view mk, const js::Value& mv) {
+        if (mk != "model") return true;
+        st.set("model", "model", mv.body());
+        return false;
+      });
+    }
+    return true;
+  });
+}
+
+void ClaudeAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>& out) const {
+  // Metadata records (mode, permission-mode, ai-title, …) write "type" as
+  // their first key, so they are rejected after one member. User and
+  // assistant records lead with parentUuid, so their type is found later —
+  // but skipping the message object is a depth scan, not a parse.
+  js::Value message{};
+  bool is_user = false, is_assistant = false, is_meta = false;
+  bool is_system = false, compact_summary = false;
+  bool is_queue = false, is_attachment = false;
+  std::string_view queue_op;
+  js::Value queue_text{}, attachment{};
+
+  js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
+    // An attachment record writes its object before its type; take it
+    // whichever comes first and stop once both are in.
+    if (k == "attachment") { attachment = v; return !is_attachment; }
+    if (k == "type") {
+      std::string_view t = v.body();
+      is_user = t == "user";
+      is_assistant = t == "assistant";
+      is_system = t == "system";
+      is_queue = t == "queue-operation";
+      is_attachment = t == "attachment";
+      if (is_attachment) return attachment.type == js::Type::Null;
+      return is_user || is_assistant || is_system || is_queue;
+    }
+    if (is_queue) {
+      if (k == "operation") { queue_op = v.body(); return true; }
+      if (k == "content") { queue_text = v; return false; }
+      return true;
+    }
+    if (is_system) {
+      // Only a compaction boundary is of interest; its subtype follows type.
+      if (k == "subtype") {
+        if (v.body() == "compact_boundary") {
+          Event e;
+          e.kind = EventKind::Notice;
+          e.text = arena.add("Conversation compacted");
+          out.push_back(e);
+        }
+        return false;
+      }
+      return true;
+    }
+    if (k == "message") { message = v; return true; }
+    if (k == "isMeta") { is_meta = v.is_true(); return true; }
+    // The summary a compaction hands the model: pages of recap written for
+    // it, not for the reader. The boundary's notice already marks the spot.
+    if (k == "isCompactSummary") { compact_summary = v.is_true(); return !compact_summary; }
+    return true;
+  });
+
+  if (is_attachment) {
+    // Of attachments only one kind is conversation: a message the user sent
+    // mid-turn, handed to the model at a tool boundary (steering).
+    js::Value prompt{};
+    bool queued = false;
+    js::scan_object(attachment.raw, [&](std::string_view k, const js::Value& v) {
+      if (k == "type") { queued = v.body() == "queued_command"; return queued; }
+      if (k == "prompt") { prompt = v; return false; }
+      return true;
+    });
+    // Background-task notices ride the same queue; they are not the user.
+    if (queued && prompt.is_string() && !prompt.body().starts_with("<")) {
+      Event e;
+      e.kind = EventKind::User;
+      e.text = add_content(arena, prompt);
+      if (!e.text.empty()) out.push_back(e);
+    }
+    return;
+  }
+  if (is_queue) {
+    // What the user sent while the agent worked, until the agent takes it.
+    const bool add = queue_op == "enqueue";
+    if (!add && queue_op != "dequeue" && queue_op != "remove") return;
+    if (queue_text.is_string() && queue_text.body().starts_with("<")) return;  // a task notice
+    if (add && !queue_text.is_string()) return;
+    Event e;
+    e.kind = add ? EventKind::QueueAdd : EventKind::QueueTake;
+    if (queue_text.is_string()) e.text = arena.add_json(queue_text);
+    out.push_back(e);
+    return;
+  }
+  if ((!is_user && !is_assistant) || !message.is_object() || compact_summary) return;
+
+  js::Value content{};
+  std::string_view stop_reason;
+  js::scan_object(message.raw, [&](std::string_view k, const js::Value& v) {
+    if (k == "content") content = v;
+    else if (k == "stop_reason") stop_reason = v.body();
+    return true;
+  });
+  if (content.type == js::Type::Null) return;
+
+  if (is_user) {
+    // A user record carrying tool_result blocks is the tool's output, not a
+    // human turn; it must not render as something the user said.
+    bool had_result = false;
+    if (content.is_array()) {
+      js::scan_array(content.raw, [&](const js::Value& b) {
+        if (!b.is_object()) return true;
+        js::Value inner{};
+        uint64_t id = 0;
+        bool is_result = false, err = false;
+        js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
+          if (k == "type") is_result = v.body() == "tool_result";
+          else if (k == "tool_use_id") id = hash_id(v.body());
+          else if (k == "is_error") err = v.is_true();
+          else if (k == "content") inner = v;
+          return true;
+        });
+        if (!is_result) return true;
+        Event e;
+        e.kind = EventKind::ToolResult;
+        e.tool_id = id;
+        e.ok = !err;
+        if (inner.type != js::Type::Null) e.text = add_content(arena, inner);
+        out.push_back(e);
+        had_result = true;
+        return true;
+      });
+    }
+    if (had_result) return;
+
+    Event e;
+    e.text = add_content(arena, content);
+    if (e.text.empty()) return;
+    e.kind = is_meta ? EventKind::Meta : classify_user_text(arena, e.text);
+    if (e.kind == EventKind::User) task_notification(arena, e);
+    if (e.kind == EventKind::User) e.text = unwrap_pasted_content(arena, e.text);
+    if (!e.text.empty()) out.push_back(e);
+    return;
+  }
+
+  // Assistant: one record holds thinking + prose + tool calls, in order.
+  if (!content.is_array()) return;
+  js::scan_array(content.raw, [&](const js::Value& b) {
+    if (!b.is_object()) return true;
+    js::Value text{}, thinking{}, name{}, id{}, input{};
+    std::string_view bt;
+    js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
+      if (k == "type") bt = v.body();
+      else if (k == "text") text = v;
+      else if (k == "thinking") thinking = v;
+      else if (k == "name") name = v;
+      else if (k == "id") id = v;
+      else if (k == "input") input = v;
+      return true;
+    });
+
+    Event e;
+    if (bt == "text" && text.is_string() && !text.body().empty()) {
+      e.kind = EventKind::Assistant;
+      e.text = arena.add_json(text);
+    } else if (bt == "thinking" && thinking.is_string() && !thinking.body().empty()) {
+      e.kind = EventKind::Thinking;
+      e.text = arena.add_json(thinking);
+    } else if (bt == "tool_use") {
+      e.kind = EventKind::ToolCall;
+      e.name = name.is_string() ? arena.add_json(name) : arena.add("?");
+      e.tool_id = hash_id(id.body());
+      if (is_mico_plot(arena.view(e.name)) && input.is_object()) {
+        make_chart_event(e, arena, input.raw);
+      } else if (!(is_question_tool(arena.view(e.name)) && build_question(e, arena, input))) {
+        e.summary = tool_arg_summary(arena, input);
+        e.detail = build_detail(arena, arena.view(e.name), input);
+      }
+    } else {
+      return true;
+    }
+    out.push_back(e);
+    return true;
+  });
+  if (stop_reason == "end_turn" || stop_reason == "stop_sequence") {
+    Event end;
+    end.kind = EventKind::TurnEnd;
+    out.push_back(end);
+  }
+}
 
 }  // namespace mico

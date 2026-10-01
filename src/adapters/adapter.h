@@ -1,10 +1,13 @@
 #pragma once
 #include <algorithm>
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "model/event.h"
+#include "model/launch.h"
 #include "model/state.h"
 
 namespace mico {
@@ -25,13 +28,60 @@ inline void make_chart_event(Event& e, Arena& arena, std::string_view args_json)
 }
 
 
-// Per-agent translation from a transcript line to normalized Events.
-// Adapters are pure and stateless: enrichment only, never a gate. An agent with
-// no adapter still gets a pane, it just has no chat view.
+class Vt;
+
+// What is known when looking for a running session's transcript.
+struct TranscriptQuery {
+  std::string session_id;  // known up front, or empty
+  std::string cwd;
+  std::string origin;      // the session a fork came from, or the one resumed
+  bool forked = false;
+  int64_t started_at = 0;  // unix seconds
+  int pid = -1;            // the agent's pty session leader
+  // What snapshot_transcripts() saw before the launch, sorted.
+  const std::vector<std::string>* preexisting = nullptr;
+  // True for a transcript another running session has already claimed.
+  std::function<bool(const std::string&)> claimed;
+  bool resuming() const { return !session_id.empty() && !forked; }
+  bool existed(const std::string& path) const {
+    return preexisting && std::binary_search(preexisting->begin(), preexisting->end(), path);
+  }
+};
+
+struct FoundTranscript {
+  std::string path;
+  std::string session_id;  // as the transcript names it
+};
+
+// What there is to judge a running agent's activity by.
+struct Liveness {
+  const Vt& vt;
+  int64_t quiet_ms = 0;    // since the agent last wrote to its terminal
+  bool turn_open = false;  // see Adapter::tracks_turns()
+};
+
+// Everything mico knows about one kind of agent: how to start it, where it
+// keeps its transcripts, how to read them, and how to tell from its screen
+// what it is doing. The rest of mico asks its adapter rather than checking
+// which agent it is, so a new agent is a new adapter and nothing else.
+//
+// Adapters are stateless: one instance serves every session of its agent, and
+// everything per-session is passed in. An agent with no adapter still gets a
+// pane, it just has no chat view.
 class Adapter {
  public:
   virtual ~Adapter() = default;
+
+  // --- Identity ------------------------------------------------------------
+
+  // The agent as its command is named: "claude", "codex", "pi", "omp".
   virtual std::string_view id() const = 0;
+  // As menus name it: "Claude Code", "Oh My Pi".
+  virtual std::string_view name() const { return id(); }
+  // As a title or a chip names it, short: "Claude", "OMP".
+  virtual std::string_view label() const { return id(); }
+
+  // --- Transcript ----------------------------------------------------------
 
   // Appends 0..N events for one line. A single assistant record routinely holds
   // thinking + prose + several tool calls, so this is not one-to-one. Lines
@@ -48,6 +98,52 @@ class Adapter {
   // chip bar appear before the first turn, so model/effort can be set on a
   // fresh session the way omp's harness does it.
   virtual void seed_state(SessionState& st) const {}
+
+  // --- Launching -----------------------------------------------------------
+
+  // Settles `l.argv`: the agent's own command when it is empty, the session id
+  // when the agent can be told one (which makes finding its transcript exact),
+  // and whatever of `x` the agent can take. Never replaces what the command
+  // line already says.
+  virtual void prepare(Launch& l, const LaunchExtras& x) const;
+
+  // Fills `l` to continue session `id`: resuming it, or with `fork`, branching
+  // it into a new one. False when the agent can do neither. An agent that can
+  // resume but not fork resumes, clears `l.forked` and says so in `note`.
+  virtual bool continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const {
+    return false;
+  }
+
+  // --- Finding a running session's transcript ------------------------------
+
+  // The transcripts that exist before a launch, for an agent whose new one can
+  // only be told apart from them by being new. Sorted by the caller.
+  virtual void snapshot_transcripts(std::vector<std::string>& out) const {}
+
+  // Looks once for the transcript of the session `q` describes. Called every
+  // half second until it succeeds; false while there is none yet.
+  virtual bool find_transcript(const TranscriptQuery& q, FoundTranscript& out) const { return false; }
+
+  // --- Watching a running session ------------------------------------------
+
+  // True while the agent is working.
+  virtual bool busy(const Liveness& l) const;
+  // True while the agent shows a prompt that wants a keypress: a trust dialog,
+  // a y/n. Not gated on busy(): a dialog with a countdown keeps redrawing.
+  virtual bool awaits_input(const Vt& vt) const;
+
+  // Whether busy() wants Liveness::turn_open, read from the transcript as it
+  // grows. Most agents' screens are enough; reading costs a stat each poll.
+  virtual bool tracks_turns() const { return false; }
+  // +1 for a record that opens a turn, -1 for one that closes it, else 0,
+  // judged from the record's first 200 bytes.
+  virtual int turn_marker(std::string_view head) const { return 0; }
+
+  // A dialog the agent opens at startup that mico answers for the user (the
+  // folder is on their tracked list, which is trust enough): the next key to
+  // send, or empty when the screen shows none. `confirms` is set when that key
+  // accepts it. Sent one at a time, each after the screen has settled.
+  virtual std::string startup_answer(const Vt& vt, bool* confirms) const { return {}; }
 };
 
 // Codex's optional question: the call returns `{"accepted":true}` at once and

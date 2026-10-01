@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "adapters/adapters.h"
 #include "core/session.h"
 #include "core/store.h"
 #include "base/text.h"
@@ -331,11 +332,10 @@ class ChatList final : public Pane {
       };
     }
 
-    return {
-        MenuItem{"New claude here", "new_claude"},
-        MenuItem{"New codex here", "new_codex"},
-        MenuItem{"New pi here", "new_pi"},
-        MenuItem{"New omp here", "new_omp"},
+    std::vector<MenuItem> items;
+    for (const Adapter* ag : all_adapters())
+      items.push_back(MenuItem{"New " + std::string(ag->id()) + " here", "new:" + std::string(ag->id())});
+    items.insert(items.end(), {
         MenuItem::sep(),
         MenuItem{"Open", "open", on_row},
         MenuItem{"Select (space)", "mark", named},
@@ -350,7 +350,8 @@ class ChatList final : public Pane {
         MenuItem{show_archived_ ? "Hide archived" : "Show archived", "toggle_archived"},
         MenuItem::sep(),
         MenuItem{"Stop this agent", "stop", live},
-    };
+    });
+    return items;
   }
 
   void on_action(const std::string& a) override {
@@ -359,10 +360,7 @@ class ChatList final : public Pane {
     const int at = menu_index();
     const Row* r = at >= 0 ? &rows_[size_t(at)] : nullptr;
 
-    if (a == "new_claude") { app_->spawn_agent("claude", cwd); return; }
-    if (a == "new_codex") { app_->spawn_agent("codex", cwd); return; }
-    if (a == "new_pi") { app_->spawn_agent("pi", cwd); return; }
-    if (a == "new_omp") { app_->spawn_agent("omp", cwd); return; }
+    if (a.starts_with("new:")) { app_->spawn_agent(a.substr(4), cwd); return; }
     if (a == "open" && r) { activate(at); return; }
     if (a == "toggle_archived") { show_archived_ = !show_archived_; return; }
     if (a == "clear_sel") { marked_.clear(); anchor_ = -1; return; }

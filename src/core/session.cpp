@@ -52,15 +52,6 @@ const std::string& self_exe() {
   return path;
 }
 
-std::string json_quote(std::string_view v) {
-  std::string out = "\"";
-  for (const char c : v) {
-    if (c == '"' || c == '\\') out += '\\';
-    out += c;
-  }
-  return out + '"';
-}
-
 bool mcp_tools_enabled() {
   std::string buf;
   return fs::read_prefix(config_dir() + "/mcp", 64, buf).starts_with("on");
@@ -103,56 +94,6 @@ std::map<std::string, const LiveSession*>& claimed_transcripts() {
   return s;
 }
 
-void for_each_rollout(const std::function<void(const std::string&)>& fn) {
-  const std::string root = fs::home() + "/.codex/sessions";
-  fs::list_dir(root, true, [&](const std::string& y) {
-    fs::list_dir(root + "/" + y, true, [&](const std::string& m) {
-      const std::string md = root + "/" + y + "/" + m;
-      fs::list_dir(md, true, [&](const std::string& dd) {
-        const std::string dir = md + "/" + dd;
-        fs::list_dir(dir, false, [&](const std::string& fn2) {
-          if (fs::has_suffix(fn2, ".jsonl"))
-            fn(dir + "/" + fn2);
-        });
-      });
-    });
-  });
-}
-
-// pi and omp both lay sessions out flat as sessions/<cwd-slug>/<file>.jsonl —
-// one level, unlike codex's year/month/day tree.
-void for_each_pi_family_session(const std::string& root,
-                                const std::function<void(const std::string&)>& fn) {
-  fs::list_dir(root, true, [&](const std::string& slug) {
-    const std::string dir = root + "/" + slug;
-    fs::list_dir(dir, false, [&](const std::string& fn2) {
-      if (fs::has_suffix(fn2, ".jsonl")) fn(dir + "/" + fn2);
-    });
-  });
-}
-
-// A cwd and timestamp cannot distinguish two Codex instances launched at
-// once. The PTY child is a session leader; its process family owns the rollout
-// writer. Read only its open file links, without touching transcript contents.
-std::set<std::string> open_transcripts(pid_t leader) {
-  std::set<std::string> paths;
-  if (leader <= 0) return paths;
-  fs::list_dir("/proc", true, [&](const std::string& name) {
-    if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos) return;
-    const pid_t pid = pid_t(std::strtol(name.c_str(), nullptr, 10));
-    if (getsid(pid) != leader) return;
-    const std::string dir = "/proc/" + name + "/fd";
-    fs::list_dir(dir, false, [&](const std::string& fd) {
-      char target[4096];
-      const ssize_t n = readlink((dir + "/" + fd).c_str(), target, sizeof target);
-      if (n <= 0 || size_t(n) == sizeof target) return;
-      std::string path(target, size_t(n));
-      if (fs::has_suffix(path, ".jsonl")) paths.insert(std::move(path));
-    });
-  });
-  return paths;
-}
-
 }  // namespace
 
 LiveSession::~LiveSession() {
@@ -160,22 +101,6 @@ LiveSession::~LiveSession() {
   if (it != claimed_transcripts().end() && it->second == this) claimed_transcripts().erase(it);
 }
 
-std::string make_uuid_v4() {
-  unsigned char b[16];
-  int fd = ::open("/dev/urandom", O_RDONLY);
-  if (fd < 0 || read(fd, b, sizeof b) != (ssize_t)sizeof b) {
-    for (auto& x : b) x = (unsigned char)(rand() & 0xFF);
-  }
-  if (fd >= 0) ::close(fd);
-  b[6] = (b[6] & 0x0F) | 0x40;  // version 4
-  b[8] = (b[8] & 0x3F) | 0x80;  // variant 1
-  char out[37];
-  snprintf(out, sizeof out,
-           "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-           b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11],
-           b[12], b[13], b[14], b[15]);
-  return out;
-}
 
 bool LiveSession::start(const Launch& l) {
   agent_ = l.agent;
@@ -195,122 +120,21 @@ bool LiveSession::start(const Launch& l) {
   // is still a claude session and still gets a chat view.
   adapter_ = adapter_for(agent_);
 
-  std::vector<std::string> argv = l.argv;
-  if (argv.empty()) {
-    if (agent_ == "claude") {
-      // Pre-assigning the id makes correlation exact: no races, no guessing
-      // which of several concurrently-started sessions is ours.
-      if (session_id_.empty()) session_id_ = make_uuid_v4();
-      argv = {"claude", "--session-id", session_id_};
-    } else if (agent_ == "pi") {
-      // pi honours the same "use this exact id, creating it if missing" deal.
-      if (session_id_.empty()) session_id_ = make_uuid_v4();
-      argv = {"pi", "--session-id", session_id_};
-    } else if (agent_ == "codex" || agent_ == "omp") {
-      // Neither offers a pre-assignable id, so the transcript is discovered
-      // after the fact by cwd and spawn time.
-      argv = {agent_};
-    } else {
-      argv = {agent_};
-    }
-  }
-
-  // However it was launched, a claude or pi session gets an id we chose, so
-  // the chat view can find its transcript. Without this, "claude --model x"
-  // typed into the new-agent prompt would render raw-only.
-  if ((agent_ == "claude" || agent_ == "pi") && session_id_.empty()) {
-    bool has_flag = false;
-    for (size_t i = 0; i < argv.size(); i++) {
-      if (argv[i] == "--session-id" && i + 1 < argv.size()) {
-        has_flag = true;
-        session_id_ = argv[i + 1];
-      } else if (argv[i].starts_with("--session-id=")) {
-        has_flag = true;
-        session_id_ = argv[i].substr(13);
-      }
-    }
-    if (!has_flag) {
-      session_id_ = make_uuid_v4();
-      argv.push_back("--session-id");
-      argv.push_back(session_id_);
-    }
-  }
-
-  // Claude keeps an AskUserQuestion call in memory while its dialog is up and
-  // writes it only with the answer, so the chat saw nothing and the agent
-  // looked stopped. It does flush the transcript before running a hook (hooks
-  // are handed transcript_path), so a do-nothing PreToolUse hook on that one
-  // tool lands the call in the transcript before the dialog opens. The same
-  // goes for a call waiting on permission: the PermissionRequest hook fires
-  // only when the dialog is about to show, so the chat can show the command
-  // or edit being approved, not an agent that seems to have stopped. Flag
-  // settings merge with the user's own and are never written to ~/.claude.
-  // A command line that already brings --settings is left alone: claude reads
-  // only one. So is any program that is not claude itself.
-  if (agent_ == "claude" && !argv.empty() &&
-      std::string_view(argv[0]).substr(argv[0].rfind('/') + 1) == "claude" &&
-      std::none_of(argv.begin(), argv.end(),
-                   [](const std::string& a) { return a == "--settings" || a.starts_with("--settings="); })) {
-    argv.push_back("--settings");
-    argv.push_back(R"({"hooks":{"PreToolUse":[{"matcher":"AskUserQuestion",)"
-                   R"("hooks":[{"type":"command","command":"true"}]}],)"
-                   R"("PermissionRequest":[{"matcher":"",)"
-                   R"("hooks":[{"type":"command","command":"true"}]}]}})");
-  }
-
   // What mico can show, told to the agent so it can use it: charts, today.
-  // Appended, never replacing: claude's own system prompt stays, and codex's
-  // developer_instructions are set only when the command line does not.
-  const std::string prog = argv.empty() ? std::string() : argv[0].substr(argv[0].rfind('/') + 1);
-  const auto has = [&](std::string_view needle) {
-    return std::any_of(argv.begin(), argv.end(),
-                       [&](const std::string& a) { return a.find(needle) != std::string::npos; });
-  };
-  const auto toml = [](std::string_view v) {
-    std::string out = "\"";
-    for (const char c : v) {
-      if (c == '"' || c == '\\') out += '\\';
-      if (c == '\n') { out += "\\n"; continue; }
-      out += c;
-    }
-    return out + '"';
-  };
-  // mico's own tools, as an MCP server (`mico --mcp`), when the user turned
-  // them on with `:mcp on`. Handed over on the command line, never written
-  // into the agent's config; claude is also allowed to call plot without a
-  // prompt, since drawing a chart changes nothing.
+  // And mico's own tools, as an MCP server, when the user turned them on with
+  // `:mcp on`. The adapter decides how its agent takes them.
+  Launch launch = l;
+  LaunchExtras extras;
   const bool mcp = mcp_tools_enabled() && !self_exe().empty();
-  if (mcp && agent_ == "claude" && prog == "claude") {
-    argv.push_back("--mcp-config={\"mcpServers\":{\"mico\":{\"type\":\"stdio\",\"command\":" +
-                   json_quote(self_exe()) + ",\"args\":[\"--mcp\"]}}}");
-    argv.push_back("--allowedTools=mcp__mico__plot");
-  } else if (mcp && agent_ == "codex" && prog == "codex" && !has("mcp_servers.mico")) {
-    // codex asks before every MCP call; plot is approved up front, as for claude.
-    argv.insert(argv.begin() + 1, {"-c", "mcp_servers.mico.command=" + toml(self_exe()), "-c",
-                                   "mcp_servers.mico.args=[\"--mcp\"]", "-c",
-                                   "mcp_servers.mico.tools.plot.approval_mode=\"approve\""});
-  }
+  if (mcp) extras.mcp_exe = self_exe();
+  if (agent_hints_enabled()) extras.hints = std::string(kAgentHints) + (mcp ? kMcpHint : "");
+  driver().prepare(launch, extras);
+  session_id_ = launch.session_id;
 
-  if (agent_hints_enabled() && !argv.empty()) {
-    const std::string hints = std::string(kAgentHints) + (mcp ? kMcpHint : "");
-    if (agent_ == "claude" && prog == "claude" && !has("system-prompt")) {
-      argv.push_back("--append-system-prompt");
-      argv.push_back(hints);
-    } else if (agent_ == "codex" && prog == "codex" && !has("developer_instructions")) {
-      argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + toml(hints)});
-    }
-  }
+  driver().snapshot_transcripts(preexisting_);
+  std::sort(preexisting_.begin(), preexisting_.end());
 
-  if (agent_ == "codex") {
-    for_each_rollout([&](const std::string& path) { preexisting_.push_back(path); });
-    std::sort(preexisting_.begin(), preexisting_.end());
-  } else if (agent_ == "omp") {
-    for_each_pi_family_session(fs::home() + "/.omp/agent/sessions",
-                               [&](const std::string& path) { preexisting_.push_back(path); });
-    std::sort(preexisting_.begin(), preexisting_.end());
-  }
-
-  argv_ = std::move(argv);
+  argv_ = std::move(launch.argv);
   {
     std::string j;
     for (auto& a : argv_) { j += a; j += ' '; }
@@ -369,189 +193,44 @@ std::string LiveSession::label() const {
   return s;
 }
 
-// Claude: the transcript is exactly <uuid>.jsonl, so search for that name and
-// accept no substitutes. Codex resumes match by id; new runs additionally
-// require the rollout to be open in this agent's own process session.
 void LiveSession::discover_transcript() {
   if (!adapter_ || !transcript_.empty()) return;
   int64_t t = now_ms();
   if (t - last_probe_ < 500) return;
   last_probe_ = t;
 
-  if (agent_ == "claude") {
-    const std::string root = fs::home() + "/.claude/projects";
-    fs::list_dir(root, true, [&](const std::string& slug) {
-      if (!transcript_.empty()) return;
-      std::string cand = root + "/" + slug + "/" + session_id_ + ".jsonl";
-      if (fs::exists(cand) && !claimed_transcripts().count(cand)) transcript_ = cand;
-    });
-    if (!transcript_.empty()) {
-      claimed_transcripts()[transcript_] = this;
-      MLOG("transcript linked: %s -> %s", agent_.c_str(), transcript_.c_str());
-    }
-    return;
-  }
-
-  if (agent_ == "pi") {
-    // Same deal as claude, but the filename carries a timestamp prefix we
-    // don't know in advance: "<timestamp>_<session_id>.jsonl". The id suffix
-    // still identifies it exactly.
-    const std::string root = fs::home() + "/.pi/agent/sessions";
-    const std::string suffix = "_" + session_id_ + ".jsonl";
-    fs::list_dir(root, true, [&](const std::string& slug) {
-      if (!transcript_.empty()) return;
-      const std::string dir = root + "/" + slug;
-      fs::list_dir(dir, false, [&](const std::string& fn2) {
-        if (!transcript_.empty() || !fs::has_suffix(fn2, suffix)) return;
-        const std::string cand = dir + "/" + fn2;
-        if (!claimed_transcripts().count(cand)) transcript_ = cand;
-      });
-    });
-    if (!transcript_.empty()) {
-      claimed_transcripts()[transcript_] = this;
-      MLOG("transcript linked: pi -> %s", transcript_.c_str());
-    }
-    return;
-  }
-
-  if (agent_ == "omp") {
-    // No pre-assignable id: find the newest unclaimed session that appeared
-    // after we spawned and whose recorded cwd is ours — the same trick as
-    // codex, but omp sometimes writes a "title" record before "session", so
-    // the match has to scan a few lines rather than just the first one.
-    std::string best, best_sid;
-    int64_t best_mtime = 0;
-    const std::string root = fs::home() + "/.omp/agent/sessions";
-    for_each_pi_family_session(root, [&](const std::string& path) {
-      const bool resuming = !session_id_.empty() && !forked_;
-      if (!resuming && std::binary_search(preexisting_.begin(), preexisting_.end(), path)) return;
-      if (claimed_transcripts().count(path)) return;
-
-      struct stat st{};
-      if (stat(path.c_str(), &st) != 0) return;
-      if (!resuming && int64_t(st.st_mtime) + 5 < started_at_) return;
-      if (int64_t(st.st_mtime) < best_mtime) return;
-
-      thread_local std::string buf;
-      std::string_view head = fs::read_prefix(path, 4 << 10, buf);
-      bool match = false;
-      std::string sid;
-      fs::for_each_line(head, [&](std::string_view line) {
-        if (line.find("\"type\":\"session\"") == std::string_view::npos) return true;
-        std::string cwd;
-        js::scan_object(line, [&](std::string_view k, const js::Value& v) {
-          if (k == "cwd") js::unescape_append(v.body(), cwd);
-          else if (k == "id") sid = std::string(v.body());
-          return true;
-        });
-        match = resuming ? sid == session_id_ : cwd == cwd_;
-        return false;
-      });
-      if (!match) return;
-
-      best = path;
-      best_sid = sid;
-      best_mtime = int64_t(st.st_mtime);
-    });
-    if (!best.empty()) {
-      transcript_ = best;
-      session_id_ = best_sid;
-      claimed_transcripts()[transcript_] = this;
-      MLOG("transcript linked: omp -> %s", transcript_.c_str());
-    }
-    return;
-  }
-
-  if (agent_ != "codex") return;
-
-  std::string best, best_sid;
-  const auto owned = session_id_.empty() ? open_transcripts(pty_.pid()) : std::set<std::string>{};
-  int64_t best_mtime = 0;
-  for_each_rollout([&](const std::string& path) {
-    // Anything that existed before we spawned belongs to someone else, however
-    // recently it was written to.
-    const bool resuming = !session_id_.empty() && !forked_;
-    if (!resuming && !owned.count(path)) return;
-    if (!resuming && std::binary_search(preexisting_.begin(), preexisting_.end(), path)) return;
-    if (claimed_transcripts().count(path)) return;
-
-    struct stat st{};
-    if (stat(path.c_str(), &st) != 0) return;
-    if (!resuming && int64_t(st.st_mtime) + 5 < started_at_) return;
-    if (int64_t(st.st_mtime) < best_mtime) return;
-
-    thread_local std::string buf;
-    std::string_view head = fs::read_first_line(path, buf);
-    if (head.empty()) return;
-
-    js::Value payload{};
-    js::scan_object(head,
-                    [&](std::string_view k, const js::Value& v) {
-                      if (k != "payload") return true;
-                      payload = v;
-                      return false;
-                    });
-    if (!payload.is_object()) return;
-
-    std::string cwd;
-    std::string_view sid, forked_from;
-    js::scan_object(payload.raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "cwd") js::unescape_append(v.body(), cwd);
-      else if (k == "id" || k == "session_id") sid = v.body();
-      else if (k == "forked_from_id") forked_from = v.body();
-      return true;
-    });
-    if (sid.empty()) return;
-    if (resuming ? sid != session_id_ : cwd != cwd_) return;
-    // A fork records what it came from, which identifies ours exactly even if
-    // several start together.
-    if (forked_ && !origin_.empty() && forked_from != origin_) return;
-
-    best = path;
-    best_sid = std::string(sid);
-    best_mtime = int64_t(st.st_mtime);
-  });
-
-  if (!best.empty()) {
-    transcript_ = best;
-    session_id_ = best_sid;
-    claimed_transcripts()[transcript_] = this;
-    MLOG("transcript linked: codex -> %s", transcript_.c_str());
-  }
+  TranscriptQuery q;
+  q.session_id = session_id_;
+  q.cwd = cwd_;
+  q.origin = origin_;
+  q.forked = forked_;
+  q.started_at = started_at_;
+  q.pid = pty_.pid();
+  q.preexisting = &preexisting_;
+  q.claimed = [](const std::string& path) { return claimed_transcripts().count(path) > 0; };
+  FoundTranscript found;
+  if (!adapter_->find_transcript(q, found)) return;
+  transcript_ = std::move(found.path);
+  if (!found.session_id.empty()) session_id_ = std::move(found.session_id);
+  claimed_transcripts()[transcript_] = this;
+  MLOG("transcript linked: %s -> %s", agent_.c_str(), transcript_.c_str());
 }
 
 bool LiveSession::busy() const {
   if (!spawned_) return false;
   if (pty_.exited()) return false;
-  // Claude redraws its prompt, notices and timers even while idle. Output
-  // recency is not evidence of work; follow its live spinner instead. This
-  // also keeps a quiet model request active until Claude clears the footer.
-  if (agent_ == "claude") return screen_shows_claude_activity(vt_);
-  // Codex redraws while it is typed into and at startup, so output is no
-  // evidence either. Its status line is, and the transcript bridges the
-  // moments it is off screen. Not an open turn alone: one whose end never
-  // reached the transcript must not read as working forever, and a turn in
-  // progress keeps its status line's clock ticking.
-  if (agent_ == "codex")
-    return screen_shows_codex_activity(vt_) || (turn_open_ && now_ms() - last_output_ms_ < 10000);
-  // A turn produces output continuously; the gap only exceeds this when the
-  // agent is sitting at its prompt.
-  return now_ms() - last_output_ms_ < 1200;
+  return driver().busy(Liveness{vt_, now_ms() - last_output_ms_, turn_open_});
 }
 
 bool LiveSession::needs_input() const {
-  // Not gated on busy(): a trust dialog with a live countdown keeps redrawing,
-  // which would read as "working" and hide the very prompt that needs an
-  // answer. The screen-content check is specific enough to stand alone.
   if (!spawned_ || pty_.exited()) return false;
-  // Codex's dialogs replace its input box. Words like "Do you want to" in the
-  // rows above are as likely its own reply.
-  if (agent_ == "codex") return screen_awaits_codex_input(vt_);
-  return screen_awaits_input(vt_);
+  return driver().awaits_input(vt_);
 }
 
+const Adapter& LiveSession::driver() const { return adapter_ ? *adapter_ : plain_adapter(); }
+
 void LiveSession::follow_turns() {
-  if (agent_ != "codex" || transcript_.empty()) return;
+  if (!driver().tracks_turns() || transcript_.empty()) return;
   const int64_t now = now_ms();
   if (transcript_ == turn_file_ && now - turn_poll_ms_ < 150) return;
   turn_poll_ms_ = now;
@@ -567,8 +246,7 @@ void LiveSession::follow_turns() {
   if (size <= turn_read_) return;
   const int fd = open(transcript_.c_str(), O_RDONLY | O_CLOEXEC);
   if (fd < 0) return;
-  // The record's type comes first: {"timestamp":…,"type":"event_msg",
-  // "payload":{"type":"task_started",…. The rest of a line can be megabytes.
+  // A record's type comes first; the rest of a line can be megabytes.
   constexpr size_t kHead = 200;
   char buf[65536];
   while (turn_read_ < size) {
@@ -582,11 +260,7 @@ void LiveSession::follow_turns() {
       if (turn_head_.size() < kHead) turn_head_.append(part.substr(0, kHead - turn_head_.size()));
       if (nl == std::string_view::npos) break;
       chunk.remove_prefix(nl + 1);
-      auto has = [&](std::string_view m) { return turn_head_.find(m) != std::string::npos; };
-      if (has("\"type\":\"task_started\"") || has("\"type\":\"turn_started\"")) turn_open_ = true;
-      else if (has("\"type\":\"task_complete\"") || has("\"type\":\"turn_complete\"") ||
-               has("\"type\":\"turn_aborted\""))
-        turn_open_ = false;
+      if (const int m = driver().turn_marker(turn_head_); m != 0) turn_open_ = m > 0;
       turn_head_.clear();
     }
   }
@@ -742,25 +416,19 @@ bool LiveSession::pump() {
     }
   }
 
-  // The folder is on the user's tracked list, which is trust enough: answer
-  // Claude's first-run "do you trust this folder" dialog for them, so it does
-  // not time out and kill the session while nobody is looking at it. Only
-  // before the first transcript line, which is exactly the startup window.
-  //
-  // The dialog's cursor starts on "No, exit": Enter there quits claude. And
-  // a key sent before the dialog listens is dropped, so a scripted
-  // "down, enter" can land as a bare Enter. So one step at a time, each
-  // judged from the screen: an arrow while the cursor is elsewhere, and Enter
-  // only once the screen shows it on "Yes" and has been still for a moment.
-  if (agent_ == "claude" && transcript_.empty() && !answer_sending() && trust_tries_ < 20 &&
-      now_ms() >= trust_next_ms_ && now_ms() - last_output_ms_ >= 250 &&
-      screen_is_trust_prompt(vt_)) {
-    const int moves = trust_prompt_moves(vt_);
-    if (moves != kNoTrustMove) {
-      pty_.write(moves > 0 ? "\x1b[B" : moves < 0 ? "\x1b[A" : "\r");
+  // A dialog the agent opens at startup, answered for the user: the folder is
+  // on their tracked list, which is trust enough. Only before the first
+  // transcript line, which is exactly the startup window. One key at a time,
+  // each once the screen has been still for a moment.
+  if (transcript_.empty() && !answer_sending() && trust_tries_ < 20 &&
+      now_ms() >= trust_next_ms_ && now_ms() - last_output_ms_ >= 250) {
+    bool confirms = false;
+    const std::string key = driver().startup_answer(vt_, &confirms);
+    if (!key.empty()) {
+      pty_.write(key);
       trust_tries_++;
-      trust_next_ms_ = now_ms() + (moves == 0 ? 3000 : 300);
-      if (moves == 0) MLOG("accepted the trust prompt for %s", cwd_.c_str());
+      trust_next_ms_ = now_ms() + (confirms ? 3000 : 300);
+      if (confirms) MLOG("accepted the startup prompt for %s", cwd_.c_str());
     }
   }
 
