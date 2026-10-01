@@ -27,17 +27,12 @@ const Adapter* adapter_for(std::string_view agent);
 const Adapter& plain_adapter();
 
 // Codex's reply to an optional question (see is_async_question_tool) is an
-// envelope. One answer in it:
+// envelope of AsyncReply. One answer in it:
 //   <send_user_message_question_reply>
 //   [{"answer":…,"question":…,"questionItemId":"[\"request_user_input_async\",\"<call>\",0]"}]
 //   </send_user_message_question_reply>
 // Codex matches questionItemId byte for byte to clear its own pending
 // question, so it is written exactly as Codex writes it.
-struct AsyncReply {
-  std::string call_id;
-  int index = 0;  // which of the call's questions
-  std::string question, answer;
-};
 std::string async_reply_envelope(const std::vector<AsyncReply>& replies);
 // The replies in a message that is such an envelope; false for any other.
 bool parse_async_reply(std::string_view text, std::vector<AsyncReply>& out);

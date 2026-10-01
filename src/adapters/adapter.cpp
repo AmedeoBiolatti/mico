@@ -27,6 +27,23 @@ ChipControl Adapter::chip_control(std::string_view key) const {
   return c;
 }
 
+std::string Adapter::async_reply(const std::vector<AsyncReply>& replies) const {
+  std::string msg;
+  for (const AsyncReply& r : replies) {
+    if (!msg.empty()) msg += "\n\n";
+    // "> " before each line of the question.
+    for (size_t at = 0; at <= r.question.size();) {
+      size_t end = r.question.find('\n', at);
+      if (end == std::string::npos) end = r.question.size();
+      if (at) msg += '\n';
+      msg += "> " + r.question.substr(at, end - at);
+      at = end + 1;
+    }
+    msg += "\n\n" + r.answer;
+  }
+  return msg;
+}
+
 void Adapter::live_rows(const Vt& vt, std::vector<int>& out, int max) const {
   mico::live_rows(vt, out, max);
 }

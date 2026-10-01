@@ -80,6 +80,14 @@ struct Liveness {
   bool turn_open = false;  // see Adapter::tracks_turns()
 };
 
+// The answer to one question an agent asked without waiting for it (codex's
+// request_user_input_async): it goes back as an ordinary message.
+struct AsyncReply {
+  std::string call_id;
+  int index = 0;  // which of the call's questions
+  std::string question, answer;
+};
+
 // Everything mico knows about one kind of agent: how to start it, where it
 // keeps its transcripts, how to read them, and how to tell from its screen
 // what it is doing. The rest of mico asks its adapter rather than checking
@@ -257,6 +265,9 @@ class Adapter {
 
   // How the agent's question menus take keys.
   virtual MenuKeys menu_keys() const { return {}; }
+  // The message that answers questions the agent asked without waiting. By
+  // default each question quoted, then its answer.
+  virtual std::string async_reply(const std::vector<AsyncReply>& replies) const;
 };
 
 // Codex's optional question: the call returns `{"accepted":true}` at once and

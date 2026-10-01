@@ -613,7 +613,7 @@ class SessionPane final : public Pane {
       return;
     }
     std::vector<AsyncReply> replies;
-    std::string msg, first;
+    std::string first;
     for (size_t qi = 0; qi < a.card.questions.size() && qi < a.chosen.size(); qi++) {
       const auto& q = a.card.questions[qi];
       std::string picked;
@@ -624,12 +624,10 @@ class SessionPane final : public Pane {
         }
       if (picked.empty()) continue;
       if (first.empty()) first = picked;
-      if (!msg.empty()) msg += "\n\n";
-      msg += quote(q.text) + "\n\n" + picked;
       replies.push_back(AsyncReply{a.card.call_id, int(qi), q.text, picked});
     }
     if (replies.empty()) return;
-    send_async_reply(a.card.call_id.empty() ? msg : async_reply_envelope(replies));
+    send_async_reply(s_->driver().async_reply(replies));
     app_->set_status("sending answer: " + first);
   }
 
@@ -861,7 +859,7 @@ class SessionPane final : public Pane {
           return true;
         }
         reply_.answer = std::move(text);
-        send_async_reply(async_reply_envelope({reply_}));
+        send_async_reply(s_->driver().async_reply({reply_}));
         app_->set_status("sending answer");
         prompt_.reset();
         reply_live_ = false;

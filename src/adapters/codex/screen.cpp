@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 
+#include "adapters/adapters.h"
 #include "adapters/screen.h"
 #include "base/text.h"
 
@@ -119,6 +120,11 @@ bool CodexAdapter::permission_prompt(const Vt& vt, PermissionPrompt& out) const 
 
 std::string CodexAdapter::screen_reply(const Vt& vt) const {
   return mico::screen_reply(vt, ReplyLayout::Codex);
+}
+
+std::string CodexAdapter::async_reply(const std::vector<AsyncReply>& replies) const {
+  if (replies.empty() || replies[0].call_id.empty()) return Adapter::async_reply(replies);
+  return async_reply_envelope(replies);
 }
 
 }  // namespace mico
