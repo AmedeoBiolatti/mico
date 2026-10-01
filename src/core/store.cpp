@@ -91,6 +91,7 @@ void Store::save_folders() const {
 }
 
 bool Store::add_folder(const std::string& path, bool persist) {
+  ++version_;
   if (path.empty()) return false;
   std::string p = path;
   if (p[0] == '~' && (p.size() == 1 || p[1] == '/')) p = fs::home() + p.substr(1);
@@ -107,6 +108,7 @@ bool Store::add_folder(const std::string& path, bool persist) {
 }
 
 bool Store::remove_folder(const std::string& path) {
+  ++version_;
   for (size_t i = 0; i < folders_.size(); i++)
     if (folders_[i] == path) {
       folders_.erase(folders_.begin() + long(i));
@@ -123,6 +125,7 @@ bool Store::remove_folder(const std::string& path) {
 }
 
 void Store::scan() {
+  ++version_;
   if (folders_.empty()) load_folders();
   if (!marks_loaded_) load_marks();
   if (!subs_loaded_) load_subs();
@@ -245,6 +248,7 @@ void Store::save_subs() const {
 }
 
 bool Store::add_subproject(const std::string& project, const std::string& name, const std::string& path) {
+  ++version_;
   if (!subs_loaded_) load_subs();
   std::string p = path;
   while (p.size() > 1 && p.back() == '/') p.pop_back();
@@ -262,6 +266,7 @@ bool Store::add_subproject(const std::string& project, const std::string& name, 
 }
 
 bool Store::remove_subproject(const std::string& project, const std::string& name) {
+  ++version_;
   auto it = subs_.find(project);
   if (it == subs_.end()) return false;
   const size_t before = it->second.size();
@@ -278,6 +283,7 @@ bool Store::remove_subproject(const std::string& project, const std::string& nam
 }
 
 bool Store::rename_subproject(const std::string& project, const std::string& from, const std::string& to) {
+  ++version_;
   auto it = subs_.find(project);
   if (it == subs_.end() || to.empty() || to.find('\t') != std::string::npos) return false;
   SubProject* found = nullptr;
@@ -296,6 +302,7 @@ bool Store::rename_subproject(const std::string& project, const std::string& fro
 
 void Store::assign_sub(const std::string& project, const std::string& agent, const std::string& id,
                        const std::string& sub) {
+  ++version_;
   if (id.empty()) return;
   if (!subs_loaded_) load_subs();
   const std::string key = project + "\n" + mark_key(agent, id);
@@ -350,6 +357,7 @@ bool Store::archived(const std::string& agent, const std::string& id) const {
 
 void Store::set_custom_name(const std::string& agent, const std::string& id,
                             const std::string& name) {
+  ++version_;
   if (id.empty() || agent.empty()) return;
   const std::string key = mark_key(agent, id);
   if (name.empty()) names_.erase(key);
@@ -358,6 +366,7 @@ void Store::set_custom_name(const std::string& agent, const std::string& id,
 }
 
 void Store::set_archived(const std::string& agent, const std::string& id, bool on) {
+  ++version_;
   if (id.empty() || agent.empty()) return;
   const std::string key = mark_key(agent, id);
   if (on) archived_.insert(key);

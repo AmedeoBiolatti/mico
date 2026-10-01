@@ -114,7 +114,10 @@ class LiveSession {
   // first. Kept here rather than in the pane so they go out while another
   // chat is on screen. One is sent per turn: the next waits until the agent
   // has worked on the last one and come back to its prompt.
-  void enqueue(std::vector<MessagePart> parts) { queue_.push_back(std::move(parts)); }
+  void enqueue(std::vector<MessagePart> parts) {
+    queue_.push_back(std::move(parts));
+    ++generation_;
+  }
   const std::vector<std::vector<MessagePart>>& queued() const { return queue_; }
   // Takes the newest queued message back, for editing. Empty when none.
   std::vector<MessagePart> take_last_queued();
@@ -136,6 +139,9 @@ class LiveSession {
   // footer, Codex its status line and its transcript's turns; other agents
   // use recent terminal output as a fallback.
   bool busy() const;
+  // Moves whenever anything about the session a front end shows may have
+  // changed: its screen, its status, its transcript, its queue.
+  uint64_t generation() const { return generation_; }
   // Changes when work starts, even while this chat is not being drawn.
   uint64_t work_generation() const { return work_generation_; }
   // Live, idle, and showing a prompt that wants a keypress (trust dialog, y/n).
@@ -168,6 +174,7 @@ class LiveSession {
   int64_t last_output_ms_ = 0;
   bool was_working_ = false;
   uint64_t work_generation_ = 0;
+  uint64_t generation_ = 0;
   bool was_exited_ = false;
   int trust_tries_ = 0;
   int64_t trust_next_ms_ = 0;

@@ -146,6 +146,7 @@ bool LiveSession::start(const Launch& l) {
 
 bool LiveSession::restart(const Launch& l) {
   if (!pty_.reset_exited()) return false;
+  ++generation_;
   auto claim = claimed_transcripts().find(transcript_);
   if (claim != claimed_transcripts().end() && claim->second == this)
     claimed_transcripts().erase(claim);
@@ -296,6 +297,7 @@ std::vector<MessagePart> LiveSession::take_last_queued() {
   if (queue_.empty()) return {};
   std::vector<MessagePart> last = std::move(queue_.back());
   queue_.pop_back();
+  ++generation_;
   return last;
 }
 
@@ -474,7 +476,9 @@ bool LiveSession::pump() {
 
   const std::string before = transcript_;
   discover_transcript();
-  return changed || queue_.size() != held || transcript_ != before;
+  const bool moved = changed || queue_.size() != held || transcript_ != before;
+  if (moved) ++generation_;
+  return moved;
 }
 
 }  // namespace mico

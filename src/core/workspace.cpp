@@ -54,6 +54,7 @@ Workspace::Started Workspace::start_agent(const std::string& agent, const std::s
   r.how = Started::How::Started;
   r.moved = dir != cwd;
   live_.push_back(std::move(s));
+  ++sessions_version_;
   return r;
 }
 
@@ -95,6 +96,7 @@ Workspace::Started Workspace::continue_session(const std::string& agent, const s
       if (!previous->restart(l)) continue;
       r.session = previous.get();
       r.how = Started::How::Restarted;
+      ++sessions_version_;
       return r;
     }
   }
@@ -106,6 +108,7 @@ Workspace::Started Workspace::continue_session(const std::string& agent, const s
   r.session = s.get();
   r.how = Started::How::Started;
   live_.push_back(std::move(s));
+  ++sessions_version_;
   return r;
 }
 
@@ -118,6 +121,7 @@ LiveSession* Workspace::start_command(std::vector<std::string> argv, const std::
   l.argv = std::move(argv);
   if (!s->start(l)) return nullptr;
   live_.push_back(std::move(s));
+  ++sessions_version_;
   return live_.back().get();
 }
 
@@ -129,6 +133,7 @@ bool Workspace::reap(const std::function<void(LiveSession*)>& gone) {
       gone(s);
       live_[i]->pty().terminate();
       live_.erase(live_.begin() + long(i));
+      ++sessions_version_;
       break;
     }
   }

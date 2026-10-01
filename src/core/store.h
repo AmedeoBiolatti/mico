@@ -34,6 +34,10 @@ std::string config_dir();
 class Store {
  public:
   void scan();
+  // Moves whenever anything a listing shows may have changed: a scan, a folder,
+  // a name, an archive mark, a sub-project. A front end that keeps a copy
+  // compares it to know when to read again.
+  uint64_t version() const { return version_; }
   const std::vector<Project>& projects() const { return projects_; }
   size_t session_count() const;
 
@@ -92,6 +96,7 @@ class Store {
   std::map<std::string, std::string> names_;  // mark_key -> display name
   std::set<std::string> archived_;            // mark_keys
   bool marks_loaded_ = false;
+  uint64_t version_ = 1;
   // project path -> its sub-projects; and project path + '\n' + mark_key ->
   // the sub-project a chat was put in ("-": explicitly none).
   std::map<std::string, std::vector<SubProject>> subs_;

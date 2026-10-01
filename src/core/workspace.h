@@ -51,6 +51,9 @@ class Workspace {
   const std::vector<std::unique_ptr<LiveSession>>& live() const { return live_; }
   std::vector<LiveSession*> live_sessions() const;
   bool has_live() const { return !live_.empty(); }
+  // Moves when an agent starts, restarts or goes: the set of running sessions,
+  // not what each is doing (LiveSession::generation()).
+  uint64_t sessions_version() const { return sessions_version_; }
 
   // A directory that actually exists to run in. A tracked folder can be gone —
   // a disconnected network drive, a deleted checkout — and spawning there just
@@ -135,6 +138,7 @@ class Workspace {
   FileIndex files_;
   std::vector<std::unique_ptr<LiveSession>> live_;
   std::vector<LiveSession*> to_close_;
+  uint64_t sessions_version_ = 1;
   // Asks an agent what models it offers, once, in a process of its own.
   // Started from the first live session so it inherits a directory the user
   // has already trusted — an untrusted one would only get a dialog.
