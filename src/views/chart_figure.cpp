@@ -3,7 +3,7 @@
 #include <string>
 
 #include "math/math.h"
-#include "term/text.h"
+#include "base/text.h"
 #include "views/chart.h"
 
 namespace mico::chart {

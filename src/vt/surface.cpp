@@ -1,8 +1,8 @@
-#include "term/surface.h"
+#include "vt/surface.h"
 
 #include <algorithm>
 
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico {
 

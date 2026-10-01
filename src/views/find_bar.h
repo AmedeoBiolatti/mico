@@ -2,7 +2,7 @@
 #include <string>
 #include <utility>
 
-#include "term/text.h"
+#include "base/text.h"
 #include "ui/pane.h"
 #include "ui/theme.h"
 #include "views/chat_render.h"

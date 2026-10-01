@@ -1,4 +1,4 @@
-#include "math/kitty.h"
+#include "term/kitty.h"
 
 #include <cstdio>
 

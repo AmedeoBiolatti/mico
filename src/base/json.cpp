@@ -1,8 +1,8 @@
-#include "core/json.h"
+#include "base/json.h"
 
 #include <cstdio>
 
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico::js {
 

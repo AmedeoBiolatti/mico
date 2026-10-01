@@ -3,7 +3,7 @@
 #include <string_view>
 #include <vector>
 
-#include "term/surface.h"
+#include "vt/surface.h"
 #include "term/term.h"
 #include "ui/theme.h"
 

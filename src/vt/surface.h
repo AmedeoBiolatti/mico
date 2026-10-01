@@ -4,13 +4,10 @@
 #include <string_view>
 #include <vector>
 
-#include "term/geom.h"
+#include "base/color.h"
+#include "vt/geom.h"
 
 namespace mico {
-
-// -1 means "terminal default"; otherwise 0xRRGGBB.
-using Color = int32_t;
-inline constexpr Color kDefaultColor = -1;
 
 namespace attr {
 inline constexpr uint16_t kNone = 0;

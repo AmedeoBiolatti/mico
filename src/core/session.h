@@ -5,10 +5,10 @@
 #include <utility>
 #include <vector>
 
-#include "core/adapter.h"
-#include "core/message.h"
+#include "model/adapter.h"
+#include "model/message.h"
 #include "core/pty.h"
-#include "term/vt.h"
+#include "vt/vt.h"
 
 namespace mico {
 

@@ -10,8 +10,8 @@
 #include <limits>
 #include <sstream>
 
-#include "core/json.h"
-#include "term/text.h"
+#include "base/json.h"
+#include "base/text.h"
 
 namespace mico::chart {
 namespace {

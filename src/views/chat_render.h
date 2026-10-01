@@ -7,12 +7,12 @@
 #include <unordered_set>
 #include <vector>
 
-#include "core/front_vec.h"
-#include "core/adapter.h"
-#include "core/jsonl.h"
-#include "term/surface.h"
+#include "base/front_vec.h"
+#include "model/adapter.h"
+#include "base/jsonl.h"
+#include "vt/surface.h"
 #include "term/term.h"
-#include "term/text.h"
+#include "base/text.h"
 #include "ui/pane.h"
 #include "ui/theme.h"
 #include "views/markdown.h"

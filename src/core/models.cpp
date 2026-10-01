@@ -5,8 +5,8 @@
 #include <algorithm>
 #include <map>
 
-#include "core/log.h"
-#include "term/text.h"
+#include "base/log.h"
+#include "base/text.h"
 
 namespace mico {
 namespace {

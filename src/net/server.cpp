@@ -19,10 +19,10 @@
 #include "net/proto.h"
 #include "term/encoder.h"
 #include "term/input.h"
-#include "core/log.h"
-#include "math/kitty.h"
+#include "base/log.h"
+#include "term/kitty.h"
 #include "math/math.h"
-#include "math/sixel.h"
+#include "term/sixel.h"
 #include "ui/app.h"
 #include "ui/theme.h"
 

@@ -5,14 +5,14 @@
 #include <cstdio>
 #include <string>
 
-#include "core/json.h"
-#include "core/adapter.h"
+#include "base/json.h"
+#include "model/adapter.h"
 #include "term/encoder.h"
-#include "term/vt.h"
+#include "vt/vt.h"
 #include "term/input.h"
 #include "core/store.h"
-#include "term/text.h"
-#include "core/state.h"
+#include "base/text.h"
+#include "model/state.h"
 #include "views/markdown.h"
 #include "views/views.h"
 #include "ui/app.h"
@@ -20,7 +20,7 @@
 #include "views/chart.h"
 #include "math/deflate.h"
 #include "math/math.h"
-#include "math/sixel.h"
+#include "term/sixel.h"
 
 namespace mico {
 namespace {

@@ -10,15 +10,15 @@
 #include <cstdio>
 #include <unordered_set>
 
-#include "core/log.h"
+#include "base/log.h"
 #include "core/opener.h"
 #include "core/pty.h"
 #include "core/x11_clipboard.h"
-#include "math/kitty.h"
+#include "term/kitty.h"
 #include "math/math.h"
-#include "math/sixel.h"
+#include "term/sixel.h"
 #include "term/encoder.h"
-#include "term/text.h"
+#include "base/text.h"
 #include "views/views.h"
 
 namespace mico {

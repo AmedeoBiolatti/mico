@@ -1,6 +1,6 @@
 #include "term/input.h"
 
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico {
 

@@ -4,7 +4,7 @@
 #include <cmath>
 
 #include "math/atlas.h"
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico::math {
 namespace {

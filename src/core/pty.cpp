@@ -10,7 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "core/log.h"
+#include "base/log.h"
 #include <string>
 #include <string_view>
 

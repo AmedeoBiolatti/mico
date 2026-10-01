@@ -5,7 +5,7 @@
 #include "term/caps.h"
 #include "term/encoder.h"
 #include "term/input.h"
-#include "term/surface.h"
+#include "vt/surface.h"
 
 namespace mico {
 

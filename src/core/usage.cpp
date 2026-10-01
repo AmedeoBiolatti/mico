@@ -5,8 +5,8 @@
 #include <cmath>
 #include <chrono>
 
-#include "core/json.h"
-#include "core/jsonl.h"
+#include "base/json.h"
+#include "base/jsonl.h"
 
 namespace mico {
 

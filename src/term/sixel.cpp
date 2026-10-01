@@ -1,4 +1,4 @@
-#include "math/sixel.h"
+#include "term/sixel.h"
 
 #include <algorithm>
 #include <cstdio>

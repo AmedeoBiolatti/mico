@@ -4,8 +4,8 @@
 #include <string_view>
 #include <vector>
 
-#include "core/event.h"
-#include "term/text.h"
+#include "model/event.h"
+#include "base/text.h"
 #include "views/code.h"
 
 // Just enough markdown for what coding agents actually emit. Not a spec-

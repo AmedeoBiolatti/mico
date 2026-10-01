@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "core/pty.h"
-#include "term/vt.h"
+#include "vt/vt.h"
 
 namespace mico {
 

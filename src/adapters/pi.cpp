@@ -1,7 +1,7 @@
 #include <algorithm>
 
-#include "core/adapter.h"
-#include "core/user_text.h"
+#include "adapters/adapters.h"
+#include "adapters/user_text.h"
 
 // Shared adapter for earendil-works/pi-coding-agent ("pi") and Oh My Pi
 // ("omp"), which is built on the same engine: both write the same

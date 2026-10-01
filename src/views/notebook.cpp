@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <vector>
 
-#include "core/json.h"
+#include "base/json.h"
 
 namespace mico::notebook {
 namespace {

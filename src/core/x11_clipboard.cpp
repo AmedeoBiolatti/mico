@@ -6,7 +6,7 @@
 #include <cstring>
 #include <type_traits>
 
-#include "core/log.h"
+#include "base/log.h"
 
 namespace mico::x11clip {
 namespace {

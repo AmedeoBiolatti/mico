@@ -11,36 +11,73 @@ endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -g -fno-plt -fno-semantic-interposition")
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 
-add_executable(mico
-  src/main.cpp
-  src/mcp.cpp
-  src/bench.cpp
-  src/selftest.cpp
-  src/regression_test.cpp
-  src/term/surface.cpp
-  src/term/links.cpp
-  src/term/text.cpp
-  src/term/input.cpp
-  src/term/encoder.cpp
-  src/term/vt.cpp
-  src/term/keys.cpp
+add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+
+# One library per layer. Each may use the ones listed before it and none after;
+# tools/check_layers.py holds the same order and fails the build's tests when
+# an #include reaches upward.
+#
+#   base      text, JSON, logging: no mico concepts at all
+#   vt        the cell grid, the emulator that fills one from an agent's pty,
+#             and the key/mouse encoding sent back to it
+#   math      equation and image layout and rasterizing (content, not terminal)
+#   model     mico's normalized types: Event, SessionState, the Adapter interface
+#   adapters  one per agent: claude, codex, pi/omp
+#   core      sessions, the store, search, activity: everything but drawing
+#   term      the host terminal mico draws on: output, input, kitty/sixel
+#   tui       views and the app, drawn into cells
+#   net       daemon and client
+add_library(mico_base STATIC
+  src/base/text.cpp
+  src/base/json.cpp
+  src/base/jsonl.cpp
+  src/base/log.cpp
+)
+target_include_directories(mico_base PUBLIC src)
+
+add_library(mico_vt STATIC
+  src/vt/surface.cpp
+  src/vt/vt.cpp
+  src/vt/keys.cpp
+)
+target_link_libraries(mico_vt PUBLIC mico_base)
+
+add_library(mico_math STATIC
+  src/math/atlas.cpp
+  src/math/parse.cpp
+  src/math/layout.cpp
+  src/math/math.cpp
+  src/math/deflate.cpp
+  src/math/raster.cpp
+  src/math/picture.cpp
+)
+target_link_libraries(mico_math PUBLIC mico_base)
+# The glyph atlas is linked in by an .incbin in atlas.cpp.
+set(MICO_MATH_ATLAS ${CMAKE_SOURCE_DIR}/src/math/atlas.bin)
+set_source_files_properties(src/math/atlas.cpp PROPERTIES
+  COMPILE_DEFINITIONS MICO_MATH_ATLAS="${MICO_MATH_ATLAS}"
+  OBJECT_DEPENDS ${MICO_MATH_ATLAS})
+
+add_library(mico_model INTERFACE)
+target_link_libraries(mico_model INTERFACE mico_base)
+
+add_library(mico_adapters STATIC
+  src/adapters/registry.cpp
+  src/adapters/claude.cpp
+  src/adapters/codex.cpp
+  src/adapters/pi.cpp
+)
+target_link_libraries(mico_adapters PUBLIC mico_model)
+
+add_library(mico_core STATIC
   src/core/pty.cpp
   src/core/models.cpp
   src/core/clipboard.cpp
   src/core/opener.cpp
   src/core/images.cpp
   src/core/x11_clipboard.cpp
-  src/core/log.cpp
   src/core/session.cpp
   src/core/settings.cpp
-  src/net/proto.cpp
-  src/net/server.cpp
-  src/net/client.cpp
-  src/term/term.cpp
-  src/core/json.cpp
-  src/core/jsonl.cpp
-  src/core/claude.cpp
-  src/core/codex.cpp
   src/core/store.cpp
   src/core/usage.cpp
   src/core/search.cpp
@@ -48,6 +85,20 @@ add_executable(mico
   src/core/edits.cpp
   src/core/commands.cpp
   src/core/files.cpp
+)
+target_link_libraries(mico_core PUBLIC mico_adapters mico_vt PRIVATE util)
+
+add_library(mico_term STATIC
+  src/term/term.cpp
+  src/term/encoder.cpp
+  src/term/input.cpp
+  src/term/links.cpp
+  src/term/kitty.cpp
+  src/term/sixel.cpp
+)
+target_link_libraries(mico_term PUBLIC mico_vt mico_math)
+
+add_library(mico_tui STATIC
   src/ui/layout.cpp
   src/ui/app.cpp
   src/ui/picker.cpp
@@ -55,7 +106,6 @@ add_executable(mico
   src/views/project_list.cpp
   src/views/chat_list.cpp
   src/views/chat_view.cpp
-  src/core/pi.cpp
   src/views/chat_render.cpp
   src/views/markdown.cpp
   src/views/code.cpp
@@ -75,27 +125,27 @@ add_executable(mico
   src/views/diff.cpp
   src/views/search.cpp
   src/views/completion.cpp
-  src/math/atlas.cpp
-  src/math/parse.cpp
-  src/math/layout.cpp
-  src/math/math.cpp
-  src/math/kitty.cpp
-  src/math/deflate.cpp
-  src/math/sixel.cpp
-  src/math/raster.cpp
-  src/math/picture.cpp
 )
-# The glyph atlas is linked in by an .incbin in atlas.cpp.
-set(MICO_MATH_ATLAS ${CMAKE_SOURCE_DIR}/src/math/atlas.bin)
-set_source_files_properties(src/math/atlas.cpp PROPERTIES
-  COMPILE_DEFINITIONS MICO_MATH_ATLAS="${MICO_MATH_ATLAS}"
-  OBJECT_DEPENDS ${MICO_MATH_ATLAS})
-target_include_directories(mico PRIVATE src)
-target_link_libraries(mico PRIVATE util)
+target_link_libraries(mico_tui PUBLIC mico_core mico_term)
+
+add_library(mico_net STATIC
+  src/net/proto.cpp
+  src/net/server.cpp
+  src/net/client.cpp
+)
+target_link_libraries(mico_net PUBLIC mico_tui)
+
+add_executable(mico
+  src/main.cpp
+  src/mcp.cpp
+  src/bench.cpp
+  src/selftest.cpp
+  src/regression_test.cpp
+)
+target_link_libraries(mico PRIVATE mico_net)
 # Resolve every symbol at load time: lazy PLT binding showed up at ~10% of
 # samples in a profile dominated by short-lived hot loops.
 target_link_options(mico PRIVATE -Wl,-z,now -static-libstdc++ -static-libgcc)
-target_compile_options(mico PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 # `ctest` runs the self-test and the fixture-driven handoff checks. None of
 # them starts a real agent. Each gets its own HOME and XDG dirs, so a local run
@@ -117,6 +167,8 @@ set_tests_properties(selftest PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
+  add_test(NAME layers
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_layers.py ${CMAKE_SOURCE_DIR}/src)
   add_test(NAME daemon-input
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_input.py $<TARGET_FILE:mico>)
   foreach(check claude_questions claude_permission claude_paste)

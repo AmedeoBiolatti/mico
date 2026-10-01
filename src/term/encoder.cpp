@@ -3,7 +3,7 @@
 #include <string>
 
 #include "term/links.h"
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico {
 namespace {

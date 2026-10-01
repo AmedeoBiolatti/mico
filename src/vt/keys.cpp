@@ -1,8 +1,8 @@
-#include "term/keys.h"
+#include "vt/keys.h"
 
 #include <cstdio>
 
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico {
 

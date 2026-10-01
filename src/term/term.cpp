@@ -15,7 +15,7 @@
 #include <strings.h>
 
 #include "term/encoder.h"
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico {
 namespace {

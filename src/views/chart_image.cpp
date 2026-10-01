@@ -6,7 +6,7 @@
 
 #include "math/math.h"
 #include "math/raster.h"
-#include "term/text.h"
+#include "base/text.h"
 #include "ui/theme.h"
 #include "views/chart.h"
 

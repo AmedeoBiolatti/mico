@@ -2,7 +2,7 @@
 #include <string>
 #include <string_view>
 
-#include "term/surface.h"
+#include "vt/surface.h"
 
 namespace mico {
 

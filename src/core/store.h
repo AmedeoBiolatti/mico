@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "core/adapter.h"
+#include "model/adapter.h"
 
 namespace mico {
 

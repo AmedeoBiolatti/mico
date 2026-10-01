@@ -3,7 +3,7 @@
 #include <cstring>
 
 #include "math/tex.h"
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico::math {
 namespace {

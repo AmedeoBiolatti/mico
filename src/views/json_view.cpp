@@ -4,7 +4,7 @@
 #include <functional>
 #include <vector>
 
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico::json_view {
 namespace {
@@ -18,7 +18,10 @@ struct Node {
   enum Kind : uint8_t { Scalar, Object, Array } kind = Scalar;
   int id = -1;           // a container's number, in document order
   std::string_view raw;  // a scalar's source, a key's source (quotes kept)
-  std::vector<std::pair<std::string_view, Node>> members;  // objects: key, value; arrays: "", value
+  std::string_view key;  // its key in the parent object (quotes kept); empty in an array
+  // A vector of the type being defined, which the standard allows; a vector of
+  // pair<key, Node> is not, and clang rejects it.
+  std::vector<Node> members;
 };
 
 struct Parser {
@@ -60,8 +63,8 @@ struct Parser {
           if (i >= s.size() || s[i] != ':') return false;
           i++;
         }
-        n.members.emplace_back(key, Node{});
-        if (!value(n.members.back().second, depth + 1)) return false;
+        n.members.emplace_back().key = key;
+        if (!value(n.members.back(), depth + 1)) return false;
         ws();
         if (i < s.size() && s[i] == ',') { i++; continue; }
         if (i < s.size() && s[i] == close) { i++; return true; }
@@ -115,7 +118,7 @@ struct Printer {
     if (n.members.size() > 16) return false;
     line = "[";
     for (size_t k = 0; k < n.members.size(); k++) {
-      const Node& m = n.members[k].second;
+      const Node& m = n.members[k];
       if (m.kind != Node::Scalar) return false;
       if (k) line += ", ";
       line.append(m.raw);
@@ -147,10 +150,10 @@ struct Printer {
         break;
       }
       if (obj) {
-        out.append(n.members[k].first);
+        out.append(n.members[k].key);
         out += ": ";
       }
-      outline(n.members[k].second, depth + 1);
+      outline(n.members[k], depth + 1);
     }
     out += obj ? " }" : " ]";
   }
@@ -196,10 +199,10 @@ struct Printer {
     for (size_t k = 0; k < n.members.size(); k++) {
       std::string p = pad;
       if (obj) {
-        p.append(n.members[k].first);
+        p.append(n.members[k].key);
         p += ": ";
       }
-      node(n.members[k].second, depth + 1, std::move(p), k + 1 < n.members.size());
+      node(n.members[k], depth + 1, std::move(p), k + 1 < n.members.size());
     }
     lines->push_back({std::string(size_t(2 * depth), ' ') + (obj ? "}" : "]") + tail});
   }
@@ -208,7 +211,7 @@ struct Printer {
     std::string line;
     if (n.kind == Node::Scalar || n.members.empty() || (n.kind == Node::Array && flat(n, line))) return 1;
     size_t c = 2;
-    for (const auto& m : n.members) c += count(m.second);
+    for (const auto& m : n.members) c += count(m);
     return c;
   }
 };

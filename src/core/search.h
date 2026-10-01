@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "core/event.h"
+#include "model/event.h"
 #include "core/store.h"
 
 namespace mico {

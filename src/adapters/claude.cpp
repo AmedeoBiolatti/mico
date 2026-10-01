@@ -1,7 +1,7 @@
 #include <iterator>
 
-#include "core/adapter.h"
-#include "core/user_text.h"
+#include "adapters/adapters.h"
+#include "adapters/user_text.h"
 
 namespace mico {
 namespace {

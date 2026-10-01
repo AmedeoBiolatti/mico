@@ -1,10 +1,10 @@
-#include "term/vt.h"
+#include "vt/vt.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico {
 namespace {

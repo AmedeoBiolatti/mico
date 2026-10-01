@@ -101,8 +101,7 @@ def run():
     with tempfile.TemporaryDirectory(prefix='mico-paste-') as directory:
         base = Path(directory)
         binary = base / 'driver'
-        objects = [str(p) for p in (Path(os.environ.get('MICO_BUILD', repo / 'build')) / 'CMakeFiles/mico.dir/src').rglob('*.o')
-                   if p.name not in ('main.cpp.o', 'selftest.cpp.o', 'regression_test.cpp.o', 'bench.cpp.o')]
+        objects = [str(p) for p in (Path(os.environ.get('MICO_BUILD', repo / 'build')) / 'CMakeFiles').glob('mico_*.dir/src/**/*.o')]
         subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++23', '-O2', '-flto', '-I' + str(repo / 'src'),
                         str(repo / 'tests/claude_paste_driver.cpp'), *objects, '-lutil', '-o', str(binary)], check=True)
         root = base / 'root'

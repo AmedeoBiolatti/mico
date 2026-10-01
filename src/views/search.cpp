@@ -3,7 +3,7 @@
 #include <string>
 
 #include "core/search.h"
-#include "term/text.h"
+#include "base/text.h"
 #include "ui/app.h"
 #include "views/views.h"
 

@@ -11,7 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "core/log.h"
+#include "base/log.h"
 
 namespace mico::clip {
 namespace {

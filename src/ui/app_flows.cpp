@@ -13,7 +13,7 @@
 #include <set>
 
 #include "core/store.h"
-#include "term/text.h"
+#include "base/text.h"
 #include "ui/app.h"
 #include "views/list.h"
 #include "views/views.h"

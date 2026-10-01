@@ -5,7 +5,7 @@
 #include <iostream>
 #include "ui/app.h"
 #include "views/views.h"
-#include "term/text.h"
+#include "base/text.h"
 
 int main(int argc, char** argv) {
   if (argc != 4) return 2;

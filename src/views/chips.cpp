@@ -2,8 +2,8 @@
 #include <vector>
 
 #include "core/models.h"
-#include "core/state.h"
-#include "term/text.h"
+#include "model/state.h"
+#include "base/text.h"
 #include "ui/app.h"
 #include "views/views.h"
 

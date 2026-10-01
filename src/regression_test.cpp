@@ -9,13 +9,14 @@
 #include <optional>
 #include <string>
 
-#include "core/json.h"
-#include "core/jsonl.h"
+#include "adapters/adapters.h"
+#include "base/json.h"
+#include "base/jsonl.h"
 #include "core/session.h"
 #include "core/store.h"
-#include "core/user_text.h"
-#include "term/keys.h"
-#include "term/text.h"
+#include "adapters/user_text.h"
+#include "vt/keys.h"
+#include "base/text.h"
 #include "ui/app.h"
 #include "term/input.h"
 #include "views/chat_render.h"

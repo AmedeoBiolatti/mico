@@ -4,7 +4,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "term/surface.h"
+#include "vt/surface.h"
 
 // The kitty graphics protocol, as far as mico needs it: an image is sent once
 // with a virtual placement, and from then on it is drawn by the placeholder

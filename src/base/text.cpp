@@ -1,4 +1,4 @@
-#include "term/text.h"
+#include "base/text.h"
 
 #include <cstring>
 #include <algorithm>

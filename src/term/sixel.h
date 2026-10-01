@@ -1,7 +1,7 @@
 #pragma once
 #include <string>
 
-#include "term/surface.h"
+#include "vt/surface.h"
 
 // Sixel, for terminals without kitty's placeholders (foot, WezTerm, Windows
 // Terminal, xterm -ti vt340…). A sixel picture is painted at the cursor and

@@ -1,8 +1,9 @@
-#include "core/fs.h"
-#include "core/log.h"
+#include "adapters/adapters.h"
+#include "base/fs.h"
+#include "base/log.h"
 #include "core/session.h"
 #include "core/store.h"
-#include "term/keys.h"
+#include "vt/keys.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -16,7 +17,7 @@
 #include <map>
 #include <cstdlib>
 #include <functional>
-#include "core/json.h"
+#include "base/json.h"
 
 namespace mico {
 
@@ -192,11 +193,7 @@ bool LiveSession::start(const Launch& l) {
 
   // The adapter follows the agent, never the argv. A resumed or forked session
   // is still a claude session and still gets a chat view.
-  if (agent_ == "claude") adapter_ = &claude_adapter();
-  else if (agent_ == "codex") adapter_ = &codex_adapter();
-  else if (agent_ == "pi") adapter_ = &pi_adapter();
-  else if (agent_ == "omp") adapter_ = &omp_adapter();
-  else adapter_ = nullptr;
+  adapter_ = adapter_for(agent_);
 
   std::vector<std::string> argv = l.argv;
   if (argv.empty()) {

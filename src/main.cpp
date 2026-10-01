@@ -3,9 +3,9 @@
 #include <cstdlib>
 #include <unistd.h>
 
-#include "term/vt.h"
-#include "term/text.h"
-#include "core/log.h"
+#include "vt/vt.h"
+#include "base/text.h"
+#include "base/log.h"
 #include "ui/app.h"
 #include "math/math.h"
 #include "ui/theme.h"

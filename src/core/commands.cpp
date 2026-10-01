@@ -10,8 +10,8 @@
 #include <chrono>
 #include <cstdio>
 
-#include "core/json.h"
-#include "core/log.h"
+#include "base/json.h"
+#include "base/log.h"
 #include "core/pty.h"
 
 namespace mico {

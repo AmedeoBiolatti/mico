@@ -1,5 +1,7 @@
 #include "core/store.h"
 
+#include "adapters/adapters.h"
+
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -8,9 +10,9 @@
 #include <algorithm>
 #include <cstdlib>
 
-#include "core/fs.h"
-#include "core/json.h"
-#include "core/log.h"
+#include "base/fs.h"
+#include "base/json.h"
+#include "base/log.h"
 #include <functional>
 #include <map>
 
@@ -109,11 +111,7 @@ std::map<std::string, std::string> load_codex_names() {
 }  // namespace
 
 const Adapter* Store::adapter_for(const SessionRef& s) {
-  if (s.agent == "claude") return &claude_adapter();
-  if (s.agent == "codex") return &codex_adapter();
-  if (s.agent == "pi") return &pi_adapter();
-  if (s.agent == "omp") return &omp_adapter();
-  return nullptr;  // unknown agent: no chat view, raw pane only (M2)
+  return mico::adapter_for(s.agent);  // null: no chat view, raw pane only
 }
 
 Project* Store::project_for(const std::string& cwd) {

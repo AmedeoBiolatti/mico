@@ -1,5 +1,6 @@
 #include <algorithm>
 
+#include "adapters/adapters.h"
 #include "core/settings.h"
 #include <cctype>
 #include <chrono>
@@ -9,9 +10,9 @@
 #include <vector>
 
 #include "core/session.h"
-#include "term/keys.h"
-#include "term/text.h"
-#include "term/vt.h"
+#include "vt/keys.h"
+#include "base/text.h"
+#include "vt/vt.h"
 #include "ui/app.h"
 #include "views/chat_render.h"
 #include "views/completion.h"

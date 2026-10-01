@@ -5,7 +5,7 @@
 #include <string_view>
 #include <vector>
 
-#include "term/surface.h"
+#include "base/color.h"
 
 // Equations (and charts) drawn as pictures, for terminals that can show one
 // inside the cell grid (kitty's graphics protocol, or sixel). Each

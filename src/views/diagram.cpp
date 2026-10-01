@@ -9,7 +9,7 @@
 #include <tuple>
 #include <vector>
 
-#include "term/text.h"
+#include "base/text.h"
 
 namespace mico::diagram {
 namespace {

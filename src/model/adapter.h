@@ -4,8 +4,8 @@
 #include <string_view>
 #include <vector>
 
-#include "core/event.h"
-#include "core/state.h"
+#include "model/event.h"
+#include "model/state.h"
 
 namespace mico {
 
@@ -50,31 +50,11 @@ class Adapter {
   virtual void seed_state(SessionState& st) const {}
 };
 
-const Adapter& claude_adapter();
-const Adapter& codex_adapter();
-const Adapter& pi_adapter();
-const Adapter& omp_adapter();
-
 // Codex's optional question: the call returns `{"accepted":true}` at once and
 // the agent keeps working. The reply, whenever it comes, is an ordinary user
 // message. Codex 0.159 writes it as an envelope naming the question by its
 // call and index (see AsyncReply); older ones quoted it: "> question\n\nanswer".
 inline bool is_async_question_tool(std::string_view n) { return n == "request_user_input_async"; }
-
-// One answer in that envelope:
-//   <send_user_message_question_reply>
-//   [{"answer":…,"question":…,"questionItemId":"[\"request_user_input_async\",\"<call>\",0]"}]
-//   </send_user_message_question_reply>
-// Codex matches questionItemId byte for byte to clear its own pending
-// question, so it is written exactly as Codex writes it.
-struct AsyncReply {
-  std::string call_id;
-  int index = 0;  // which of the call's questions
-  std::string question, answer;
-};
-std::string async_reply_envelope(const std::vector<AsyncReply>& replies);
-// The replies in a message that is such an envelope; false for any other.
-bool parse_async_reply(std::string_view text, std::vector<AsyncReply>& out);
 
 // True for the tool names that ask the user a multiple-choice question.
 inline bool is_question_tool(std::string_view n) {

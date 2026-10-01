@@ -13,7 +13,7 @@
 
 #include "core/opener.h"
 #include "net/proto.h"
-#include "core/log.h"
+#include "base/log.h"
 #include "term/term.h"
 #include "ui/theme.h"
 

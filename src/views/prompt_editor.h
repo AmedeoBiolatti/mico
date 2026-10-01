@@ -6,8 +6,8 @@
 #include <utility>
 #include <vector>
 
-#include "core/message.h"
-#include "term/text.h"
+#include "model/message.h"
+#include "base/text.h"
 
 namespace mico {
 
