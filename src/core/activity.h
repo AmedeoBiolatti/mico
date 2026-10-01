@@ -4,6 +4,8 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+
+#include "base/parallel.h"
 #include <vector>
 
 #include "core/edits.h"
@@ -79,9 +81,9 @@ class ActivityIndex {
   void start(const std::vector<Project>& projects, const Store& store);
   // Reads for up to `budget_ms`. True when the pass is complete.
   bool step(int budget_ms);
-  bool complete() const { return jobs_.empty(); }
+  bool complete() const { return jobs_.empty() && !batch_.running(); }
   size_t done() const { return chats_.size(); }
-  size_t total() const { return chats_.size() + jobs_.size(); }
+  size_t total() const { return chats_.size() + jobs_.size() + batch_.pending(); }
   const std::vector<const ChatActivity*>& chats() const { return chats_; }
 
   // Reads one file from scratch. For tests.
@@ -110,9 +112,17 @@ class ActivityIndex {
   struct Job {
     SessionRef s;
     std::string project, title;
+    size_t order = 0;  // its place in the listing, kept whatever finishes first
+  };
+  // Files read on worker threads: a job, and the cache entry it brings up to date.
+  struct Work {
+    Job job;
+    Cached c;
   };
   std::vector<Job> jobs_;
+  Batch<Work> batch_;
   std::vector<const ChatActivity*> chats_;
+  std::vector<size_t> order_;  // per chat in chats_, its place in the listing
   std::map<std::string, Cached> cache_;
 };
 

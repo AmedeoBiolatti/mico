@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "base/parallel.h"
 #include "core/store.h"
 #include "model/usage.h"
 
@@ -63,9 +64,9 @@ class UsageIndex {
   void start(const std::vector<Project>& projects);
   // Scans for up to `budget_ms`. Returns true when the current pass is complete.
   bool step(int budget_ms);
-  bool complete() const { return jobs_.empty(); }
+  bool complete() const { return jobs_.empty() && !batch_.running(); }
   size_t done() const { return entries_.size(); }
-  size_t total() const { return entries_.size() + jobs_.size(); }
+  size_t total() const { return entries_.size() + jobs_.size() + batch_.pending(); }
   const std::vector<UsageEntry>& entries() const { return entries_; }
 
  private:
@@ -81,9 +82,17 @@ class UsageIndex {
     std::string path, agent, cwd, project;
     int64_t mtime = 0;
     uint64_t size = 0;
+    size_t order = 0;  // its place in the listing, kept whatever finishes first
+  };
+  // Files read on worker threads: a job, and the cache entry it brings up to date.
+  struct Work {
+    Job job;
+    Cache c;
   };
   std::vector<Job> jobs_;
+  Batch<Work> batch_;
   std::vector<UsageEntry> entries_;
+  std::vector<size_t> order_;  // per entry, its place in the listing
   std::map<std::string, Cache> cache_;
   PriceBook prices_;
 };

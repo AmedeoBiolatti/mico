@@ -16,12 +16,6 @@ namespace mico {
 
 namespace {
 
-int64_t elapsed_ms(std::chrono::steady_clock::time_point t0) {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now() - t0)
-      .count();
-}
-
 }  // namespace
 
 void PriceBook::add(const PriceSample& s) {
@@ -142,41 +136,83 @@ UsageEntry usage_for_file(const std::string& path, const std::string& agent,
 }
 
 void UsageIndex::start(const std::vector<Project>& projects) {
+  // A pass still reading is abandoned: its entries are read again below.
+  batch_.stop();
   jobs_.clear();
   entries_.clear();
+  order_.clear();
 
+  size_t order = 0;
   for (const auto& p : projects) {
     for (const auto& s : p.sessions) {
       auto it = cache_.find(s.path);
       if (it != cache_.end() && it->second.mtime == s.mtime && it->second.size == s.bytes) {
         entries_.push_back(it->second.entry);
+        order_.push_back(order++);
         continue;
       }
-      jobs_.push_back(Job{s.path, s.agent, s.cwd, p.name, s.mtime, s.bytes});
+      jobs_.push_back(Job{s.path, s.agent, s.cwd, p.name, s.mtime, s.bytes, order++});
     }
   }
   reprice();
 }
 
+// As the activity index does: files read on worker threads, merged here.
 bool UsageIndex::step(int budget_ms) {
-  if (jobs_.empty()) return true;
-  const auto t0 = std::chrono::steady_clock::now();
-  while (!jobs_.empty()) {
-    Job job = std::move(jobs_.back());
-    jobs_.pop_back();
-    Cache& c = cache_[job.path];
-    // A transcript only grows; one that shrank was rewritten and is read anew.
-    if (job.size < c.size) c.resume = UsageResume{};
-    UsageEntry e = usage_for_file(job.path, job.agent, job.cwd, job.project, job.mtime,
-                                  &c.resume, &c.entry);
-    c.mtime = job.mtime;
-    c.size = job.size;
-    c.entry = e;
-    entries_.push_back(std::move(e));
-    if (elapsed_ms(t0) >= budget_ms) break;
+  if (jobs_.empty() && !batch_.running()) return true;
+  if (!jobs_.empty() && !batch_.running()) {
+    std::vector<Work> work;
+    work.reserve(jobs_.size());
+    for (Job& job : jobs_) {
+      Work w;
+      if (auto it = cache_.find(job.path); it != cache_.end()) {
+        w.c = std::move(it->second);
+        cache_.erase(it);
+      }
+      w.job = std::move(job);
+      work.push_back(std::move(w));
+    }
+    jobs_.clear();
+    batch_.start(std::move(work), [](Work& w) {
+      Cache& c = w.c;
+      const Job& job = w.job;
+      // A transcript only grows; one that shrank was rewritten and is read anew.
+      if (job.size < c.size) c.resume = UsageResume{};
+      c.entry = usage_for_file(job.path, job.agent, job.cwd, job.project, job.mtime, &c.resume, &c.entry);
+      c.mtime = job.mtime;
+      c.size = job.size;
+    }, Batch<Work>::default_threads());
   }
+  bool merged = false;
+  // Waits up to the budget for the pass to finish, merging as files do: a
+  // view's first frame can afford a moment for real numbers, the background
+  // warm-up (budget 0) only merges what is done.
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
+  for (;;) {
+    batch_.collect([&](Work& w) {
+      Cache& c = cache_[w.job.path] = std::move(w.c);
+      entries_.push_back(c.entry);
+      order_.push_back(w.job.order);
+      merged = true;
+    });
+    if (!batch_.running() || std::chrono::steady_clock::now() >= until) break;
+    batch_.wait(int(std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count()) + 1);
+  }
+  if (!complete()) {
+    if (merged) reprice();
+    return false;
+  }
+  // Finished: back in listing order, as a pass read on one thread had them.
+  std::vector<size_t> idx(entries_.size());
+  for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
+  std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return order_[a] < order_[b]; });
+  std::vector<UsageEntry> sorted;
+  sorted.reserve(idx.size());
+  for (size_t i : idx) sorted.push_back(std::move(entries_[i]));
+  entries_ = std::move(sorted);
+  std::sort(order_.begin(), order_.end());
   reprice();
-  return jobs_.empty();
+  return true;
 }
 
 void UsageIndex::reprice() {

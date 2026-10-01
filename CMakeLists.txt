@@ -38,6 +38,9 @@ add_library(mico_base STATIC
   src/base/log.cpp
 )
 target_include_directories(mico_base PUBLIC src)
+# The index passes read files on worker threads.
+find_package(Threads REQUIRED)
+target_link_libraries(mico_base PUBLIC Threads::Threads)
 
 add_library(mico_vt STATIC
   src/vt/surface.cpp

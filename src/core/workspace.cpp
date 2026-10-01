@@ -249,7 +249,8 @@ unsigned Workspace::service(bool usage_wanted) {
     activity_.start(store_.projects(), store_);
   }
   if (!activity_.complete()) {
-    activity_.step(kIndexSliceMs);
+    // Read on worker threads: this only merges what has finished.
+    activity_.step(0);
     changed |= kActivity;
   }
   if (usage_wanted && !usage_.complete()) {
@@ -263,7 +264,8 @@ int Workspace::idle_timeout_ms(bool usage_wanted) const {
   int ms = 1000;
   if (!unlaunched_.empty()) ms = 250;  // to launch what nothing sizes, on time
   if (!search_.complete()) ms = 1;  // a search in progress works between frames
-  if (!activity_.complete() || (usage_wanted && !usage_.complete())) ms = 1;  // so does an index pass
+  // An index pass reads on worker threads; the loop merges what they finish.
+  if (!activity_.complete() || (usage_wanted && !usage_.complete())) ms = std::min(ms, 10);
   if (model_probe_.running() || commands_.probing()) ms = 30;
   for (const auto& s : live_) {
     if (const int t = s->timer_ms(); t >= 0) ms = std::min(ms, t);

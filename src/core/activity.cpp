@@ -494,8 +494,12 @@ ChatActivity ActivityIndex::read_file(const std::string& path, const std::string
 }
 
 void ActivityIndex::start(const std::vector<Project>& projects, const Store& store) {
+  // A pass still reading is abandoned: its entries are read again below.
+  batch_.stop();
   jobs_.clear();
   chats_.clear();
+  order_.clear();
+  size_t order = 0;
   for (const auto& p : projects)
     for (const auto& s : p.sessions) {
       const std::string* name = store.custom_name(s.agent, s.id);
@@ -505,34 +509,71 @@ void ActivityIndex::start(const std::vector<Project>& projects, const Store& sto
         it->second.data.title = title;
         it->second.data.project = p.name;
         chats_.push_back(&it->second.data);
+        order_.push_back(order++);
         continue;
       }
-      jobs_.push_back(Job{s, p.name, std::move(title)});
+      jobs_.push_back(Job{s, p.name, std::move(title), order++});
     }
 }
 
+// The files of a pass are read on worker threads, each bringing its own cache
+// entry up to date; step() merges what has finished, between frames, and
+// once all have, puts the chats back in listing order.
 bool ActivityIndex::step(int budget_ms) {
-  const auto t0 = std::chrono::steady_clock::now();
-  while (!jobs_.empty()) {
-    Job job = std::move(jobs_.back());
-    jobs_.pop_back();
-    Cached& c = cache_[job.s.path];
-    // A transcript only grows; one that shrank was rewritten.
-    if (job.s.bytes < c.size) c = Cached{};
-    c.mtime = job.s.mtime;
-    c.size = job.s.bytes;
-    c.data.path = job.s.path;
-    c.data.agent = job.s.agent;
-    c.data.id = job.s.id;
-    c.data.title = job.title;
-    c.data.project = job.project;
-    c.data.cwd = job.s.cwd.empty() ? "/" : job.s.cwd;
-    LineReader j(job.s.path);
-    read_from(j, job.s.agent, c.data, c.resume);
-    chats_.push_back(&c.data);
-    if (std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(budget_ms)) break;
+  if (!jobs_.empty() && !batch_.running()) {
+    std::vector<Work> work;
+    work.reserve(jobs_.size());
+    for (Job& job : jobs_) {
+      Work w;
+      if (auto it = cache_.find(job.s.path); it != cache_.end()) {
+        w.c = std::move(it->second);
+        cache_.erase(it);
+      }
+      w.job = std::move(job);
+      work.push_back(std::move(w));
+    }
+    jobs_.clear();
+    batch_.start(std::move(work), [](Work& w) {
+      Cached& c = w.c;
+      const Job& job = w.job;
+      // A transcript only grows; one that shrank was rewritten.
+      if (job.s.bytes < c.size) c = Cached{};
+      c.mtime = job.s.mtime;
+      c.size = job.s.bytes;
+      c.data.path = job.s.path;
+      c.data.agent = job.s.agent;
+      c.data.id = job.s.id;
+      c.data.title = job.title;
+      c.data.project = job.project;
+      c.data.cwd = job.s.cwd.empty() ? "/" : job.s.cwd;
+      LineReader j(job.s.path);
+      read_from(j, job.s.agent, c.data, c.resume);
+    }, Batch<Work>::default_threads());
   }
-  return jobs_.empty();
+  // Waits up to the budget for the pass to finish, merging as files do: a
+  // view's first frame can afford a moment for real numbers, the background
+  // warm-up (budget 0) only merges what is done.
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
+  for (;;) {
+    batch_.collect([&](Work& w) {
+      Cached& c = cache_[w.job.s.path] = std::move(w.c);
+      chats_.push_back(&c.data);
+      order_.push_back(w.job.order);
+    });
+    if (!batch_.running() || std::chrono::steady_clock::now() >= until) break;
+    batch_.wait(int(std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count()) + 1);
+  }
+  if (!complete()) return false;
+  // Finished: back in listing order, as a pass read on one thread had them.
+  std::vector<size_t> idx(chats_.size());
+  for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
+  std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return order_[a] < order_[b]; });
+  std::vector<const ChatActivity*> sorted;
+  sorted.reserve(idx.size());
+  for (size_t i : idx) sorted.push_back(chats_[i]);
+  chats_ = std::move(sorted);
+  std::sort(order_.begin(), order_.end());
+  return true;
 }
 
 }  // namespace mico
