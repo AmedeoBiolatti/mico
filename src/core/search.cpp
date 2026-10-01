@@ -27,7 +27,7 @@ bool in_scope(EventKind k, const SearchScope& s) {
   }
 }
 
-ChatSearch::~ChatSearch() { close_map(); }
+ChatSearch::~ChatSearch() { cancel(); }
 
 void ChatSearch::start(const std::vector<Project>& projects, const Store& store,
                        std::string query, SearchScope scope) {
@@ -38,7 +38,7 @@ void ChatSearch::start(const std::vector<Project>& projects, const Store& store,
   hits_.clear();
   chats_ = total_ = 0;
   jobs_.clear();
-  next_job_ = 0;
+  merged_ = 0;
   if (fold_.empty()) return;
   for (const auto& p : projects)
     for (const auto& s : p.sessions) {
@@ -50,121 +50,139 @@ void ChatSearch::start(const std::vector<Project>& projects, const Store& store,
 }
 
 void ChatSearch::cancel() {
-  close_map();
-  next_job_ = jobs_.size();
-}
-
-void ChatSearch::open_next() {
-  const Job& j = jobs_[next_job_++];
-  pos_ = 0;
-  file_hits_ = 0;
-  file_first_kept_ = false;
-  const int fd = ::open(j.s.path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return;
-  struct stat st{};
-  if (fstat(fd, &st) == 0 && st.st_size > 0) {
-    void* m = mmap(nullptr, size_t(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
-    if (m != MAP_FAILED) {
-      madvise(m, size_t(st.st_size), MADV_SEQUENTIAL);
-      map_ = static_cast<const char*>(m);
-      size_ = size_t(st.st_size);
-    }
-  }
-  ::close(fd);
-}
-
-void ChatSearch::close_map() {
-  if (!map_) return;
-  if (file_hits_ > 0) {
-    chats_++;
-    if (file_first_kept_) hits_[file_first_].chat_hits = file_hits_;
-  }
-  munmap(const_cast<char*>(map_), size_);
-  map_ = nullptr;
-  size_ = 0;
+  batch_.stop();
+  done_.clear();
+  ready_.clear();
+  merged_ = jobs_.size();
 }
 
 bool ChatSearch::step(int budget_ms) {
-  const auto t0 = std::chrono::steady_clock::now();
-  const auto spent = [&] {
-    return std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(budget_ms);
-  };
-  constexpr size_t kChunk = 4u << 20;
-  while (!spent()) {
-    if (!map_) {
-      if (next_job_ >= jobs_.size()) return true;
-      open_next();
-      continue;
+  if (complete()) return true;
+  if (!batch_.running() && ready_.empty()) {
+    std::vector<Work> work(jobs_.size());
+    for (size_t i = 0; i < jobs_.size(); i++) {
+      work[i].job = &jobs_[i];
+      work[i].fold = fold_;
+      work[i].scope = scope_;
     }
-    // One chunk at a time, so the clock is looked at every few megabytes. The
-    // haystack runs a needle's length past the chunk, so a match that
-    // straddles the boundary is still seen, from this side.
-    const size_t chunk_end = std::min(size_, pos_ + kChunk);
-    const std::string_view hay(map_, std::min(size_, chunk_end + fold_.size() - 1));
-    const size_t m = text::find_folded(hay, fold_, pos_);
-    if (m == std::string_view::npos || m >= chunk_end) {
-      pos_ = chunk_end;
-      if (pos_ >= size_) close_map();
-      continue;
+    ready_.assign(jobs_.size(), false);
+    done_.assign(jobs_.size(), Work{});
+    batch_.start(std::move(work), &ChatSearch::search_file, Batch<Work>::default_threads());
+  }
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
+  for (;;) {
+    batch_.collect([&](Work& w) {
+      const size_t i = size_t(w.job - jobs_.data());
+      done_[i] = std::move(w);
+      ready_[i] = true;
+    });
+    // Newest first, as a single thread found them: a file waits for those
+    // before it.
+    while (merged_ < jobs_.size() && ready_[merged_]) {
+      merge(done_[merged_]);
+      done_[merged_] = Work{};
+      merged_++;
     }
-    const void* nl_before = m ? memrchr(map_, '\n', m) : nullptr;
-    const size_t a = nl_before ? size_t(static_cast<const char*>(nl_before) - map_) + 1 : 0;
-    const void* nl_after = memchr(map_ + m, '\n', size_ - m);
-    const size_t b = nl_after ? size_t(static_cast<const char*>(nl_after) - map_) : size_;
-    confirm(jobs_[next_job_ - 1], a, b);
-    pos_ = b + 1;  // one hit per line
-    if (pos_ >= size_) close_map();
+    if (complete() || std::chrono::steady_clock::now() >= until) break;
+    batch_.wait(int(std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count()) + 1);
+  }
+  if (complete()) {
+    done_.clear();
+    ready_.clear();
   }
   return complete();
 }
 
-bool ChatSearch::confirm(const Job& j, size_t a, size_t b) {
+void ChatSearch::merge(Work& w) {
+  total_ += size_t(w.count);
+  if (w.count == 0) return;
+  chats_++;
+  bool first = true;
+  for (SearchHit& h : w.hits) {
+    if (hits_.size() >= kMaxHits) break;
+    h.first_in_chat = first;
+    if (first) h.chat_hits = w.count;
+    first = false;
+    hits_.push_back(std::move(h));
+  }
+}
+
+// One file, on a worker thread: everything here is the job's own.
+void ChatSearch::search_file(Work& w) {
+  const Job& j = *w.job;
   const Adapter* adapter = Store::adapter_for(j.s);
-  if (!adapter) return false;
-  tmp_.clear();
-  evs_.clear();
-  adapter->parse(std::string_view(map_ + a, b - a), tmp_, evs_);
-  for (const Event& e : evs_) {
-    if (!in_scope(e.kind, scope_)) continue;
-    for (Str field : {e.text, e.summary, e.name, e.detail}) {
-      const std::string_view v = tmp_.view(field);
-      const size_t p = text::find_folded(v, fold_);
-      if (p == std::string_view::npos) continue;
-      total_++;
-      file_hits_++;
-      if (file_hits_ > kSnippetsPerChat || hits_.size() >= kMaxHits) return true;
-      // Context on both sides, cut at character boundaries, with line breaks
-      // turned into spaces one for one so the match keeps its offset.
-      size_t from = p > 48 ? p - 48 : 0;
-      while (from > 0 && (uint8_t(v[from]) & 0xC0) == 0x80) from--;
-      size_t to = std::min(v.size(), p + fold_.size() + 160);
-      while (to < v.size() && (uint8_t(v[to]) & 0xC0) == 0x80) to++;
-      SearchHit h;
-      h.path = j.s.path;
-      h.agent = j.s.agent;
-      h.id = j.s.id;
-      h.title = j.title;
-      h.project = j.project;
-      h.mtime = j.s.mtime;
-      h.offset = a;
-      if (from > 0) h.snippet = "\xE2\x80\xA6";  // …
-      h.match_at = h.snippet.size() + (p - from);
-      h.match_len = fold_.size();
-      for (size_t i = from; i < to; i++) {
-        const char c = v[i];
-        h.snippet.push_back(c == '\n' || c == '\r' || c == '\t' ? ' ' : c);
-      }
-      if (to < v.size()) h.snippet += "\xE2\x80\xA6";
-      h.first_in_chat = file_hits_ == 1;
-      if (h.first_in_chat) {
-        file_first_ = hits_.size();
-        file_first_kept_ = true;
-      }
-      hits_.push_back(std::move(h));
-      return true;
+  if (!adapter) return;
+  const int fd = ::open(j.s.path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return;
+  struct stat st{};
+  const char* map = nullptr;
+  size_t size = 0;
+  if (fstat(fd, &st) == 0 && st.st_size > 0) {
+    void* m = mmap(nullptr, size_t(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
+    if (m != MAP_FAILED) {
+      madvise(m, size_t(st.st_size), MADV_SEQUENTIAL);
+      map = static_cast<const char*>(m);
+      size = size_t(st.st_size);
     }
   }
-  return false;
+  ::close(fd);
+  if (!map) return;
+  const std::string& fold = w.fold;
+  const std::string_view all(map, size);
+  Arena tmp;
+  std::vector<Event> evs;
+  // Confirms a raw hit on the line [a, b): the query has to be in text the
+  // chat shows. One hit per line.
+  const auto confirm = [&](size_t a, size_t b) {
+    tmp.clear();
+    evs.clear();
+    adapter->parse(all.substr(a, b - a), tmp, evs);
+    for (const Event& e : evs) {
+      if (!in_scope(e.kind, w.scope)) continue;
+      for (Str field : {e.text, e.summary, e.name, e.detail}) {
+        const std::string_view v = tmp.view(field);
+        const size_t p = text::find_folded(v, fold);
+        if (p == std::string_view::npos) continue;
+        w.count++;
+        if (w.hits.size() >= size_t(kSnippetsPerChat)) return;
+        // Context on both sides, cut at character boundaries, with line breaks
+        // turned into spaces one for one so the match keeps its offset.
+        size_t from = p > 48 ? p - 48 : 0;
+        while (from > 0 && (uint8_t(v[from]) & 0xC0) == 0x80) from--;
+        size_t to = std::min(v.size(), p + fold.size() + 160);
+        while (to < v.size() && (uint8_t(v[to]) & 0xC0) == 0x80) to++;
+        SearchHit h;
+        h.path = j.s.path;
+        h.agent = j.s.agent;
+        h.id = j.s.id;
+        h.title = j.title;
+        h.project = j.project;
+        h.mtime = j.s.mtime;
+        h.offset = a;
+        if (from > 0) h.snippet = "\xE2\x80\xA6";  // …
+        h.match_at = h.snippet.size() + (p - from);
+        h.match_len = fold.size();
+        for (size_t i = from; i < to; i++) {
+          const char c = v[i];
+          h.snippet.push_back(c == '\n' || c == '\r' || c == '\t' ? ' ' : c);
+        }
+        if (to < v.size()) h.snippet += "\xE2\x80\xA6";
+        w.hits.push_back(std::move(h));
+        return;
+      }
+    }
+  };
+  for (size_t pos = 0; pos < size;) {
+    const size_t m = text::find_folded(all, fold, pos);
+    if (m == std::string_view::npos) break;
+    const void* nl_before = m ? memrchr(map, '\n', m) : nullptr;
+    const size_t a = nl_before ? size_t(static_cast<const char*>(nl_before) - map) + 1 : 0;
+    const void* nl_after = memchr(map + m, '\n', size - m);
+    const size_t b = nl_after ? size_t(static_cast<const char*>(nl_after) - map) : size;
+    confirm(a, b);
+    pos = b + 1;
+  }
+  munmap(const_cast<char*>(map), size);
 }
 
 }  // namespace mico

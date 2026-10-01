@@ -5,6 +5,10 @@
 #include <string>
 #include <string_view>
 
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 // A scanning JSON reader for transcript lines. Not a parser: it builds no tree
 // and allocates nothing. Callers walk the members they care about and skip the
 // rest, which matters because a single line can carry a hundred kilobytes of
@@ -51,6 +55,34 @@ inline size_t skip_string(std::string_view s, size_t i) {
   const size_t n = s.size();
   const size_t body = i + 1;
   size_t p = body;
+#if defined(__SSE2__)
+  // Tool output quoted in a transcript has an escaped quote every few dozen
+  // bytes, and a memchr per quote costs more in calls than in bytes; base64
+  // has none, and memchr crosses it fastest. So: memchr after a block with no
+  // quote in it, and sixteen bytes at a time, every quote settled here, while
+  // they keep coming.
+  const __m128i quote = _mm_set1_epi8('"');
+  bool skip = true;
+  while (p + 16 <= n) {
+    if (skip) {
+      const char* q = static_cast<const char*>(memchr(base + p, '"', n - p));
+      if (!q) return n;
+      p = size_t(q - base);
+      if (p + 16 > n) break;
+    }
+    unsigned mask = unsigned(_mm_movemask_epi8(
+        _mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(base + p)), quote)));
+    skip = mask == 0;
+    while (mask) {
+      const size_t qi = p + size_t(__builtin_ctz(mask));
+      size_t b = qi;
+      while (b > body && base[b - 1] == '\\') b--;
+      if (((qi - b) & 1) == 0) return qi + 1;
+      mask &= mask - 1;
+    }
+    p += 16;
+  }
+#endif
   for (;;) {
     if (p >= n) return n;
 
