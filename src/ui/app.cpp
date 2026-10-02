@@ -11,6 +11,7 @@
 #include <unordered_set>
 
 #include "adapters/adapters.h"
+#include "base/fs.h"
 #include "base/log.h"
 #include "core/opener.h"
 #include "core/pty.h"
@@ -37,12 +38,120 @@ const char* density_name(Density d) {
 
 App::App() : own_ws_(std::make_unique<Workspace>()), ws_(*own_ws_) {
   load_layout();
+  load_view();
   build_layout();
 }
 
 App::App(Workspace& ws) : ws_(ws) {
   load_layout();
+  load_view();
   build_layout();
+}
+
+namespace {
+
+// A value on one line: newlines and backslashes escaped.
+std::string view_escape(std::string_view s) {
+  std::string out;
+  for (char c : s) {
+    if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else out += c;
+  }
+  return out;
+}
+
+std::string view_unescape(std::string_view s) {
+  std::string out;
+  for (size_t i = 0; i < s.size(); i++) {
+    if (s[i] == '\\' && i + 1 < s.size()) {
+      out += s[++i] == 'n' ? '\n' : s[i];
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+constexpr size_t kViewHistory = 100;  // command lines kept
+
+}  // namespace
+
+// "key value" lines; one "command" line per history entry, oldest first.
+std::string App::view_state() const {
+  const char* density = filters_.density == Density::Minimal ? "minimal"
+                        : filters_.density == Density::Full  ? "full"
+                                                             : "normal";
+  // A live chat is remembered by its transcript: after a restart it is a
+  // stored chat to resume.
+  const std::string chat = selected_live_ ? selected_live_->transcript() : selected_path_;
+  std::string s;
+  s += "density " + std::string(density) + "\n";
+  s += "tab " + std::to_string(tab_) + "\n";
+  s += "folder " + view_escape(project_path_) + "\n";
+  s += "sub " + view_escape(sub_) + "\n";
+  s += "chat " + view_escape(chat) + "\n";
+  s += "all-folders " + std::string(all_folders_ ? "on" : "off") + "\n";
+  s += "chat-filter " + std::string(chat_filter_ ? "on" : "off") + "\n";
+  s += "diff-span " + std::to_string(diff_.span) + "\n";
+  s += "diff-by " + std::string(diff_.by_chat ? "chat" : "file") + "\n";
+  s += "diff-selected " + view_escape(diff_.sel_key) + "\n";
+  const size_t from = cmd_history_.size() > kViewHistory ? cmd_history_.size() - kViewHistory : 0;
+  for (size_t i = from; i < cmd_history_.size(); i++) s += "command " + view_escape(cmd_history_[i]) + "\n";
+  return s;
+}
+
+void App::load_view() {
+  std::string buf;
+  const std::string_view text = fs::read_prefix(config_dir() + "/view", 1u << 20, buf);
+  for (size_t at = 0; at < text.size();) {
+    size_t nl = text.find('\n', at);
+    if (nl == std::string_view::npos) nl = text.size();
+    const std::string_view line = text.substr(at, nl - at);
+    at = nl + 1;
+    const size_t sp = line.find(' ');
+    const std::string_view key = line.substr(0, sp);
+    const std::string value = sp == std::string_view::npos ? std::string() : view_unescape(line.substr(sp + 1));
+    if (key == "density") {
+      filters_.density = value == "minimal" ? Density::Minimal : value == "full" ? Density::Full : Density::Normal;
+    } else if (key == "tab") {
+      const size_t t = size_t(std::atoi(value.c_str()));
+      if (t < tabs_.size()) tab_ = t;
+    } else if (key == "folder") {
+      project_path_ = value;
+    } else if (key == "sub") {
+      sub_ = value;
+    } else if (key == "chat") {
+      selected_path_ = value;
+    } else if (key == "all-folders") {
+      all_folders_ = value == "on";
+    } else if (key == "chat-filter") {
+      chat_filter_ = value == "on";
+    } else if (key == "diff-span") {
+      diff_.span = std::atoi(value.c_str());
+    } else if (key == "diff-by") {
+      diff_.by_chat = value == "chat";
+    } else if (key == "diff-selected") {
+      diff_.sel_key = value;
+    } else if (key == "command" && !value.empty()) {
+      cmd_history_.push_back(value);
+    }
+  }
+  if (all_folders_) chat_filter_ = false;
+  saved_view_ = view_state();
+}
+
+void App::save_view_if_changed() {
+  std::string now = view_state();
+  if (now == saved_view_) return;
+  fs::make_dirs(config_dir());
+  const std::string path = config_dir() + "/view", tmp = path + ".tmp";
+  if (FILE* f = fopen(tmp.c_str(), "w")) {
+    const bool ok = fwrite(now.data(), 1, now.size(), f) == now.size();
+    if (fclose(f) == 0 && ok) rename(tmp.c_str(), path.c_str());
+    else unlink(tmp.c_str());
+  }
+  saved_view_ = std::move(now);
 }
 
 App::~App() = default;
@@ -1492,6 +1601,7 @@ int App::run() {
   std::vector<uint32_t> evicted;
   while (running_) {
     bool dirty = service();
+    save_view_if_changed();
 
     // A new theme: the terminal is given its background and repainted.
     if (const Color bg = theme().bg; bg != shown_bg) {

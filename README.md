@@ -457,6 +457,11 @@ command.
 :quit            stop every agent and quit
 ```
 
+How the view was left comes back after a restart: the density, the tab, the
+folder, sub-project and chat selected, the sidebar's "All" filters, the Diff
+tab's span and grouping, and the last hundred command lines. They are kept in
+`~/.config/mico/view`, beside the split sizes in `~/.config/mico/layout`.
+
 `:help` opens the same list as a palette, so a command can be run by clicking
 it rather than remembering it; typing narrows it (`se` finds `search`,
 `select`, `sessions`), and Enter runs the top match. Up and Down on the

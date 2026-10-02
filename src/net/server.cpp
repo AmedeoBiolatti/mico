@@ -139,6 +139,7 @@ int run_daemon() {
   Color theme_bg = active_theme().bg;
   while (!g_stop && app.running()) {
     bool dirty = app.service();
+    app.save_view_if_changed();
     web.sync();
     web.pump();
 

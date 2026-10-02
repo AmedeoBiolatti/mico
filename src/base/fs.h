@@ -19,6 +19,12 @@ inline std::string home() {
   return h ? h : ".";
 }
 
+// Makes `dir` and any of its parents that are missing, private to the user.
+inline void make_dirs(const std::string& dir) {
+  for (size_t i = 1; i <= dir.size(); i++)
+    if (i == dir.size() || dir[i] == '/') mkdir(dir.substr(0, i).c_str(), 0700);
+}
+
 inline bool exists(const std::string& path) {
   struct stat st{};
   return stat(path.c_str(), &st) == 0;

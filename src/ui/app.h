@@ -39,6 +39,10 @@ class App {
   // Input and agent output wake the loop on their own; this only covers what
   // the clock moves. An idle mico wakes once a second, for relative times.
   int idle_timeout_ms() const;
+  // Writes the view down (see load_view()) when it has changed since it was
+  // last written. The interactive loops call it; a --dump or a test leaves
+  // the file alone.
+  void save_view_if_changed();
   int dump(int w, int h);         // render one frame as plain text to stdout
 
   // Headless driving, used by the daemon. The daemon owns the event loop and
@@ -335,6 +339,12 @@ class App {
   void build_layout();
   void load_layout();
   void save_layout();
+  // How the view was left, kept in ~/.config/mico/view: the density, the tab,
+  // the folder, sub-project and chat selected, the sidebar's filters, the
+  // Diff tab's choices and the command history.
+  void load_view();
+  std::string view_state() const;
+  std::string saved_view_;  // what the file holds
   void show_tab(size_t i);
   void reap_sessions();
   void render(Surface& s);

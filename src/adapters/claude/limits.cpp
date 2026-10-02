@@ -91,8 +91,7 @@ int claude_status_line() {
 
   if (has5 || has7) {
     const std::string dir = state_dir(), path = limits_path(), tmp = path + ".tmp." + std::to_string(getpid());
-    for (size_t i = 1; i <= dir.size(); i++)
-      if (i == dir.size() || dir[i] == '/') mkdir(dir.substr(0, i).c_str(), 0700);
+    fs::make_dirs(dir);
     if (FILE* f = fopen(tmp.c_str(), "w")) {
       if (has5) fprintf(f, "5h %.1f %lld\n", pct5, (long long)reset5);
       if (has7) fprintf(f, "7d %.1f %lld\n", pct7, (long long)reset7);

@@ -2247,6 +2247,29 @@ int run_selftest() {
     check(!c2.in_flight_tool(&nm, &sm), "a tool with a result is no longer in flight");
   }
 
+  // The view is kept across restarts: density, tab, the sidebar's filters,
+  // the command history. Written only when it changed.
+  {
+    const std::string path = config_dir() + "/view";
+    unlink(path.c_str());
+    {
+      App a;
+      a.save_view_if_changed();
+      check(access(path.c_str(), F_OK) != 0, "view: nothing changed, nothing written");
+      a.filters().density = Density::Full;
+      a.open_tab(4);
+      a.set_all_folders(true);
+      a.save_view_if_changed();
+    }
+    App b;
+    std::string buf;
+    const std::string_view kept = fs::read_prefix(path, 4096, buf);
+    check(b.filters().density == Density::Full && b.filtering() && b.all_folders() &&
+              kept.find("tab 4\n") != std::string_view::npos,
+          "view: density, tab and filters come back after a restart");
+    unlink(path.c_str());
+  }
+
   // A tracked folder can be gone (an unmounted drive); spawning there must not
   // just make a dead pane.
   {
