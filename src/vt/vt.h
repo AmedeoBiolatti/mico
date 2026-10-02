@@ -47,6 +47,10 @@ class Vt {
 
   VtRow& line(int y);
   void put(char32_t cp, int w);
+  // A code point that may belong to the glyph just printed: an emoji's
+  // selector, skin tone or ZWJ partner, a flag's second letter, a combining
+  // mark. Joins it to that cell when it does and says so.
+  bool extend(char32_t cp);
   // Bulk path for a run of printable ASCII, which is nearly all agent output.
   void put_ascii_run(std::string_view s);
   void newline();
@@ -96,6 +100,11 @@ class Vt {
   std::string intermediates_;
   std::vector<int> nums_;
   std::string utf8_;  // partial multi-byte character across write() calls
+  // The glyph put() printed last, and where the cursor was left after it: a
+  // code point extends it only if nothing has happened in between.
+  char32_t last_cp_ = 0;
+  int last_x_ = -1, last_y_ = -1, after_x_ = -1;
+  bool after_wrap_ = false;
   uint64_t gen_ = 0;
   static uint64_t next_generation() {
     static uint64_t n = 0;

@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <random>
+#include <map>
 #include <unordered_set>
 #include <utility>
 #include <string>
@@ -4938,15 +4939,31 @@ int run_selftest() {
         const std::string t = seg_text(sg);
         row += t;
         red_bold |= t == "FAIL" && sg.ink == md::Ink::Ansi1 && (sg.attr & md::kAttrBold);
-        green |= t == "green" && sg.ink == md::Ink::Ansi10;
+        green |= t == "green" && sg.ink == md::Ink::Text && md::paint(sg.paint).fg == 0x00FF00;
         path_link |= t == "src/app.py:3" && sg.link && links::url(sg.link) == "file://" + dir + "/src/app.py#L3";
       }
       settled |= row == "done";
     }
-    check(red_bold && green, "output: ANSI colours and bold are kept, 256-colour mapped to the sixteen");
+    check(red_bold && green, "output: ANSI colours and bold are kept, a 256-colour one exactly");
     check(settled, "output: a carriage-return redraw shows only its last state");
     check(path_link, "output: a file path in output is a link");
     check(lines.size() == 3, "output: one row per line, no escape bytes left as text");
+
+    segs.clear();
+    lines.clear();
+    const std::string painted =
+        "\x1b[38;2;255;100;0mHOT\x1b[48;5;196mON\x1b[39;44mBLUE\x1b[49;38;5;3mOLIVE\x1b[0m plain\n";
+    md::render_output(painted, 0, false, 60, o, nullptr);
+    std::map<std::string, md::Seg> by_text;
+    for (const auto& sg : segs) by_text[seg_text(sg)] = sg;
+    const auto paint_of = [&](const char* t) { return md::paint(by_text[t].paint); };
+    check(paint_of("HOT").fg == 0xFF6400 && paint_of("HOT").bg == kDefaultColor &&
+              paint_of("ON").fg == 0xFF6400 && paint_of("ON").bg == 0xFF0000,
+          "output: 24-bit and 256-colour foregrounds and backgrounds are kept exactly");
+    check(by_text["BLUE"].ink == md::Ink::Text && paint_of("BLUE").fg == kDefaultColor &&
+              paint_of("BLUE").bg == md::palette(4) && by_text["OLIVE"].ink == md::Ink::Ansi3 &&
+              !by_text["OLIVE"].paint && !by_text[" plain"].paint,
+          "output: palette colours stay the theme's, and resets clear what they name");
 
     segs.clear();
     lines.clear();

@@ -4,8 +4,11 @@
 #include <emmintrin.h>
 #endif
 
-#include <cstring>
 #include <algorithm>
+#include <cstring>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
 
 namespace mico::text {
 namespace {
@@ -19,17 +22,37 @@ constexpr Range kZero[] = {
     {0x07A6, 0x07B0}, {0x0816, 0x0819}, {0x08E3, 0x0903}, {0x093A, 0x093C},
     {0x0951, 0x0957}, {0x1AB0, 0x1AFF}, {0x1DC0, 0x1DFF}, {0x200B, 0x200F},
     {0x20D0, 0x20F0}, {0x2CEF, 0x2CF1}, {0xFE00, 0xFE0F}, {0xFE20, 0xFE2F},
-    {0xE0100, 0xE01EF},
+    {0xE0020, 0xE007F}, {0xE0100, 0xE01EF},
 };
 
-// Double-width: CJK, Hangul, and the emoji blocks agents actually emit.
+// Double-width: what Unicode 15 calls East Asian Wide or Fullwidth, the table
+// terminals' wcwidth is built from, so a column here is a column there. The
+// two supplemental emoji blocks count whole, so emoji newer than the table
+// still take two.
 constexpr Range kWide[] = {
-    {0x1100, 0x115F},   {0x2E80, 0x303E},   {0x3041, 0x33FF},
-    {0x3400, 0x4DBF},   {0x4E00, 0x9FFF},   {0xA000, 0xA4CF},
-    {0xAC00, 0xD7A3},   {0xF900, 0xFAFF},   {0xFE30, 0xFE6F},
-    {0xFF00, 0xFF60},   {0xFFE0, 0xFFE6},   {0x1F004, 0x1F004},
-    {0x1F300, 0x1F64F}, {0x1F680, 0x1F6FF}, {0x1F900, 0x1F9FF},
-    {0x1FA70, 0x1FAFF}, {0x20000, 0x2FFFD}, {0x30000, 0x3FFFD},
+    {0x1100, 0x115F}, {0x231A, 0x231B}, {0x2329, 0x232A}, {0x23E9, 0x23EC}, {0x23F0, 0x23F0},
+    {0x23F3, 0x23F3}, {0x25FD, 0x25FE}, {0x2614, 0x2615}, {0x2648, 0x2653}, {0x267F, 0x267F},
+    {0x2693, 0x2693}, {0x26A1, 0x26A1}, {0x26AA, 0x26AB}, {0x26BD, 0x26BE}, {0x26C4, 0x26C5},
+    {0x26CE, 0x26CE}, {0x26D4, 0x26D4}, {0x26EA, 0x26EA}, {0x26F2, 0x26F3}, {0x26F5, 0x26F5},
+    {0x26FA, 0x26FA}, {0x26FD, 0x26FD}, {0x2705, 0x2705}, {0x270A, 0x270B}, {0x2728, 0x2728},
+    {0x274C, 0x274C}, {0x274E, 0x274E}, {0x2753, 0x2755}, {0x2757, 0x2757}, {0x2795, 0x2797},
+    {0x27B0, 0x27B0}, {0x27BF, 0x27BF}, {0x2B1B, 0x2B1C}, {0x2B50, 0x2B50}, {0x2B55, 0x2B55},
+    {0x2E80, 0x2E99}, {0x2E9B, 0x2EF3}, {0x2F00, 0x2FD5}, {0x2FF0, 0x2FFB}, {0x3000, 0x3029},
+    {0x302E, 0x303E}, {0x3041, 0x3096}, {0x309B, 0x30FF}, {0x3105, 0x312F}, {0x3131, 0x318E},
+    {0x3190, 0x31E3}, {0x31F0, 0x321E}, {0x3220, 0x3247}, {0x3250, 0x4DBF}, {0x4E00, 0xA48C},
+    {0xA490, 0xA4C6}, {0xA960, 0xA97C}, {0xAC00, 0xD7A3}, {0xF900, 0xFAFF}, {0xFE10, 0xFE19},
+    {0xFE30, 0xFE52}, {0xFE54, 0xFE66}, {0xFE68, 0xFE6B}, {0xFF01, 0xFF60}, {0xFFE0, 0xFFE6},
+    {0x16FE0, 0x16FE3}, {0x16FF0, 0x16FF1}, {0x17000, 0x187F7}, {0x18800, 0x18CD5}, {0x18D00, 0x18D08},
+    {0x1AFF0, 0x1AFF3}, {0x1AFF5, 0x1AFFB}, {0x1AFFD, 0x1AFFE}, {0x1B000, 0x1B122}, {0x1B132, 0x1B132},
+    {0x1B150, 0x1B152}, {0x1B155, 0x1B155}, {0x1B164, 0x1B167}, {0x1B170, 0x1B2FB}, {0x1F004, 0x1F004},
+    {0x1F0CF, 0x1F0CF}, {0x1F18E, 0x1F18E}, {0x1F191, 0x1F19A}, {0x1F200, 0x1F202}, {0x1F210, 0x1F23B},
+    {0x1F240, 0x1F248}, {0x1F250, 0x1F251}, {0x1F260, 0x1F265}, {0x1F300, 0x1F320}, {0x1F32D, 0x1F335},
+    {0x1F337, 0x1F37C}, {0x1F37E, 0x1F393}, {0x1F3A0, 0x1F3CA}, {0x1F3CF, 0x1F3D3}, {0x1F3E0, 0x1F3F0},
+    {0x1F3F4, 0x1F3F4}, {0x1F3F8, 0x1F43E}, {0x1F440, 0x1F440}, {0x1F442, 0x1F4FC}, {0x1F4FF, 0x1F53D},
+    {0x1F54B, 0x1F54E}, {0x1F550, 0x1F567}, {0x1F57A, 0x1F57A}, {0x1F595, 0x1F596}, {0x1F5A4, 0x1F5A4},
+    {0x1F5FB, 0x1F64F}, {0x1F680, 0x1F6C5}, {0x1F6CC, 0x1F6CC}, {0x1F6D0, 0x1F6D2}, {0x1F6D5, 0x1F6D7},
+    {0x1F6DC, 0x1F6DF}, {0x1F6EB, 0x1F6EC}, {0x1F6F4, 0x1F6FC}, {0x1F7E0, 0x1F7EB}, {0x1F7F0, 0x1F7F0},
+    {0x1F900, 0x1F9FF}, {0x1FA70, 0x1FAFF}, {0x20000, 0x2FFFD}, {0x30000, 0x3FFFD},
 };
 
 template <size_t N>
@@ -80,6 +103,10 @@ char32_t decode(std::string_view s, size_t& i) {
 }
 
 void encode(char32_t cp, std::string& out) {
+  if (cp >= kGlyphBase) {
+    out += glyph_text(cp);
+    return;
+  }
   if (cp < 0x80) {
     out.push_back(char(cp));
   } else if (cp < 0x800) {
@@ -110,8 +137,93 @@ int cp_width(char32_t cp) {
 
 int str_width(std::string_view s) {
   int w = 0;
-  for (size_t i = 0; i < s.size();) w += cp_width(decode(s, i));
+  for (size_t i = 0; i < s.size();) {
+    if (uint8_t(s[i]) < 0x80) {
+      w += cp_width(char32_t(s[i++]));
+      continue;
+    }
+    int gw;
+    i = glyph_end(s, i, &gw);
+    w += gw;
+  }
   return w;
+}
+
+namespace {
+
+constexpr char32_t kZwj = 0x200D, kVs15 = 0xFE0E, kVs16 = 0xFE0F;
+bool regional(char32_t cp) { return cp >= 0x1F1E6 && cp <= 0x1F1FF; }
+bool skin_tone(char32_t cp) { return cp >= 0x1F3FB && cp <= 0x1F3FF; }
+
+// Sequences seen so far, each under one id for as long as the process runs.
+// There are only so many emoji, so this stays small; a deque, so a view of
+// an entry outlives later ones being added. The lock is for this layer's
+// worker-thread users; plain code points, nearly everything, never take it.
+struct Glyphs {
+  std::mutex mu;
+  std::deque<std::string> text;
+  std::unordered_map<std::string_view, char32_t> ids;
+};
+Glyphs& glyphs() {
+  static Glyphs* g = new Glyphs;  // never destroyed: cells outlive statics
+  return *g;
+}
+constexpr size_t kMaxGlyphs = 1 << 16;
+
+}  // namespace
+
+size_t glyph_end(std::string_view s, size_t i, int* width) {
+  const char32_t base = decode(s, i);
+  int w = cp_width(base);
+  if (base < 0x80 || w == 0) {
+    *width = w;
+    return i;
+  }
+  bool pair = regional(base);  // a flag still waiting for its second letter
+  while (i < s.size()) {
+    size_t j = i;
+    const char32_t cp = decode(s, j);
+    if (cp == kVs16) {
+      if (w == 1) w = 2;  // the emoji form of a symbol drawn as text by default
+    } else if (cp == kVs15) {
+      // The text form: as wide as it already was.
+    } else if (cp == kZwj) {
+      // Joins the next picture into this one: 👩 ZWJ 💻 is one glyph.
+      if (j < s.size() && uint8_t(s[j]) >= 0x80) decode(s, j);
+    } else if (pair && regional(cp)) {
+      pair = false;
+      w = 2;
+    } else if (!skin_tone(cp) && cp_width(cp) != 0) {
+      break;
+    }
+    i = j;
+  }
+  *width = w;
+  return i;
+}
+
+char32_t next_glyph(std::string_view s, size_t& i, int* width) {
+  const size_t at = i;
+  size_t one = i;
+  const char32_t cp = decode(s, one);
+  i = glyph_end(s, at, width);
+  if (i == one) return cp;
+  const std::string_view seq = s.substr(at, i - at);
+  Glyphs& g = glyphs();
+  std::lock_guard lock(g.mu);
+  if (auto it = g.ids.find(seq); it != g.ids.end()) return it->second;
+  if (g.text.size() >= kMaxGlyphs) return cp;  // full: the first code point alone
+  const char32_t id = kGlyphBase + char32_t(g.text.size());
+  g.ids.emplace(g.text.emplace_back(seq), id);
+  return id;
+}
+
+std::string_view glyph_text(char32_t id) {
+  if (id < kGlyphBase) return {};
+  Glyphs& g = glyphs();
+  std::lock_guard lock(g.mu);
+  const size_t k = size_t(id - kGlyphBase);
+  return k < g.text.size() ? std::string_view(g.text[k]) : std::string_view();
 }
 
 std::string ellipsize(std::string_view s, int max_cols) {
@@ -121,8 +233,8 @@ std::string ellipsize(std::string_view s, int max_cols) {
   int w = 0;
   for (size_t i = 0; i < s.size();) {
     size_t start = i;
-    char32_t cp = decode(s, i);
-    int cw = cp_width(cp);
+    int cw;
+    i = glyph_end(s, i, &cw);
     if (w + cw > max_cols - 1) break;
     out.append(s.substr(start, i - start));
     w += cw;
@@ -178,9 +290,9 @@ void wrap_spans(std::string_view s, int cols, std::vector<Span>& out, size_t max
           cw = b >= 0x20 && b < 0x7F ? 1 : 0;
           i++;
         } else {
-          cp = decode(s, i);
+          cp = U'x';  // only a space matters below, and this is never one
+          i = glyph_end(s, i, &cw);
           if (i > line_end) i = line_end;
-          cw = cp_width(cp);
         }
         if (w + cw > cols) {
           size_t cut = (last_break != std::string_view::npos && last_break > seg) ? last_break

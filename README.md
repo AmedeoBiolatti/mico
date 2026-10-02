@@ -774,11 +774,20 @@ and fits it to its cells. Other formats are decoded and compressed on worker
 threads, never in the frame: a picture shows as soon as it is ready, and those
 a screen above and below the view are made ready before they scroll in.
 
-**Tool output.** Command output keeps its ANSI colours (mapped onto a
-sixteen-colour palette tuned to the theme, bold and dim included), and a
+**Tool output.** Command output keeps its ANSI colours: the sixteen of a
+terminal palette as the theme tunes them, 256-colour and 24-bit ones exactly,
+backgrounds included, with bold, dim, italic, underline and strike-through. A
 progress bar's carriage-return redraws settle to their last state. A file's
 contents — a `Read` result, or `cat`/`head`/`sed -n` of one file — are
 coloured as that file's language, with `cat -n`/Read line numbers set apart.
+
+**Emoji.** An emoji takes the two columns terminals give it, and one made of
+several code points — ⚠️ with its emoji selector, 👍🏽 with a skin tone, a flag
+such as 🇮🇹, a joined 👩‍💻 — is kept whole in one cell, in the chat, the lists
+and an agent's own screen alike. Widths follow Unicode's East Asian Width, the
+table terminals' wcwidth uses; after a glyph a terminal may measure otherwise
+(a sequence, or an emoji newer than its table) the cursor is placed again, so
+a disagreement can only change how that glyph looks, never shift the row.
 
 **JSON results.** A tool result that is one JSON object or array (an MCP
 tool's answer, an API response) is laid out and coloured: collapsed, it is a

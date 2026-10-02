@@ -141,8 +141,49 @@ void Vt::put(char32_t cp, int w) {
   r[size_t(cx_)] = Cell{cp, cur_, uint8_t(w)};
   if (w == 2 && cx_ + 1 < w_) r[size_t(cx_ + 1)] = Cell{U' ', cur_, 0};
 
+  last_cp_ = cp;
+  last_x_ = cx_;
+  last_y_ = cy_;
   cx_ += w;
   if (cx_ >= w_) { cx_ = w_ - 1; wrap_pending_ = true; }
+  after_x_ = cx_;
+  after_wrap_ = wrap_pending_;
+}
+
+bool Vt::extend(char32_t cp) {
+  const bool zero = text::cp_width(cp) == 0;
+  const bool flag = cp >= 0x1F1E6 && cp <= 0x1F1FF;
+  const bool tone = cp >= 0x1F3FB && cp <= 0x1F3FF;
+  // Anything else may still follow a ZWJ; the glyph rules below decide.
+  if (!zero && !flag && !tone && !(last_cp_ >= text::kGlyphBase && text::glyph_text(last_cp_).ends_with("\u200D")))
+    return false;
+  if (last_y_ != cy_ || after_x_ != cx_ || after_wrap_ != wrap_pending_ || last_x_ < 0) return zero;
+  VtRow& r = line(cy_);
+  if (size_t(last_x_) >= r.size() || r[size_t(last_x_)].cp != last_cp_) return zero;
+  Cell& c = r[size_t(last_x_)];
+
+  std::string seq;
+  text::encode(c.cp, seq);
+  text::encode(cp, seq);
+  size_t i = 0;
+  int w;
+  const char32_t g = text::next_glyph(seq, i, &w);
+  if (i != seq.size()) return zero;  // not one glyph: a mark on ASCII is dropped as before
+  c.cp = last_cp_ = g;
+  // The emoji selector or a flag's second letter widens it, when there is room.
+  if (w == 2 && c.width == 1 && last_x_ + 1 < w_) {
+    Cell& next = r[size_t(last_x_ + 1)];
+    if (next.width == 2 && last_x_ + 2 < w_) r[size_t(last_x_ + 2)] = Cell{U' ', cur_, 1};
+    c.width = 2;
+    next = Cell{U' ', c.st, 0};
+    if (!wrap_pending_) {
+      cx_++;
+      if (cx_ >= w_) { cx_ = w_ - 1; wrap_pending_ = true; }
+    }
+    after_x_ = cx_;
+    after_wrap_ = wrap_pending_;
+  }
+  return true;
 }
 
 // Writes a run of single-width ASCII without going through put() per byte.
@@ -421,7 +462,7 @@ void Vt::write(std::string_view bytes) {
         size_t k = 0;
         char32_t cp = text::decode(utf8_, k);
         utf8_.clear();
-        put(cp, std::max(1, text::cp_width(cp)));
+        if (!extend(cp)) put(cp, std::max(1, text::cp_width(cp)));
         break;
       }
 

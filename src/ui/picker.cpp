@@ -526,8 +526,8 @@ void Picker::draw_label(Painter& p, int x, int y, std::string_view s, size_t bas
   size_t m = 0;
   for (size_t i = 0; i < s.size();) {
     const size_t at = base + i;
-    const char32_t cp = text::decode(s, i);
-    const int cw = text::cp_width(cp);
+    int cw;
+    const char32_t cp = text::next_glyph(s, i, &cw);
     if (cw <= 0) continue;
     if (!fits && x + cw > limit - 1) {
       p.put(x, y, U'…', st);

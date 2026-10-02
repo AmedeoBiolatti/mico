@@ -139,7 +139,8 @@ void put_oneline(Arena& a, std::string_view s, int max_cols) {
     }
     if (cp < 0x20) continue;
     if (pending_space) { a.put(" "); w++; pending_space = false; }
-    int cw = text::cp_width(cp);
+    int cw;
+    i = text::glyph_end(s, start, &cw);
     if (w + cw > max_cols) break;
     a.put(s.substr(start, i - start));
     w += cw;
@@ -1848,6 +1849,16 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
         if (sg.attr & md::kAttrItalic) st.a |= attr::kItalic;
         if (sg.attr & md::kAttrUnderline) st.a |= attr::kUnderline;
         if (sg.attr & md::kAttrStrike) st.a |= attr::kStrike;
+      }
+      if (sg.paint) {
+        // The output's own colours, exactly; its palette colours are the theme's.
+        const md::Paint pt = md::paint(sg.paint);
+        const auto colour = [&](Color c) {
+          const int n = md::palette_index(c);
+          return n >= 0 ? th.ansi[n] : c;
+        };
+        if (pt.fg != kDefaultColor) st.fg = colour(pt.fg);
+        if (pt.bg != kDefaultColor) st.bg = colour(pt.bg);
       }
       if (sg.link) {
         // A link in code keeps its colour; the underline says it is one.

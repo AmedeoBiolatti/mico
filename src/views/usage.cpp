@@ -63,9 +63,9 @@ std::string trunc(std::string_view s, int w) {
   std::string out;
   int used = 0;
   for (size_t i = 0; i < s.size();) {
-    size_t j = i;
-    const char32_t cp = text::decode(s, j);
-    const int cw = std::max(1, text::cp_width(cp));
+    int cw;
+    const size_t j = text::glyph_end(s, i, &cw);
+    cw = std::max(1, cw);
     if (used + cw > w) break;
     out.append(s.substr(i, j - i));
     used += cw;

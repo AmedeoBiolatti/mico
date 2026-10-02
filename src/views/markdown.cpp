@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstring>
 #include <algorithm>
+#include <mutex>
 #include <ctime>
 #include <unordered_map>
 
@@ -909,9 +910,10 @@ static void emit_code(std::string_view text, uint32_t base, bool in_scratch, std
         continue;
       }
       const size_t at = i;
-      const char32_t cp = text::decode(line, i);
+      int cw;
+      i = text::glyph_end(line, i, &cw);
       exp.append(line, at, i - at);
-      col += std::max(0, text::cp_width(cp));
+      col += std::max(0, cw);
     }
     src_off = out.scratch->add(exp).off | kScratchBit;
     src = exp;
@@ -956,8 +958,10 @@ static void emit_code(std::string_view text, uint32_t base, bool in_scratch, std
   int space_w = 0;
   for (size_t i = 0; i < src.size();) {
     const size_t at = i;
-    const char32_t cp = text::decode(src, i);
-    const int cw = std::max(0, text::cp_width(cp));
+    const char32_t cp = uint8_t(src[at]) < 0x80 ? char32_t(src[at]) : U'\uFFFD';  // only ASCII is tested
+    int cw;
+    i = text::glyph_end(src, i, &cw);
+    cw = std::max(0, cw);
     if (w + cw > limit && at > start) {
       size_t cut = at;
       if (space != std::string_view::npos && space > start && space_w * 20 >= limit * 7) cut = space;
@@ -1435,48 +1439,40 @@ void find_paths(std::string_view s, const std::string& base, const std::vector<L
   }
 }
 
-// The nearest of the sixteen colours to an RGB one, for 256-colour and
-// truecolour output.
-int nearest16(int r, int g, int b) {
-  static constexpr int kPal[16][3] = {{0, 0, 0},       {205, 0, 0},   {0, 205, 0},   {205, 205, 0},
-                                      {0, 0, 238},     {205, 0, 205}, {0, 205, 205}, {229, 229, 229},
-                                      {127, 127, 127}, {255, 0, 0},   {0, 255, 0},   {255, 255, 0},
-                                      {92, 92, 255},   {255, 0, 255}, {0, 255, 255}, {255, 255, 255}};
-  int best = 7, bd = 1 << 30;
-  for (int i = 0; i < 16; i++) {
-    const int dr = r - kPal[i][0], dg = g - kPal[i][1], db = b - kPal[i][2];
-    const int d = dr * dr * 3 + dg * dg * 4 + db * db * 2;
-    if (d < bd) { bd = d; best = i; }
-  }
-  return best;
-}
-
-int color256(int n) {
-  if (n < 16) return n;
+// The xterm palette's colours 16 to 255: a 6×6×6 cube, then 24 greys.
+Color xterm256(int n) {
   if (n >= 232) {
     const int v = 8 + (n - 232) * 10;
-    return nearest16(v, v, v);
+    return Color(v << 16 | v << 8 | v);
   }
   n -= 16;
   static constexpr int kLevel[6] = {0, 95, 135, 175, 215, 255};
-  return nearest16(kLevel[n / 36], kLevel[(n / 6) % 6], kLevel[n % 6]);
+  return Color(kLevel[n / 36] << 16 | kLevel[(n / 6) % 6] << 8 | kLevel[n % 6]);
 }
 
 // Output with escape sequences: their text, and its colour runs. Only SGR
-// survives as colour; every other sequence goes. A carriage return within a
-// line starts it again, the way a progress bar redraws itself.
+// survives, as colour; every other sequence goes. The sixteen colours of a
+// terminal palette are the theme's; any other colour, and a background, is
+// kept exactly, as a paint. A carriage return within a line starts it again,
+// the way a progress bar redraws itself.
 void strip_ansi(std::string_view in, std::string& text, std::vector<Seg>& runs) {
   text.clear();
   runs.clear();
-  int fg = -1;
+  int fg = -1;                  // a palette colour, drawn as its Ink
+  Color exact = kDefaultColor;  // or a colour of its own
+  Color bg = kDefaultColor;
   uint8_t attr = 0;
   size_t line_start = 0;
+  uint16_t pid = 0;
+  const auto repaint = [&] {
+    pid = exact == kDefaultColor && bg == kDefaultColor ? 0 : paint_id(Paint{exact, bg});
+  };
   const auto ink = [&] { return fg < 0 ? Ink::Text : Ink(int(Ink::Ansi0) + fg); };
   const auto mark = [&] {
     if (!runs.empty() && runs.back().off + runs.back().len == text.size() && runs.back().ink == ink() &&
-        runs.back().attr == attr)
+        runs.back().attr == attr && runs.back().paint == pid)
       return;
-    runs.push_back(Seg{uint32_t(text.size()), 0, ink(), attr});
+    runs.push_back(Seg{uint32_t(text.size()), 0, ink(), attr, 0, pid});
   };
   mark();
   for (size_t i = 0; i < in.size();) {
@@ -1495,28 +1491,48 @@ void strip_ansi(std::string_view in, std::string& text, std::vector<Seg>& runs) 
           p.push_back(cur < 0 ? 0 : cur);
           for (size_t j = 0; j < p.size(); j++) {
             const int v = p[j];
-            if (v == 0) { fg = -1; attr = 0; }
+            if (v == 0) { fg = -1; exact = bg = kDefaultColor; attr = 0; }
             else if (v == 1) attr |= kAttrBold;
             else if (v == 2) attr |= kAttrDim;
             else if (v == 3) attr |= kAttrItalic;
             else if (v == 4) attr |= kAttrUnderline;
+            else if (v == 9) attr |= kAttrStrike;
             else if (v == 22) attr &= uint8_t(~(kAttrBold | kAttrDim));
             else if (v == 23) attr &= uint8_t(~kAttrItalic);
             else if (v == 24) attr &= uint8_t(~kAttrUnderline);
-            else if (v >= 30 && v <= 37) fg = v - 30;
-            else if (v >= 90 && v <= 97) fg = v - 90 + 8;
-            else if (v == 39) fg = -1;
+            else if (v == 29) attr &= uint8_t(~kAttrStrike);
+            else if (v >= 30 && v <= 37) { fg = v - 30; exact = kDefaultColor; }
+            else if (v >= 90 && v <= 97) { fg = v - 90 + 8; exact = kDefaultColor; }
+            else if (v == 39) { fg = -1; exact = kDefaultColor; }
+            else if (v >= 40 && v <= 47) bg = palette(v - 40);
+            else if (v >= 100 && v <= 107) bg = palette(v - 100 + 8);
+            else if (v == 49) bg = kDefaultColor;
             else if ((v == 38 || v == 48) && j + 1 < p.size()) {
-              // Extended colours: taken for the foreground, skipped for the background.
+              // 5;n picks from the 256 (its first sixteen are the palette's);
+              // 2;r;g;b says the colour outright.
+              Color to = kDefaultColor;
+              int pal = -1;
               if (p[j + 1] == 5 && j + 2 < p.size()) {
-                if (v == 38) fg = color256(p[j + 2]);
+                const int n = std::clamp(p[j + 2], 0, 255);
+                if (n < 16) pal = n;
+                else to = xterm256(n);
                 j += 2;
               } else if (p[j + 1] == 2 && j + 4 < p.size()) {
-                if (v == 38) fg = nearest16(p[j + 2], p[j + 3], p[j + 4]);
+                to = Color(std::clamp(p[j + 2], 0, 255) << 16 | std::clamp(p[j + 3], 0, 255) << 8 |
+                           std::clamp(p[j + 4], 0, 255));
                 j += 4;
+              } else {
+                continue;
+              }
+              if (v == 38) {
+                fg = pal;
+                exact = to;
+              } else {
+                bg = pal >= 0 ? palette(pal) : to;
               }
             }
           }
+          repaint();
           mark();
         }
         i = k + 1;
@@ -1551,6 +1567,38 @@ void strip_ansi(std::string_view in, std::string& text, std::vector<Seg>& runs) 
 }
 
 }  // namespace
+
+namespace {
+// Every paint seen, by id; output uses a handful of colours, a gradient a few
+// hundred, so this stays small. Full, a new paint is dropped to its ink.
+struct Paints {
+  std::mutex mu;
+  std::vector<Paint> all{Paint{}};  // id 0: none
+  std::unordered_map<uint64_t, uint16_t> ids;
+};
+Paints& paints() {
+  static Paints* p = new Paints;  // never destroyed: laid-out rows outlive statics
+  return *p;
+}
+}  // namespace
+
+uint16_t paint_id(Paint p) {
+  Paints& ps = paints();
+  const uint64_t key = uint64_t(uint32_t(p.fg)) << 32 | uint32_t(p.bg);
+  std::lock_guard lock(ps.mu);
+  if (auto it = ps.ids.find(key); it != ps.ids.end()) return it->second;
+  if (ps.all.size() > 0xFFFF) return 0;
+  const auto id = uint16_t(ps.all.size());
+  ps.all.push_back(p);
+  ps.ids.emplace(key, id);
+  return id;
+}
+
+Paint paint(uint16_t id) {
+  Paints& ps = paints();
+  std::lock_guard lock(ps.mu);
+  return id < ps.all.size() ? ps.all[id] : Paint{};
+}
 
 void find_links(std::string_view s, const std::string& base, std::vector<LinkHit>& out) {
   out.clear();
@@ -1625,7 +1673,7 @@ void render_output(std::string_view text, uint32_t base, bool in_scratch, int co
     } else {
       for (const Seg& c : colour) {
         const size_t a = std::max<size_t>(c.off, pos), b = std::min<size_t>(c.off + c.len, nl);
-        if (a < b) runs.push_back(Seg{uint32_t(a), uint32_t(b - a), c.ink, c.attr});
+        if (a < b) runs.push_back(Seg{uint32_t(a), uint32_t(b - a), c.ink, c.attr, 0, c.paint});
       }
     }
     // Links cut the runs where they start and end.
@@ -1638,13 +1686,13 @@ void render_output(std::string_view text, uint32_t base, bool in_scratch, int co
         for (const auto& h : links_found) {
           const size_t la = pos + h.begin, lb = pos + h.end;
           if (lb <= a || la >= b) continue;
-          if (la > a) cut.push_back(Seg{uint32_t(a), uint32_t(la - a), r.ink, r.attr});
+          if (la > a) cut.push_back(Seg{uint32_t(a), uint32_t(la - a), r.ink, r.attr, 0, r.paint});
           const size_t s0 = std::max(a, la), e = std::min(b, lb);
-          cut.push_back(Seg{uint32_t(s0), uint32_t(e - s0), r.ink == Ink::Text ? Ink::Link : r.ink, r.attr,
-                            links::intern(h.target)});
+          cut.push_back(Seg{uint32_t(s0), uint32_t(e - s0), r.ink == Ink::Text && !r.paint ? Ink::Link : r.ink, r.attr,
+                            links::intern(h.target), r.paint});
           a = e;
         }
-        if (a < b) cut.push_back(Seg{uint32_t(a), uint32_t(b - a), r.ink, r.attr});
+        if (a < b) cut.push_back(Seg{uint32_t(a), uint32_t(b - a), r.ink, r.attr, 0, r.paint});
       }
       runs.swap(cut);
     }
@@ -1663,7 +1711,7 @@ void render_output(std::string_view text, uint32_t base, bool in_scratch, int co
       }
       for (const Seg& r : runs) {
         const size_t a = std::max<size_t>(r.off, lo), b = std::min<size_t>(size_t(r.off) + r.len, hi);
-        if (a < b) out.segs->push_back(Seg{ref + uint32_t(a), uint32_t(b - a), r.ink, r.attr, r.link});
+        if (a < b) out.segs->push_back(Seg{ref + uint32_t(a), uint32_t(b - a), r.ink, r.attr, r.link, r.paint});
       }
       out.lines->push_back(Line{first_seg, uint16_t(out.segs->size() - first_seg), 0});
       first = false;
@@ -1783,8 +1831,9 @@ void render_diff(std::string_view text, uint32_t base, bool in_scratch, int cols
       size_t i = 0;
       int w = 0;
       while (i < t.size()) {
-        size_t j = i;
-        const int cw = std::max(0, text::cp_width(text::decode(t, j)));
+        int cw;
+        const size_t j = text::glyph_end(t, i, &cw);
+        cw = std::max(0, cw);
         if (used + w + cw > cols) break;
         w += cw;
         i = j;

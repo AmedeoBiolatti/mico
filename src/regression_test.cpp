@@ -21,6 +21,8 @@
 #include "term/input.h"
 #include "views/chat_render.h"
 #include "views/views.h"
+#include "vt/vt.h"
+#include "term/encoder.h"
 
 namespace mico {
 namespace {
@@ -1767,6 +1769,48 @@ int run_regression_tests() {
     chat.set_draft("");
     chat.render(p, theme, filters);
     check(!chat.draft_shown(), "an empty draft clears it");
+  }
+
+  {
+    // Emoji: as wide as terminals draw them, and kept whole however many
+    // code points they are made of.
+    check(text::str_width("✅") == 2 && text::str_width("⚡") == 2 && text::str_width("🟢") == 2,
+          "emoji: emoji drawn as pictures are two columns");
+    check(text::str_width("⚠") == 1 && text::str_width("⚠️") == 2 && text::str_width("🌡") == 1,
+          "emoji: a symbol is one column until the selector asks for its picture");
+    check(text::str_width("🇮🇹") == 2 && text::str_width("👍🏽") == 2 && text::str_width("👩‍💻") == 2 &&
+              text::str_width("a⚠️b") == 4,
+          "emoji: flags, skin tones and joined emoji are one glyph of two columns");
+    std::vector<text::Span> spans;
+    text::wrap_spans("👩‍💻👩‍💻👩‍💻", 4, spans);
+    check(spans.size() == 2 && spans[0].off == 0 && spans[1].off == spans[0].len,
+          "emoji: wrapping never splits a joined emoji");
+
+    Surface sf;
+    sf.resize(12, 1);
+    Painter p(sf, Rect{0, 0, 12, 1});
+    const int drawn = p.text(0, 0, "a⚠️b👩‍💻c", Style{});
+    std::string glyph;
+    text::encode(sf.at(1, 0).cp, glyph);
+    check(drawn == 7 && sf.at(1, 0).width == 2 && glyph == "⚠️" && screen(sf).starts_with("a⚠️b👩‍💻c "),
+          "emoji: a cell holds the whole sequence and draws it back whole");
+
+    Surface front;
+    std::string out;
+    encode_frame(sf, front, out, true);
+    check(out.find("⚠️\x1b[1;4H") != std::string::npos && out.find("👩‍💻\x1b[1;7H") != std::string::npos,
+          "emoji: the cursor is placed again after a glyph a terminal may measure differently");
+
+    Vt vt;
+    vt.resize(20, 2);
+    vt.write("x👩‍💻y⚠");
+    vt.write("️z🇮");
+    vt.write("🇹!́");
+    std::string row;
+    for (const Cell& c : vt.row(0))
+      if (c.width) text::encode(c.cp, row);
+    check(row.starts_with("x👩‍💻y⚠️z🇮🇹! ") && vt.cursor().x == 10,
+          "emoji: an agent's emoji take the columns it gave them, across reads");
   }
 
   std::filesystem::remove_all(base);

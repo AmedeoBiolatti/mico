@@ -45,8 +45,9 @@ std::string fit(std::string_view s, int w) {
   int used = 0;
   for (size_t i = 0; i < s.size();) {
     const size_t at = i;
-    const char32_t cp = text::decode(s, i);
-    const int cw = std::max(1, text::cp_width(cp));
+    int cw;
+    i = text::glyph_end(s, i, &cw);
+    cw = std::max(1, cw);
     if (used + cw > w - 1) break;
     out.append(s.substr(at, i - at));
     used += cw;

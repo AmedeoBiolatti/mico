@@ -151,6 +151,16 @@ void append_link(std::string& o, uint16_t id) {
   o += "\x1b\\";
 }
 
+// Where a terminal's idea of a glyph's width may not be ours: a sequence (an
+// emoji with its selector, a flag, a joined family) or a wide symbol or emoji
+// its wcwidth may be too old to know. The cursor is placed again after one,
+// so a disagreement costs that glyph its look and never shifts the row.
+bool unsure_width(const Cell& c) {
+  if (c.st.a & attr::kImage) return false;
+  if (c.cp >= text::kGlyphBase) return true;
+  return c.width == 2 && (c.cp < 0x2E80 || c.cp >= 0x1F000);
+}
+
 void append_cup(std::string& o, int x, int y) {
   o += "\x1b[";
   append_uint(o, unsigned(y + 1));
@@ -195,7 +205,10 @@ bool encode_frame(const Surface& back, Surface& front, std::string& out, bool fu
         bool walkable = true;
         for (int k = cx; k < x; k++) {
           const Cell& g = back.at(k, y);
-          if (g.width != 1 || !(g.st == cur) || g.link != link) { walkable = false; break; }
+          if (g.width != 1 || !(g.st == cur) || g.link != link || unsure_width(g)) {
+            walkable = false;
+            break;
+          }
         }
         if (walkable) {
           for (int k = cx; k < x; k++) append_glyph(out, back.at(k, y), images);
@@ -216,7 +229,8 @@ bool encode_frame(const Surface& back, Surface& front, std::string& out, bool fu
         link = c.link;
       }
       append_glyph(out, c, images);
-      cx += c.width;
+      if (unsure_width(c)) cx = cy = -1;  // nowhere known: the next cell is addressed
+      else cx += c.width;
 
       front.at(x, y) = c;
       if (c.width == 2 && x + 1 < back.width()) front.at(x + 1, y) = back.at(x + 1, y);

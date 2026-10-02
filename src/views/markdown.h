@@ -4,6 +4,7 @@
 #include <string_view>
 #include <vector>
 
+#include "base/color.h"
 #include "model/event.h"
 #include "base/text.h"
 #include "views/code.h"
@@ -56,8 +57,22 @@ struct Seg {
   Ink ink;
   uint8_t attr = 0;   // extra attributes: an ANSI colour run's bold, dim…
   uint16_t link = 0;  // a links:: id when the run is (part of) a hyperlink
+  uint16_t paint = 0; // a paint_id(): colours output gave exactly, beyond its ink
 };
-static_assert(sizeof(Seg) == 12);
+static_assert(sizeof(Seg) == 16);
+
+// What ANSI output asks for beyond the sixteen colours an Ink names: a
+// 256-colour or 24-bit foreground, and any background. Either colour is
+// 0xRRGGBB, kDefaultColor for none, or palette(n), the theme's ANSI colour n.
+// Kept by id, so a Seg stays small; id 0 is no paint.
+struct Paint {
+  Color fg = kDefaultColor, bg = kDefaultColor;
+  bool operator==(const Paint&) const = default;
+};
+constexpr Color palette(int n) { return -2 - n; }
+constexpr int palette_index(Color c) { return c <= -2 ? -2 - c : -1; }
+uint16_t paint_id(Paint p);
+Paint paint(uint16_t id);
 
 struct Line {
   uint32_t seg_first;

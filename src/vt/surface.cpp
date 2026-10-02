@@ -154,9 +154,10 @@ int Painter::text(int x, int y, std::string_view utf8, Style st) {
       col++;
       continue;
     }
-    char32_t cp = text::decode(utf8, i);
-    int w = text::cp_width(cp);
-    if (w == 0) continue;  // combining marks are dropped; we are cell-based
+    // An emoji with its selector, skin tone or joined partners is one cell's.
+    int w;
+    const char32_t cp = text::next_glyph(utf8, i, &w);
+    if (w == 0) continue;  // a stray combining mark, with nothing to combine with
     if (col >= clip_.w) break;
     put(col, y, cp, st, uint8_t(w));
     col += w;
@@ -191,8 +192,8 @@ int Painter::text_clipped(int x, int y, std::string_view utf8, Style st, int max
       col++;
       continue;
     }
-    const char32_t cp = text::decode(utf8, i);
-    const int w = text::cp_width(cp);
+    int w;
+    const char32_t cp = text::next_glyph(utf8, i, &w);
     if (w == 0) continue;
     if (col - x + w > limit) {
       i = start;

@@ -39,8 +39,9 @@ std::string fit(std::string_view s, int w) {
   int used = 0;
   for (size_t i = 0; i < s.size();) {
     const size_t at = i;
-    const char32_t cp = text::decode(s, i);
-    const int cw = std::max(1, text::cp_width(cp));
+    int cw;
+    i = text::glyph_end(s, i, &cw);
+    cw = std::max(1, cw);
     if (used + cw > w - 1) break;
     out.append(s.substr(at, i - at));
     used += cw;
@@ -56,8 +57,9 @@ std::string fit_path(std::string_view s, int w) {
   size_t i = 0;
   int drop = sw - (w - 1);
   while (i < s.size() && drop > 0) {
-    const char32_t cp = text::decode(s, i);
-    drop -= std::max(1, text::cp_width(cp));
+    int cw;
+    i = text::glyph_end(s, i, &cw);
+    drop -= std::max(1, cw);
   }
   return "\xE2\x80\xA6" + std::string(s.substr(i));
 }
@@ -66,8 +68,9 @@ std::string fit_path(std::string_view s, int w) {
 std::string_view skip_cols(std::string_view s, int cols) {
   size_t i = 0;
   while (i < s.size() && cols > 0) {
-    const char32_t cp = text::decode(s, i);
-    cols -= std::max(1, text::cp_width(cp));
+    int cw;
+    i = text::glyph_end(s, i, &cw);
+    cols -= std::max(1, cw);
   }
   return s.substr(i);
 }
@@ -393,7 +396,9 @@ class DiffView final : public Pane {
         continue;
       }
       const size_t at = i;
-      col += std::max(0, text::cp_width(text::decode(s, i)));
+      int cw;
+      i = text::glyph_end(s, i, &cw);
+      col += std::max(0, cw);
       out.append(s.substr(at, i - at));
     }
     return out;
