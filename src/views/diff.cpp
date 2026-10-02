@@ -10,6 +10,7 @@
 #include "core/activity.h"
 #include "base/text.h"
 #include "ui/app.h"
+#include "views/code.h"
 #include "views/views.h"
 
 namespace mico {
@@ -174,8 +175,8 @@ class DiffView final : public Pane {
       const Group& g = groups_[size_t(i)];
       const int y = top + r;
       const bool sel = i == sel_;
-      const Color bg = sel ? (focused ? th.sel_bg : th.sel_inactive) : th.panel;
-      if (sel) p.fill(Rect{1, y, W - 2, 1}, Style{th.text, bg});
+      const Color bg = sel ? (focused ? th.sel_bg : th.sel_inactive) : i % 2 ? th.panel_alt : th.panel;
+      if (bg != th.panel) p.fill(Rect{1, y, W - 2, 1}, Style{th.text, bg});
       if (sel) p.put(1, y, U'❯', Style{th.accent, bg, attr::kBold});
       int x = 3;
       x += p.text(x, y, pad("+" + count(g.added), count_w - 1, true) + " ", Style{th.added, bg});
@@ -260,30 +261,34 @@ class DiffView final : public Pane {
                        W - num_w - 4);
         continue;
       }
-      const FileChange* fc = loaded(ref);
-      if (!fc) continue;
+      const Loaded* l = loaded(ref);
+      if (!l) continue;
       if (row.line == kMore) {
         p.text_clipped(2 + num_w, y,
-                       "\xE2\x80\xA6 " + count(long(fc->lines.size()) - kMaxLines) + " more lines \xC2\xB7 enter opens the chat",
+                       "\xE2\x80\xA6 " + count(long(l->fc.lines.size()) - kMaxLines) + " more lines \xC2\xB7 enter opens the chat",
                        Style{th.dim, th.panel}, W - num_w - 4);
         continue;
       }
-      const DiffLine& d = fc->lines[size_t(row.line)];
+      const DiffLine& d = l->fc.lines[size_t(row.line)];
+      // A hunk's start: a rule saying where in the file it is.
       if (d.kind == '@') {
-        std::string h;
-        if (d.old_no || d.new_no) h = "@@ -" + std::to_string(d.old_no) + " +" + std::to_string(d.new_no) + " @@";
-        else h = "\xE2\x8B\xAF";
-        if (!d.text.empty()) h += " " + d.text;
-        p.text_clipped(2 + num_w, y, h, Style{th.hunk, th.panel}, std::max(0, W - num_w - 4));
+        p.hline(1, y, std::max(0, W - 2), U'\u2504', Style{th.border, th.panel});
+        int x = 1 + num_w;
+        if (d.new_no || d.old_no)
+          x += p.text(x, y, " line " + std::to_string(d.new_no ? d.new_no : d.old_no) + " ", Style{th.hunk, th.panel});
+        if (!d.text.empty())
+          p.text_clipped(x, y, " " + text::oneline(d.text, 200) + " ", Style{th.dim, th.panel},
+                         std::max(0, W - 4 - x));
         continue;
       }
       const int no = d.kind == '-' ? d.old_no : d.new_no;
-      if (no) p.text(1, y, pad(std::to_string(no), num_w, true), Style{th.dim, th.panel});
       const Color fg = d.kind == '+' ? th.added : d.kind == '-' ? th.removed : th.dim;
-      const char mark[2] = {d.kind == ' ' ? ' ' : d.kind, 0};
-      p.text(2 + num_w, y, d.kind == '-' ? "\xE2\x88\x92" : mark, Style{fg, th.panel, attr::kBold});
-      p.text_clipped(4 + num_w, y, skip_cols(d.text, hscroll_), Style{d.kind == ' ' ? th.text : fg, th.panel},
-                     std::max(0, W - num_w - 5));
+      const Color bg = d.kind == '+' ? th.added_bg : d.kind == '-' ? th.removed_bg : th.panel;
+      if (bg != th.panel) p.fill(Rect{1 + num_w, y, std::max(0, W - 2 - num_w), 1}, Style{th.text, bg});
+      if (no) p.text(1, y, pad(std::to_string(no), num_w, true), Style{d.kind == ' ' ? th.dim : fg, th.panel});
+      if (d.kind != ' ') p.text(2 + num_w, y, d.kind == '-' ? "\xE2\x88\x92" : "+", Style{fg, bg, attr::kBold});
+      draw_code(p, 4 + num_w, y, std::max(0, W - num_w - 5), l->shown[size_t(row.line)], d.kind, l->lang != nullptr,
+                bg);
     }
   }
 
@@ -363,6 +368,139 @@ class DiffView final : public Pane {
     int edit;
     int line;
   };
+  // A line of a change as drawn: tabs set out, coloured runs, and the part
+  // that changed when it pairs with a line on the other side.
+  struct Shown {
+    std::string text;
+    std::vector<code::Run> runs;
+    uint32_t lo = 0, hi = 0;
+  };
+  struct Loaded {
+    FileChange fc;
+    std::vector<Shown> shown;
+    const code::Lang* lang = nullptr;
+    bool ok = false;
+  };
+
+  static std::string expand_tabs(std::string_view s) {
+    std::string out;
+    int col = 0;
+    for (size_t i = 0; i < s.size();) {
+      if (s[i] == '\t') {
+        do out += ' ';
+        while (++col % 4);
+        i++;
+        continue;
+      }
+      const size_t at = i;
+      col += std::max(0, text::cp_width(text::decode(s, i)));
+      out.append(s.substr(at, i - at));
+    }
+    return out;
+  }
+
+  // Colours a change's lines as the code they are, the old side and the new
+  // each carried on its own, and finds the words a changed line changed.
+  static void prepare(Loaded& l, const std::string& file) {
+    l.lang = code::lang_of_path(file);
+    const auto& lines = l.fc.lines;
+    l.shown.assign(lines.size(), Shown{});
+    code::State old_st, new_st;
+    std::vector<code::Run> scratch;
+    for (size_t i = 0; i < lines.size(); i++) {
+      const DiffLine& d = lines[i];
+      Shown& sh = l.shown[i];
+      if (d.kind == '@') {
+        old_st = new_st = {};
+        continue;
+      }
+      sh.text = expand_tabs(d.text);
+      if (d.kind == '-') code::highlight(sh.text, l.lang, old_st, sh.runs);
+      else code::highlight(sh.text, l.lang, new_st, sh.runs);
+      if (d.kind == ' ') code::highlight(sh.text, l.lang, old_st, scratch);
+    }
+    // Removed lines and the added ones right after them pair up in order; in
+    // each pair, what lies between the common start and end is the change.
+    for (size_t i = 0; i < lines.size();) {
+      if (lines[i].kind != '-') { i++; continue; }
+      size_t d = i;
+      while (d < lines.size() && lines[d].kind == '-') d++;
+      size_t a = d;
+      while (a < lines.size() && lines[a].kind == '+') a++;
+      for (size_t k = 0; k < std::min(d - i, a - d); k++) {
+        Shown& x = l.shown[i + k];
+        Shown& y = l.shown[d + k];
+        const std::string_view sx = x.text, sy = y.text;
+        size_t pre = 0;
+        while (pre < sx.size() && pre < sy.size() && sx[pre] == sy[pre]) pre++;
+        while (pre > 0 && pre < sx.size() && (uint8_t(sx[pre]) & 0xC0) == 0x80) pre--;
+        size_t suf = 0;
+        while (suf < sx.size() - pre && suf < sy.size() - pre && sx[sx.size() - 1 - suf] == sy[sy.size() - 1 - suf]) suf++;
+        while (suf > 0 && (uint8_t(sx[sx.size() - suf]) & 0xC0) == 0x80) suf--;
+        // A line changed nearly throughout is just a different line.
+        const size_t cx = sx.size() - pre - suf, cy = sy.size() - pre - suf;
+        if (cx + cy == 0 || (cx + cy) * 10 > (sx.size() + sy.size()) * 8) continue;
+        x.lo = uint32_t(pre), x.hi = uint32_t(pre + cx);
+        y.lo = uint32_t(pre), y.hi = uint32_t(pre + cy);
+      }
+      i = a;
+    }
+  }
+
+  Color tok_color(code::Tok t, char kind, bool coloured) const {
+    const Theme& th = app_->theme();
+    switch (t) {
+      case code::Tok::Keyword: return th.code_keyword;
+      case code::Tok::String: return th.code_string;
+      case code::Tok::Comment: return th.code_comment;
+      case code::Tok::Number: return th.code_number;
+      case code::Tok::Type: return th.code_type;
+      case code::Tok::Func: return th.code_func;
+      default: break;
+    }
+    if (coloured) return th.code_text;
+    return kind == '+' ? th.added : kind == '-' ? th.removed : th.text;
+  }
+
+  // One line of code from column `x`, `w` wide, scrolled sideways by
+  // hscroll_; the words that changed on a stronger tint.
+  void draw_code(Painter& p, int x0, int y, int w, const Shown& sh, char kind, bool coloured, Color bg) const {
+    const Theme& th = app_->theme();
+    const Color strong = kind == '+' ? th.added_strong : th.removed_strong;
+    int col = 0;
+    for (const code::Run& r : sh.runs) {
+      // Split where the changed part starts and ends.
+      uint32_t cuts[4] = {r.off, r.off + r.len, r.off + r.len, r.off + r.len};
+      int n = 1;
+      if (sh.hi > sh.lo) {
+        if (sh.lo > r.off && sh.lo < r.off + r.len) cuts[n++] = sh.lo;
+        if (sh.hi > r.off && sh.hi < r.off + r.len) cuts[n++] = sh.hi;
+        cuts[n++] = r.off + r.len;
+        std::sort(cuts + 1, cuts + n);
+      } else {
+        cuts[1] = r.off + r.len, n = 2;
+      }
+      Style st{tok_color(r.tok, kind, coloured), bg};
+      if (r.tok == code::Tok::Comment) st.a |= attr::kItalic;
+      for (int k = 0; k + 1 < n; k++) {
+        if (cuts[k + 1] <= cuts[k]) continue;
+        std::string_view t = std::string_view(sh.text).substr(cuts[k], cuts[k + 1] - cuts[k]);
+        const bool changed = sh.hi > sh.lo && cuts[k] >= sh.lo && cuts[k] < sh.hi;
+        Style ps = st;
+        if (changed) ps.bg = strong;
+        const int tw = text::str_width(t);
+        if (col + tw <= hscroll_) { col += tw; continue; }
+        int x = x0 + col - hscroll_;
+        if (col < hscroll_) {
+          t = skip_cols(t, hscroll_ - col);
+          x = x0;
+        }
+        col += tw;
+        if (x >= x0 + w) return;
+        p.text_clipped(x, y, t, ps, x0 + w - x);
+      }
+    }
+  }
 
   // The same index as Tools: a pass every few seconds, unchanged files from
   // its cache.
@@ -502,14 +640,15 @@ class DiffView final : public Pane {
     return r.chat->path + "\n" + std::to_string(r.edit->offset) + "\n" + r.edit->file;
   }
 
-  const FileChange* loaded(const Ref& r) {
+  const Loaded* loaded(const Ref& r) {
     const std::string key = cache_key(r);
     auto it = cache_.find(key);
-    if (it != cache_.end()) return it->second.ok ? &it->second.fc : nullptr;
+    if (it != cache_.end()) return it->second.ok ? &it->second : nullptr;
     if (cache_.size() > 600) cache_.clear();
     Loaded& l = cache_[key];
     l.ok = load_change(r.chat->path, r.chat->agent, r.chat->cwd, r.edit->offset, r.edit->file, l.fc);
-    return l.ok ? &l.fc : nullptr;
+    if (l.ok) prepare(l, r.edit->file);
+    return l.ok ? &l : nullptr;
   }
 
   // Lays out more changes until there are `want` rows, or all of them: each
@@ -519,11 +658,11 @@ class DiffView final : public Pane {
     while (built_ < g.edits.size() && int(rows_.size()) < want) {
       const int e = int(built_++);
       rows_.push_back(Row{e, kHeader});
-      const FileChange* fc = loaded(g.edits[size_t(e)]);
-      if (!fc) {
+      const Loaded* l = loaded(g.edits[size_t(e)]);
+      if (!l) {
         rows_.push_back(Row{e, kMissing});
       } else {
-        const int n = int(fc->lines.size());
+        const int n = int(l->fc.lines.size());
         for (int i = 0; i < std::min(n, kMaxLines); i++) rows_.push_back(Row{e, i});
         if (n > kMaxLines) rows_.push_back(Row{e, kMore});
       }
@@ -587,10 +726,6 @@ class DiffView final : public Pane {
   std::string detail_sig_;
   int scroll_ = 0, hscroll_ = 0, view_h_ = 1, detail_top_ = 1 << 30;
   bool end_ = false;
-  struct Loaded {
-    FileChange fc;
-    bool ok = false;
-  };
   std::unordered_map<std::string, Loaded> cache_;
   std::vector<std::pair<int, int>> list_rows_;    // (screen row, group)
   std::vector<std::pair<int, int>> header_rows_;  // (screen row, change)

@@ -1485,7 +1485,7 @@ int run_regression_tests() {
               shown.find("src/notes.txt new") != std::string::npos && shown.find("tidy the parser") != std::string::npos,
           "the Diff tab lists each file a chat changed, and the chat");
     check(shown.find("NEWCALL") != std::string::npos && shown.find("OLDCALL") != std::string::npos &&
-              shown.find("@@ -40 +40 @@") != std::string::npos,
+              shown.find(" line 40 ") != std::string::npos,
           "the newest file's diff is shown under the list");
     app.feed(InputEvent{InputEvent::Type::Key, KeyEvent{Key::Down}, {}, {}});
     app.draw(sf);

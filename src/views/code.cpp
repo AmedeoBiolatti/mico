@@ -203,6 +203,14 @@ const Lang* lang_of(std::string_view fence) {
   return nullptr;
 }
 
+const Lang* lang_of_path(std::string_view path) {
+  while (!path.empty() && (path.front() == ' ' || path.front() == '\t')) path.remove_prefix(1);
+  while (!path.empty() && (path.back() == ' ' || path.back() == '\t' || path.back() == '\r')) path.remove_suffix(1);
+  const size_t dot = path.rfind('.');
+  if (dot == std::string_view::npos || path.find('/', dot) != std::string_view::npos) return nullptr;
+  return lang_of(path.substr(dot + 1));
+}
+
 std::string_view name_of(const Lang* l) { return l ? l->name : std::string_view(); }
 
 void highlight(std::string_view s, const Lang* L, State& st, std::vector<Run>& runs) {

@@ -1680,14 +1680,6 @@ static Ink tok_ink(code::Tok t) {
   return kTok[int(t)];
 }
 
-// A path's language, by its extension.
-static const code::Lang* lang_of_path(std::string_view path) {
-  path = trim(path);
-  const size_t dot = path.rfind('.');
-  if (dot == std::string_view::npos || path.find('/', dot) != std::string_view::npos) return nullptr;
-  return code::lang_of(path.substr(dot + 1));
-}
-
 void render_diff(std::string_view text, uint32_t base, bool in_scratch, int cols, Out& out,
                  const code::Lang* lang) {
   const uint32_t flag = in_scratch ? kScratchBit : 0u;
@@ -1748,7 +1740,7 @@ void render_diff(std::string_view text, uint32_t base, bool in_scratch, int cols
     for (std::string_view tag : {std::string_view("*** Update File: "), std::string_view("*** Add File: "),
                                  std::string_view("+++ b/"), std::string_view("+++ ")}) {
       if (line.starts_with(tag)) {
-        if (const code::Lang* found = lang_of_path(line.substr(tag.size()))) lang = found;
+        if (const code::Lang* found = code::lang_of_path(line.substr(tag.size()))) lang = found;
         st = {};
         break;
       }

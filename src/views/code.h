@@ -22,6 +22,8 @@ struct Lang;  // opaque: what a fence's language name resolves to
 // The language of a fence's info string ("python", "rs", "c++"…), or null
 // for one this does not colour.
 const Lang* lang_of(std::string_view fence);
+// A file's language, by its extension ("src/app.cpp" is C++).
+const Lang* lang_of_path(std::string_view path);
 // Its display name, for the block's label.
 std::string_view name_of(const Lang* l);
 
