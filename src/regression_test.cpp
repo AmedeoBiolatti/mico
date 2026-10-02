@@ -10,6 +10,7 @@
 #include <string>
 
 #include "adapters/adapters.h"
+#include "adapters/screen.h"
 #include "base/json.h"
 #include "base/jsonl.h"
 #include "core/session.h"
@@ -1769,6 +1770,41 @@ int run_regression_tests() {
     chat.set_draft("");
     chat.render(p, theme, filters);
     check(!chat.draft_shown(), "an empty draft clears it");
+  }
+
+  {
+    // Claude's diff panel, as 2.1.287 draws it: no rule, a column in its own
+    // background beside every row, its diff lines in theirs.
+    const auto pad = [](std::string t, int to) {
+      while (text::str_width(t) < to) t += ' ';
+      return t;
+    };
+    const std::string side = "\x1b[48;2;30;32;40m", added = "\x1b[48;2;20;60;30m", off = "\x1b[49m";
+    const auto row = [&](const std::string& left, const std::string& panel, bool plus = false) {
+      return pad(left, 60) + side + " " + (plus ? added : "") + pad(panel, 38) + side + " " + off + "\r\n";
+    };
+    std::string rule;
+    for (int i = 0; i < 60; i++) rule += "\xE2\x94\x80";
+    const std::string dot = "\x1b[38;2;255;255;255m\xE2\x97\x8F\x1b[39m ";
+    const std::string screen =
+        row("\xE2\x9D\xAF commit it", "1 file changed") + row("", "") +
+        row(dot + "Tests pass, so I'll update the test to use codex_adapter()", "230 +  COMMAND ${Python3_EXECUTABLE}", true) +
+        row("  for consistency with the rest of the file, then commit.", "+sts/daemon_restore.py", true) +
+        row("", "231    foreach(check claude_questions") + row("", "") + row(rule, "") +
+        row("\xE2\x9D\xAF ", "") + row(rule, "") + row("  \xE2\x8F\xB8 manual mode on", "");
+    Vt vt;
+    vt.resize(100, 14);
+    vt.write(screen);
+    check(claude_adapter().screen_reply(vt) ==
+              "Tests pass, so I'll update the test to use codex_adapter() for consistency with the rest of the file, then commit.",
+          "claude's reply beside its diff panel is read without it when the panel is only a background");
+
+    Vt edit;  // an edit's diff in the conversation, coloured to the edge: not a panel
+    edit.resize(100, 14);
+    std::string diff = dot + "Done.\r\n";
+    for (int i = 0; i < 4; i++) diff += "     1" + std::to_string(i) + " " + added + pad("+ int x = " + std::to_string(i) + ";", 91) + off + "\r\n";
+    edit.write(diff + "\r\n" + rule + "\r\n\xE2\x9D\xAF \r\n" + rule + "\r\n");
+    check(side_panel_edge(edit, 0, 5, 2) < 0, "a diff coloured to the right edge is not a panel");
   }
 
   {

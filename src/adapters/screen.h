@@ -116,7 +116,10 @@ std::string rows_markdown(const Vt& vt, int start, int end, int from, int wrap_a
 // starts in rows [start, end): the column of its left edge, a vertical rule
 // down most of the rows (two at least) with the conversation's own text left
 // of it on one or more. A table's rule is not one: its rows start with a rule
-// of their own. -1 when there is no such panel.
+// of their own. Claude 2.1.287 and later draw no rule: the panel is a column
+// in a background of its own beside every row, so its edge is where that
+// background starts, at the same column on nearly every row. -1 when there is
+// no such panel.
 int side_panel_edge(const Vt& vt, int start, int end, int from);
 
 }  // namespace mico

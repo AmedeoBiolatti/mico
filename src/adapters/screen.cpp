@@ -523,7 +523,50 @@ int side_panel_edge(const Vt& vt, int start, int end, int from) {
   const int need = std::max(2, (end - std::max(0, start) - 1) * 3 / 4);
   for (int x = from + 1; x < w; x++)
     if (rows[size_t(x)] >= need && beside_text[size_t(x)] >= 1) return x;
-  return -1;
+
+  // No rule: a panel in a background of its own. Its colour is the one most
+  // rows end in; its edge, the column where most rows change into it, padding
+  // first, so a diff line's own background inside it does not move the edge.
+  // It sits right of the conversation, which keeps a third of the width at
+  // least, so an edit's diff in the conversation, coloured out to the edge
+  // from just after its line numbers, is never taken for one.
+  std::vector<std::pair<Color, int>> ends;
+  for (int y = std::max(0, start); y < end; y++) {
+    const VtRow& r = vt.row(y);
+    if (int(r.size()) < w || w < 1) continue;
+    const Color bg = r[size_t(w - 1)].st.bg;
+    if (bg == kDefaultColor) continue;
+    auto it = std::find_if(ends.begin(), ends.end(), [&](const auto& e) { return e.first == bg; });
+    if (it == ends.end()) ends.emplace_back(bg, 1);
+    else it->second++;
+  }
+  if (ends.empty()) return -1;
+  const Color panel =
+      std::max_element(ends.begin(), ends.end(), [](const auto& a, const auto& b) { return a.second < b.second; })->first;
+  std::fill(rows.begin(), rows.end(), 0);
+  std::fill(beside_text.begin(), beside_text.end(), 0);
+  const int lo = std::max(from + 1, w / 3);
+  for (int y = std::max(0, start); y < end; y++) {
+    const VtRow& r = vt.row(y);
+    if (int(r.size()) < w) continue;
+    bool text = false;
+    for (int x = from; x < w; x++) {
+      const Cell& c = r[size_t(x)];
+      if (x >= lo && c.st.bg == panel && r[size_t(x - 1)].st.bg != panel) {
+        rows[size_t(x)]++;
+        if (text) beside_text[size_t(x)]++;
+      }
+      text |= c.width && c.cp && c.cp != U' ' && c.st.bg != panel;
+    }
+  }
+  // Half the rows will do: the column, the side and the colour are the test,
+  // and the rows under the reply need not all have the panel beside them.
+  const int half = std::max(2, (end - std::max(0, start)) / 2);
+  int best = -1;
+  for (int x = lo; x < w; x++)
+    if (rows[size_t(x)] >= half && beside_text[size_t(x)] >= 1 && (best < 0 || rows[size_t(x)] > rows[size_t(best)]))
+      best = x;
+  return best;
 }
 
 void Vt::blank(VtRow& r) const { r.assign(size_t(w_), Cell{U' ', Style{}, 1}); }
