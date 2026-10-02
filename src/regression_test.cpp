@@ -1772,6 +1772,20 @@ int run_regression_tests() {
   }
 
   {
+    // Codex sets its approval policy from /permissions; /approvals is gone.
+    SessionState cx;
+    codex_adapter().seed_state(cx);
+    const auto label = [&](std::string_view key) {
+      for (const auto& f : cx.fields)
+        if (f.key == key) return f.label;
+      return std::string();
+    };
+    const ChipControl c = codex_adapter().chip_control("approval");
+    check(label("approval") == "permissions" && c.picker == "/permissions" && c.values.empty(),
+          "codex: its approval policy is the permissions chip, opening /permissions");
+  }
+
+  {
     // Emoji: as wide as terminals draw them, and kept whole however many
     // code points they are made of.
     check(text::str_width("✅") == 2 && text::str_width("⚡") == 2 && text::str_width("🟢") == 2,

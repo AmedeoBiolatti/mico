@@ -44,8 +44,7 @@ ChipSpec spec_for(const std::string& agent, const ChipControl& c) {
 std::string chip_command(const std::string& key) {
   // Kept for the tests / callers that only ask "is this chip actionable".
   if (key == "model" || key == "effort") return "/model";
-  if (key == "mode" || key == "perm") return "/permissions";
-  if (key == "approval") return "/approvals";
+  if (key == "mode" || key == "perm" || key == "approval") return "/permissions";
   return {};
 }
 

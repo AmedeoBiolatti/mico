@@ -1251,7 +1251,6 @@ class SessionPane final : public Pane {
         const std::string cmd = line.substr(0, sp), val = line.substr(sp + 1);
         const char* key = cmd == "/model"      ? "model"
                           : cmd == "/effort"    ? "effort"
-                          : cmd == "/approvals" ? "approval"
                           : cmd == "/permissions" ? "perm"
                                                   : nullptr;
         if (key) chat_.set_state(key, val);

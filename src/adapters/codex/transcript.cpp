@@ -122,7 +122,7 @@ Str narrow_to_patch(const Arena& arena, Str full) {
 void CodexAdapter::seed_state(SessionState& st) const {
   st.declare("model", "model");
   st.declare("effort", "effort");
-  st.declare("approval", "approvals");
+  st.declare("approval", "permissions");
   st.declare("sandbox", "sandbox");
 }
 
@@ -142,7 +142,7 @@ void CodexAdapter::observe(std::string_view raw, SessionState& st) const {
   js::scan_object(payload.raw, [&](std::string_view k, const js::Value& v) {
     if (k == "model") st.set("model", "model", v.body());
     else if (k == "effort") st.set("effort", "effort", v.body());
-    else if (k == "approval_policy") st.set("approval", "approvals", v.body());
+    else if (k == "approval_policy") st.set("approval", "permissions", v.body());
     else if (k == "personality") st.set("personality", "style", v.body());
     else if (k == "summary") st.set("summary", "summary", v.body());
     else if (k == "sandbox_policy") {

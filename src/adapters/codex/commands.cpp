@@ -67,9 +67,6 @@ ChipControl CodexAdapter::chip_control(std::string_view key) const {
   if (key == "effort") {
     c.values = {"low", "medium", "high"};
     c.set_prefix = "/model ";
-  } else if (key == "approval") {
-    c.values = {"untrusted", "on-request", "on-failure", "never"};
-    c.set_prefix = "/approvals ";
   } else {
     return Adapter::chip_control(key);
   }

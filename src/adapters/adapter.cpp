@@ -22,8 +22,9 @@ ChipControl Adapter::chip_control(std::string_view key) const {
   // The agents' own pickers, by the names most of them use.
   ChipControl c;
   if (key == "model" || key == "effort") c.picker = "/model";
-  else if (key == "mode" || key == "perm") c.picker = "/permissions";
-  else if (key == "approval") c.picker = "/approvals";
+  // Codex's approval policy is set from its /permissions picker: /approvals is
+  // gone, and the picker's presets take no argument.
+  else if (key == "mode" || key == "perm" || key == "approval") c.picker = "/permissions";
   return c;
 }
 
