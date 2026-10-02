@@ -26,6 +26,9 @@ class ClaudeAdapter final : public Adapter {
   bool resumes_usage() const override { return true; }
   bool prices_from_samples() const override { return true; }
 
+  // limits.cpp
+  void plan_limits(std::vector<PlanLimit>& out) const override;
+
   // changes.cpp
   bool may_have_changes(std::string_view raw) const override;
   void read_changes(std::string_view raw, std::string_view cwd, bool text,

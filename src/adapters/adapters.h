@@ -22,6 +22,11 @@ const std::vector<const Adapter*>& all_adapters();
 // pane, just no chat view.
 const Adapter* adapter_for(std::string_view agent);
 
+// `mico --claude-status`: claude's status line command. Keeps the usage
+// limits claude passes it for ClaudeAdapter::plan_limits(), runs the user's
+// own status line if they set one, and prints what that prints.
+int claude_status_line();
+
 // The defaults alone, for a command mico has no adapter for: how to tell when
 // it is working or waiting, without a transcript to read.
 const Adapter& plain_adapter();

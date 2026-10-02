@@ -53,6 +53,16 @@ struct PriceSample {
   double cost = 0;
 };
 
+// An account's rolling usage limit, as its agent last reported it: how much
+// of the window is used, and when the window starts over.
+struct PlanLimit {
+  std::string agent;      // "claude"
+  std::string window;     // what it spans, as shown: "5 hours", "week"
+  double used_pct = 0;
+  int64_t resets_at = 0;  // unix seconds
+  int64_t as_of = 0;      // when the agent reported it, unix seconds
+};
+
 // A transcript's usage. `models` is empty when the agent does not break it out.
 struct UsageEntry {
   std::string path;

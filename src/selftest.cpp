@@ -15,6 +15,7 @@
 #include <string>
 
 #include "adapters/adapters.h"
+#include "base/fs.h"
 #include "adapters/claude/claude.h"
 #include "adapters/codex/codex.h"
 #include "adapters/screen.h"
@@ -2735,6 +2736,73 @@ int run_selftest() {
     check(c.user_text_at(o[3].offset, &full) && full == "and the panel\nplus the grid",
           "user_text_at: a multi-line message comes back whole");
     unlink(path.c_str());
+  }
+
+  // Claude's subscription limits: claude hands them to its status line, which
+  // mico gives it as itself; the Usage tab reads what that kept.
+  {
+    Launch l;
+    l.agent = "claude";
+    LaunchExtras x;
+    x.status_exe = "/opt/it's mico/mico";
+    claude_adapter().prepare(l, x);
+    const auto at = std::find(l.argv.begin(), l.argv.end(), "--settings");
+    check(at != l.argv.end() && at + 1 != l.argv.end() &&
+              at[1].find(R"("statusLine":{"type":"command","command":"'/opt/it'\\''s mico/mico' --claude-status"})") !=
+                  std::string::npos &&
+              at[1].find("PermissionRequest") != std::string::npos,
+          "limits: claude's status line is mico, its path quoted for the shell, beside mico's hooks");
+    Launch own;
+    own.agent = "claude";
+    own.argv = {"claude", "--settings", "mine.json"};
+    claude_adapter().prepare(own, x);
+    check(std::count(own.argv.begin(), own.argv.end(), "--settings") == 1, "limits: settings given by hand are left alone");
+
+    char exe[4096];
+    const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    const std::string self = n > 0 ? std::string(exe, size_t(n)) : std::string();
+    char tmpl[] = "/tmp/mico_limits_XXXXXX";
+    const std::string dir = mkdtemp(tmpl) ? tmpl : "/tmp";
+    const auto status = [&](const std::string& json, const std::string& out) {
+      if (FILE* f = popen(("'" + self + "' --claude-status > '" + out + "'").c_str(), "w")) {
+        fputs(json.c_str(), f);
+        pclose(f);
+      }
+    };
+    const int64_t now = int64_t(time(nullptr));
+    const std::string reset5 = std::to_string(now + 3600), reset7 = std::to_string(now + 5 * 86400);
+    status(R"({"model":{"id":"x"},"workspace":{"current_dir":"/nowhere","project_dir":"/nowhere"},)"
+           R"("rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":)" + reset5 +
+               R"(},"seven_day":{"used_percentage":61,"resets_at":)" + reset7 + "}}}",
+           dir + "/out1");
+    std::vector<PlanLimit> got;
+    claude_adapter().plan_limits(got);
+    std::string printed;
+    {
+      std::string buf;
+      printed = std::string(fs::read_prefix(dir + "/out1", 4096, buf));
+    }
+    check(got.size() == 2 && got[0].window == "5 hours" && got[0].used_pct == 23.5 &&
+              got[0].resets_at == now + 3600 && got[1].window == "week" && got[1].used_pct == 61 &&
+              got[1].as_of >= now - 5 && printed.empty(),
+          "limits: what claude's status line is handed is kept, and nothing is printed");
+
+    // Without limits (no request yet) the last ones stay; the user's own
+    // status line, set for the project, still runs and prints.
+    mkdir((dir + "/.claude").c_str(), 0700);
+    put_file(dir + "/.claude/settings.json", R"({"statusLine":{"type":"command","command":"cat > ')" + dir +
+                                                 R"(/seen'; echo mine"}})");
+    status(R"({"workspace":{"current_dir":")" + dir + R"(","project_dir":")" + dir + R"("}})", dir + "/out2");
+    got.clear();
+    claude_adapter().plan_limits(got);
+    std::string buf2, buf3;
+    const std::string mine(fs::read_prefix(dir + "/out2", 4096, buf2));
+    const std::string seen(fs::read_prefix(dir + "/seen", 4096, buf3));
+    check(got.size() == 2 && mine == "mine\n" && seen.find("project_dir") != std::string::npos,
+          "limits: the user's own status line runs on the same input, and shows");
+    for (const char* f : {"/out1", "/out2", "/seen", "/.claude/settings.json"}) unlink((dir + f).c_str());
+    rmdir((dir + "/.claude").c_str());
+    rmdir(dir.c_str());
   }
 
   // Claude's /btw panel, read off its screen: the questions, which one is

@@ -87,6 +87,9 @@ std::vector<Section> sections() {
                                      agent_hints_enabled, set_agent_hints));
   s.back().rows.push_back(switch_row("Plot tool", "not given", "mico's MCP server, giving agents a tool that draws charts",
                                      mcp_tools_enabled, set_mcp_tools));
+  s.back().rows.push_back(switch_row("Usage limits", "not read",
+                                     "claude's subscription limits, through its status line, for the Usage tab",
+                                     plan_limits_enabled, set_plan_limits));
   return s;
 }
 

@@ -486,7 +486,16 @@ row reaches the "All" row and `↓` leaves it. Each tab names its scope in its
 heading ("Usage  gamedev · Kin open source readiness"), and `Search` runs its
 query again when the selection changes. A search asked with a query — a
 chat's find bar's "all chats", or `:search <text>` — starts at All folders.
-Codex's rate limit is the account's, so it shows whatever the filter.
+The accounts' usage limits are the account's, so they show whatever the
+filter: Codex's from its transcripts, and Claude's subscription limits (the
+5-hour session and the week) from Claude itself. Claude hands its status line
+command the limits it reads off the API's replies; mico gives Claude itself as
+that command (`mico --claude-status`, in the settings it passes on the command
+line, never written to `~/.claude`), keeps the latest in
+`~/.local/state/mico/claude-limits`, and runs your own status line, if you set
+one, on the same input. So the reading is as fresh as Claude's last request;
+an old one says how old, and a window that has started over since is not
+shown. Settings → Agents → Usage limits turns it off for agents started after.
 
 Chrome yields on small screens: the tab strip goes below six rows, the
 command line below four.

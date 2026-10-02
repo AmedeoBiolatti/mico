@@ -65,6 +65,19 @@ void set_mcp_tools(bool on) {
   }
 }
 
+bool plan_limits_enabled() {
+  std::string buf;
+  return !fs::read_prefix(config_dir() + "/limits", 64, buf).starts_with("off");
+}
+
+void set_plan_limits(bool on) {
+  mkdir(config_dir().c_str(), 0700);
+  if (FILE* f = fopen((config_dir() + "/limits").c_str(), "w")) {
+    fputs(on ? "on\n" : "off\n", f);
+    fclose(f);
+  }
+}
+
 bool agent_hints_enabled() {
   std::string buf;
   const std::string_view v = fs::read_prefix(config_dir() + "/agent-hints", 64, buf);
@@ -127,6 +140,7 @@ bool LiveSession::start(const Launch& l) {
   LaunchExtras extras;
   const bool mcp = mcp_tools_enabled() && !self_exe().empty();
   if (mcp) extras.mcp_exe = self_exe();
+  if (plan_limits_enabled() && !self_exe().empty()) extras.status_exe = self_exe();
   if (agent_hints_enabled()) extras.hints = std::string(kAgentHints) + (mcp ? kMcpHint : "");
   driver().prepare(launch, extras);
   session_id_ = launch.session_id;

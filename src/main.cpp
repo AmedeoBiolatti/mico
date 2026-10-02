@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <unistd.h>
 
+#include "adapters/adapters.h"
 #include "vt/vt.h"
 #include "base/text.h"
 #include "base/log.h"
@@ -29,6 +30,8 @@ int run_mcp_server();
 int main(int argc, char** argv) {
   // The MCP server agents start: nothing else of mico, and only JSON on stdout.
   if (argc > 1 && !strcmp(argv[1], "--mcp")) return mico::run_mcp_server();
+  // Claude runs it for every status line update: quick, quiet, no log.
+  if (argc > 1 && !strcmp(argv[1], "--claude-status")) return mico::claude_status_line();
   int dump_w = 0, dump_h = 0, pick_p = 0, pick_s = 0, density = -1, scroll = 0;
   const char* vt_file = nullptr;
   const char* spawn_cmd = nullptr;

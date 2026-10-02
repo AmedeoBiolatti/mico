@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "adapters/adapters.h"
 #include "core/usage.h"
 #include "base/text.h"
 #include "ui/app.h"
@@ -166,7 +167,16 @@ class UsageView final : public Pane {
     p.hline(1, y, std::max(0, p.width() - 2), U'─', Style{th.border, th.bg});
     y += 1;
 
-    if (quota) y = render_quota(p, th, y, *quota);
+    // The accounts' limits: claude's as its status line last saw them, and
+    // codex's from its newest window. One whose window has started over since
+    // is not shown: what it holds now nobody has reported.
+    std::vector<PlanLimit> limits;
+    for (const Adapter* a : all_adapters()) a->plan_limits(limits);
+    if (quota)
+      limits.push_back(PlanLimit{quota->agent, window_name(quota->quota_window_minutes), quota->quota_used_pct,
+                                 quota->quota_resets_at, quota->mtime});
+    std::erase_if(limits, [&](const PlanLimit& l) { return l.resets_at <= now; });
+    y = render_limits(p, th, y, limits);
 
     if (y < p.height()) {
       char line[192];
@@ -224,25 +234,47 @@ class UsageView final : public Pane {
     if (index_.complete()) last_complete_ = int64_t(time(nullptr));
   }
 
-  int render_quota(Painter& p, const Theme& th, int y, const UsageEntry& e) {
-    if (y >= p.height()) return y;
+  // One row per limit: the agent and the window it spans, a bar, how much
+  // is used, when it starts over, and how old the reading is once that
+  // matters (claude's comes with its requests: none lately, none newer).
+  int render_limits(Painter& p, const Theme& th, int y, const std::vector<PlanLimit>& limits) {
+    if (limits.empty()) return y;
+    int agent_w = 0, window_w = 0;
+    for (const auto& l : limits) {
+      agent_w = std::max(agent_w, text::str_width(l.agent));
+      window_w = std::max(window_w, text::str_width(l.window));
+    }
     const int bar_w = std::min(24, std::max(8, p.width() / 4));
-    const double frac = std::clamp(e.quota_used_pct / 100.0, 0.0, 1.0);
-    const int filled = int(frac * bar_w + 0.5);
+    const int64_t now = int64_t(time(nullptr));
+    for (const auto& l : limits) {
+      if (y >= p.height()) return y;
+      const double frac = std::clamp(l.used_pct / 100.0, 0.0, 1.0);
+      const int filled = int(frac * bar_w + 0.5);
+      p.text(1, y, l.agent, Style{th.accent, th.bg, attr::kBold});
+      int x = 1 + agent_w + 2;
+      p.text(x, y, l.window, Style{th.dim, th.bg});
+      x += window_w + 2;
+      for (int i = 0; i < bar_w; i++)
+        p.put(x + i, y, i < filled ? U'█' : U'░',
+              Style{i < filled ? (frac > 0.85 ? th.err : th.accent) : th.border, th.bg});
+      x += bar_w + 2;
+      char buf[40];
+      snprintf(buf, sizeof buf, "%5.1f%%", l.used_pct);
+      x += p.text(x, y, buf, Style{th.text, th.bg, attr::kBold}) + 2;
+      std::string when = "resets in " + reset_in(l.resets_at);
+      if (now - l.as_of >= 600) when += " \xC2\xB7 as of " + ago(l.as_of);
+      p.text_clipped(x, y, when, Style{th.dim, th.bg}, std::max(0, p.width() - x - 1));
+      y++;
+    }
+    return y + 1;
+  }
 
-    p.text(1, y, e.agent, Style{th.accent, th.bg, attr::kBold});
-    int x = 1 + text::str_width(e.agent) + 2;
-    for (int i = 0; i < bar_w; i++)
-      p.put(x + i, y, i < filled ? U'█' : U'░',
-            Style{i < filled ? (frac > 0.85 ? th.err : th.accent) : th.border, th.bg});
-    x += bar_w + 2;
-    char buf[40];
-    snprintf(buf, sizeof buf, "%4.1f%%", e.quota_used_pct);
-    x += p.text(x, y, buf, Style{th.text, th.bg, attr::kBold}) + 2;
-    if (e.quota_resets_at > int64_t(time(nullptr)))
-      p.text_clipped(x, y, "resets in " + reset_in(e.quota_resets_at),
-                     Style{th.dim, th.bg}, std::max(0, p.width() - x - 1));
-    return y + 2;
+  // A codex window, by its length.
+  static std::string window_name(int64_t minutes) {
+    if (minutes == 10080) return "week";
+    if (minutes > 0 && minutes % 1440 == 0) return std::to_string(minutes / 1440) + " days";
+    if (minutes > 0 && minutes % 60 == 0) return std::to_string(minutes / 60) + " hours";
+    return minutes > 0 ? std::to_string(minutes) + " minutes" : "window";
   }
 
   int render_table(Painter& p, const Theme& th, int y, const std::vector<Group>& gs,

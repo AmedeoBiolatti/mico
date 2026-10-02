@@ -23,6 +23,11 @@ void set_agent_hints(bool on);
 bool mcp_tools_enabled();
 void set_mcp_tools(bool on);
 
+// Whether agents report their usage limits to mico (claude, through its
+// status line). On unless turned off.
+bool plan_limits_enabled();
+void set_plan_limits(bool on);
+
 
 // A running agent: its pty, its emulated screen, and the transcript it is
 // writing. The two planes are always both live; the view toggle only chooses

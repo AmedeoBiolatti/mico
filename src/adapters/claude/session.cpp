@@ -30,12 +30,27 @@ void ClaudeAdapter::prepare(Launch& l, const LaunchExtras& x) const {
   // settings merge with the user's own and are never written to ~/.claude.
   // A command line that already brings --settings is left alone: claude reads
   // only one.
+  //
+  // The status line is mico too, when it reads claude's usage limits: claude
+  // hands its status line command the limits it reads off the API's replies
+  // (see limits.cpp), and that command runs the user's own status line, if
+  // they set one, on the same input.
   if (!cmdline::has_flag(argv, "--settings")) {
+    std::string settings = R"({"hooks":{"PreToolUse":[{"matcher":"AskUserQuestion",)"
+                           R"("hooks":[{"type":"command","command":"true"}]}],)"
+                           R"("PermissionRequest":[{"matcher":"",)"
+                           R"("hooks":[{"type":"command","command":"true"}]}]})";
+    if (!x.status_exe.empty()) {
+      // Run by a shell: the path single-quoted, any quote in it closed and
+      // reopened around an escaped one.
+      std::string sh = "'";
+      for (char c : x.status_exe) sh += c == '\'' ? std::string("'\\''") : std::string(1, c);
+      sh += "' --claude-status";
+      settings += R"(,"statusLine":{"type":"command","command":)" + cmdline::json_string(sh) + "}";
+    }
+    settings += "}";
     argv.push_back("--settings");
-    argv.push_back(R"({"hooks":{"PreToolUse":[{"matcher":"AskUserQuestion",)"
-                   R"("hooks":[{"type":"command","command":"true"}]}],)"
-                   R"("PermissionRequest":[{"matcher":"",)"
-                   R"("hooks":[{"type":"command","command":"true"}]}]}})");
+    argv.push_back(std::move(settings));
   }
 
   // mico's own tools, handed over on the command line, never written into

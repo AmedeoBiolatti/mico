@@ -25,6 +25,7 @@ struct Launch {
 struct LaunchExtras {
   std::string hints;     // what mico can draw, for the agent's instructions; empty: none
   std::string mcp_exe;   // mico itself, to run as an MCP server (`mico --mcp`); empty: none
+  std::string status_exe;  // mico itself, as the agent's status line, for its usage limits; empty: none
 };
 
 }  // namespace mico

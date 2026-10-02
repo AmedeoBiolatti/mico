@@ -145,6 +145,10 @@ class Adapter {
   // Whether the agent's dollars come from a PriceBook fitted to the price
   // samples it records, rather than from the transcript itself.
   virtual bool prices_from_samples() const { return false; }
+  // The account's usage limits as the agent last reported them outside its
+  // transcripts (claude, through the status line mico gives it). An agent
+  // that writes them into its transcripts reports them through read_usage().
+  virtual void plan_limits(std::vector<PlanLimit>& out) const {}
 
   // --- File changes --------------------------------------------------------
 

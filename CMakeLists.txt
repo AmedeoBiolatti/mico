@@ -83,6 +83,7 @@ add_library(mico_adapters STATIC
   src/adapters/claude/changes.cpp
   src/adapters/claude/tools.cpp
   src/adapters/claude/usage.cpp
+  src/adapters/claude/limits.cpp
   src/adapters/claude/commands.cpp
   src/adapters/codex/transcript.cpp
   src/adapters/codex/session.cpp
