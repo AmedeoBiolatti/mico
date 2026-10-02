@@ -47,6 +47,7 @@ bool run(const std::vector<const char*>& argv, int timeout_ms, std::string& out)
     dup2(null, STDIN_FILENO);
     dup2(null, STDERR_FILENO);
     dup2(fds[1], STDOUT_FILENO);
+    if (null > 2) close(null);
     std::vector<const char*> args = argv;
     args.push_back(nullptr);
     execvp(args[0], const_cast<char* const*>(args.data()));

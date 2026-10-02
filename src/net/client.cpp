@@ -24,7 +24,7 @@ volatile sig_atomic_t g_resized = 0;
 void on_winch(int) { g_resized = 1; }
 
 int dial(const std::string& path) {
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) return -1;
   sockaddr_un addr;
   // A socket in a directory someone else controls could be anyone's daemon.

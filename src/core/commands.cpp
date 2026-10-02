@@ -112,6 +112,7 @@ void CommandCatalog::start_probe(Entry& e, const Adapter& agent, const std::stri
     dup2(out[1], 1);
     const int null = open("/dev/null", O_WRONLY);
     if (null >= 0) dup2(null, 2);
+    if (null > 2) close(null);
     if (chdir(cwd.c_str()) != 0) _exit(127);
     setsid();
     scrub_agent_env();

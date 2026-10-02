@@ -83,7 +83,9 @@ int listen_socket(const std::string& path) {
     MLOG("socket path too long for a unix socket: %s", path.c_str());
     return -1;
   }
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  // Close-on-exec, as every descriptor of the daemon's: an agent, or a
+  // browser it opens, must not keep the daemon's sockets past its exit.
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) return -1;
   if (bind(fd, (sockaddr*)&addr, sizeof addr) != 0 || listen(fd, 8) != 0) {
     MLOG("cannot listen on %s: %s", path.c_str(), strerror(errno));
@@ -280,7 +282,7 @@ int run_daemon() {
 
     if (fds[0].revents & POLLIN) {
       for (;;) {
-        int cfd = accept(lfd, nullptr, nullptr);
+        int cfd = accept4(lfd, nullptr, nullptr, SOCK_CLOEXEC);
         if (cfd < 0) break;
         set_nonblock(cfd);
         auto c = std::make_unique<Client>();

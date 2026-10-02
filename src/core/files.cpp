@@ -39,6 +39,7 @@ bool git_files(const std::string& cwd, size_t cap, std::vector<std::string>& out
     if (null >= 0) {
       dup2(null, 0);
       dup2(null, 2);
+      if (null > 2) close(null);
     }
     const char* argv[] = {"git", "-C", cwd.c_str(), "ls-files", "-z", "--cached", "--others",
                           "--exclude-standard", nullptr};

@@ -45,8 +45,8 @@ void init(const char* tag) {
   // Keep the file from growing without bound: start fresh once it passes ~4 MB.
   struct stat st{};
   const int flags = (stat(g_path.c_str(), &st) == 0 && st.st_size > (4 << 20))
-                        ? (O_WRONLY | O_CREAT | O_TRUNC)
-                        : (O_WRONLY | O_CREAT | O_APPEND);
+                        ? (O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC)
+                        : (O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC);
   g_fd = open(g_path.c_str(), flags, 0600);
 
   logf("---- %s started (pid %d) ----", g_tag.c_str(), int(getpid()));

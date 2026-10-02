@@ -33,6 +33,7 @@ bool open_url(std::string_view url) {
       dup2(null, 0);
       dup2(null, 1);
       dup2(null, 2);
+      if (null > 2) close(null);
     }
     execlp(tool, tool, arg.c_str(), static_cast<char*>(nullptr));
     _exit(127);

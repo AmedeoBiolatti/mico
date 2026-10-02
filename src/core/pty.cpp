@@ -114,6 +114,12 @@ bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, in
     setenv("COLORTERM", "truecolor", 1);
     unsetenv("LINES");
     unsetenv("COLUMNS");
+    // Only its terminal goes with it. Inherited, the daemon's sockets and the
+    // other agents' terminals would outlive mico in every agent and in what
+    // they start (MCP servers, shells): closing a pane would not hang its
+    // agent up while another agent still held that terminal open.
+    if (close_range(3, ~0u, 0) != 0)
+      for (int fd = 3; fd < 4096; fd++) close(fd);
 
     std::vector<char*> args;
     args.reserve(argv.size() + 1);
@@ -123,6 +129,7 @@ bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, in
     _exit(127);
   }
 
+  fcntl(master, F_SETFD, FD_CLOEXEC);  // the next agent's must not hold this one's
   fd_ = master;
   pid_ = pid;
   exited_ = false;

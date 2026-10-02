@@ -466,6 +466,34 @@ int run_regression_tests() {
   }
 
   {
+    // An agent gets its terminal and nothing else of mico's: not a descriptor
+    // mico left inheritable, nor another agent's terminal. Held, they would
+    // keep the daemon's sockets and other panes alive past mico's exit.
+    int leak[2];
+    check(pipe(leak) == 0, "fds: a descriptor that would be inherited");
+    Pty first, second;
+    check(first.spawn({"/bin/sleep", "5"}, project, 80, 24) && second.spawn({"/bin/sleep", "5"}, project, 80, 24),
+          "fds: two agents start");
+    const auto fds_of = [](pid_t pid) {
+      std::vector<std::string> out;
+      const std::string dir = "/proc/" + std::to_string(pid) + "/fd";
+      for (int i = 0; i < 200; i++) {
+        out.clear();
+        for (const auto& e : std::filesystem::directory_iterator(dir)) out.push_back(e.path().filename());
+        std::error_code ec;
+        if (std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", ec).filename() == "sleep") break;
+        usleep(5000);
+      }
+      return out.size();
+    };
+    check(fds_of(second.pid()) == 3, "fds: an agent holds only its terminal");
+    close(leak[0]);
+    close(leak[1]);
+    first.terminate();
+    second.terminate();
+  }
+
+  {
     Pty pty;
     check(pty.spawn({"/bin/sh", "-c", "stty raw -echo; printf READY; exec cat"}, project, 80, 24),
           "start the paste backpressure fixture");
