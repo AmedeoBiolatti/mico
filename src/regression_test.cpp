@@ -338,6 +338,50 @@ int run_regression_tests() {
   }
 
   {
+    // The sidebar's marks: a spinner while it works; a reply only once the
+    // work has stayed stopped, so a blink of Claude's spinner between steps
+    // is no answer; and read as soon as the chat is on screen.
+    App app;
+    LiveSession session;
+    LiveSession::Launch launch;
+    launch.agent = "claude"; launch.cwd = project; launch.session_id = "marks-fixture";
+    launch.argv = {"/bin/cat"};
+    session.start(launch);
+    const auto pump_for = [&](int ms) {
+      for (int i = 0; i < ms / 10; ++i) { session.pump(); usleep(10000); }
+    };
+    const auto work = [&](bool on) {
+      session.vt().write(on ? "\x1b[2J\x1b[H\xE2\x9C\xBB Thinking\xE2\x80\xA6 (2s)\r\n\xE2\x9D\xAF \r\n"
+                            : "\x1b[2J\x1b[H\xE2\x9D\xAF \r\n");
+      session.pump();
+    };
+    // The pty is spawned by the pane's first frame.
+    auto pane = make_session_pane(&session);
+    pane->set_app(&app);
+    Surface sf; sf.resize(80, 20);
+    Painter painter(sf, {0, 0, 80, 20});
+    pane->render(painter, false);
+    pump_for(50);
+    work(true);
+    const ChatState busy = chat_state(&session, app.theme(), 3);
+    check(busy.rank == 2 && busy.glyph == spinner_glyph(3) && busy.glyph != chat_state(&session, app.theme(), 4).glyph,
+          "marks: a working chat turns a spinner");
+    work(false);
+    pump_for(300);
+    work(true);
+    work(false);
+    pump_for(300);
+    check(!session.unseen() && chat_state(&session, app.theme()).rank == 3,
+          "marks: a pause between steps is not a reply");
+    pump_for(1300);
+    check(session.unseen() && chat_state(&session, app.theme()).rank == 1,
+          "marks: a turn that stayed finished is a new reply");
+    pane->render(painter, false);
+    check(!session.unseen() && chat_state(&session, app.theme()).rank == 3,
+          "marks: a chat on screen is read, focused or not");
+  }
+
+  {
     const std::string activity_path = base + "/.claude/projects/fixture/activity-fixture.jsonl";
     put(activity_path, R"({"type":"assistant","message":{"content":[{"type":"text","text":"Activity fixture"}]}})" "\n");
     App app;

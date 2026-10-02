@@ -171,6 +171,7 @@ bool LiveSession::restart(const Launch& l) {
   cancel_answer();
   answer_failed_ = false;
   spawned_ = was_working_ = was_exited_ = unseen_ = false;
+  settle_at_ms_ = 0;
   trust_tries_ = 0;
   trust_next_ms_ = 0;
   last_probe_ = last_output_ms_ = 0;
@@ -492,8 +493,16 @@ bool LiveSession::pump() {
     MLOG("session EXITED: %s code=%d  last screen: %s", agent_.c_str(), pty_.exit_status(),
          tail.empty() ? "(blank)" : tail.c_str());
   }
-  const bool changed = answer_changed || !buf_.empty() || working != was_working_ || pty_.exited() != was_exited_;
-  if (was_working_ && !working) unseen_ = true;
+  bool finished = false;
+  if (working || pty_.exited()) settle_at_ms_ = 0;
+  else if (was_working_) settle_at_ms_ = now_ms() + kSettleMs;
+  else if (settle_at_ms_ && now_ms() >= settle_at_ms_) {
+    settle_at_ms_ = 0;
+    finished = !unseen_;
+    unseen_ = true;
+  }
+  const bool changed = answer_changed || !buf_.empty() || working != was_working_ ||
+                       pty_.exited() != was_exited_ || finished;
   was_working_ = working;
   was_exited_ = pty_.exited();
 

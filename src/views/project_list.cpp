@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <ctime>
+#include <optional>
 
 #include "core/store.h"
 #include "base/text.h"
@@ -115,20 +116,18 @@ class ProjectList final : public Pane {
     draw_list_button(p, th, list_, "+ Add folder", sel_ == add, focused);
   }
 
-  // The dot a set of live chats earns: needing input outranks running, which
-  // outranks idle. Nothing running is no dot at all.
+  // A folder shows the mark of its chat that wants you most, the same marks
+  // the chat list shows: needs you, then a reply not yet read, then working,
+  // then ready. Nothing live is no mark at all.
   void draw_dot(Painter& p, int x, int y, Color bg, auto&& in) {
     const Theme& th = app_->theme();
-    int rank = -1;
+    std::optional<ChatState> best;
     for (LiveSession* s : app_->live_sessions()) {
       if (s->exited() || !in(*s)) continue;
-      const int r = s->needs_input() ? 2 : s->busy() ? 1 : s->unseen() ? 2 : 0;
-      if (r > rank) rank = r;
+      const ChatState cs = chat_state(s, th, app_->anim());
+      if (!best || cs.rank < best->rank) best = cs;
     }
-    if (rank >= 0) {
-      const Color c = rank == 2 ? th.attention : rank == 1 ? th.working : th.ok;
-      p.put(x, y, U'●', Style{c, bg, attr::kBold});
-    }
+    if (best && best->rank < 4) p.put(x, y, best->glyph, Style{best->color, bg, attr::kBold});
   }
 
   static bool in_project(const Project& pr, const std::string& cwd) {

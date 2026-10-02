@@ -273,8 +273,12 @@ std::vector<PickItem> App::switcher_items() const {
     it.detail = folder_name(s.cwd()) + " \xC2\xB7 " + agent_label(s.agent());
     it.hint = s.exited() ? "stopped" : cs.word;
     it.id = "live:" + std::to_string(reinterpret_cast<uintptr_t>(&s));
-    const int rank = s.exited() ? 3 : cs.rank;
-    it.group = rank == 0 ? "Needs you" : rank == 1 ? "Working" : rank == 2 ? "Ready" : "Stopped";
+    const int rank = s.exited() ? 4 : cs.rank;
+    it.group = rank == 0   ? "Needs you"
+               : rank == 1 ? "New reply"
+               : rank == 2 ? "Working"
+               : rank == 3 ? "Ready"
+                           : "Stopped";
     live.push_back({rank, std::move(it)});
   }
   std::stable_sort(live.begin(), live.end(), [](const auto& a, const auto& b) { return a.first < b.first; });

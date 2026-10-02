@@ -38,15 +38,17 @@ int64_t now_ms() {
       .count();
 }
 
-enum State { Running, Waiting, Active, Old };
+// Most wanting first; see ChatState.
+enum State { Asking, Unread, Running, Ready, Old };
 
 State state_of(const Row& r) {
   if (!r.live) return Old;
   if (r.live->exited()) return Old;
-  if (r.live->needs_input()) return Waiting;
+  // A trust dialog while it starts is answered by mico, not by you.
+  if (r.live->needs_input() && !r.live->starting()) return Asking;
   if (r.live->busy()) return Running;
-  if (r.live->unseen()) return Waiting;
-  return Active;
+  if (r.live->unseen()) return Unread;
+  return Ready;
 }
 
 std::string agent_of(const Row& r) { return r.live ? r.live->agent() : r.stored->agent; }
@@ -203,9 +205,11 @@ class ChatList final : public Pane {
       p.put(0, y + dy, cursor ? U'▌' : U' ', Style{th.accent, base.bg});
 
     const State st = state_of(r);
-    const ChatState cs = chat_state(r.live, th);
+    const ChatState cs = chat_state(r.live, th, app_->anim());
     Color c = r.archived ? th.dim : cs.color;
     p.put(1, y, cs.glyph, Style{c, base.bg, attr::kBold});
+    // A reply not yet read stands out as an unread message does.
+    if (st == Unread) base.a |= attr::kBold;
 
     // First line: the title, and a check on a gathered row.
     int right = p.width();
@@ -560,14 +564,15 @@ class ChatList final : public Pane {
 
 }  // namespace
 
-ChatState chat_state(const LiveSession* live, const Theme& th) {
+ChatState chat_state(const LiveSession* live, const Theme& th, uint64_t anim) {
   Row r;
   r.live = const_cast<LiveSession*>(live);
   switch (state_of(r)) {
-    case Waiting: return {U'\u25CF', th.attention, "needs you", 0};  // ●
-    case Running: return {U'\u25CD', th.working, "working", 1};      // ◍
-    case Active: return {U'\u25CB', th.accent, "ready", 2};          // ○
-    default: return {U'\u00B7', th.dim, "saved", 3};                 // ·
+    case Asking: return {U'!', th.attention, "needs you", 0};
+    case Unread: return {U'\u25CF', th.accent, "new reply", 1};       // ●
+    case Running: return {spinner_glyph(anim), th.working, "working", 2};
+    case Ready: return {U'\u25CB', th.dim, "ready", 3};               // ○
+    default: return {U'\u00B7', th.dim, "saved", 4};                 // ·
   }
 }
 

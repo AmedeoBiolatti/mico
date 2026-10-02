@@ -25,7 +25,6 @@
 #include "views/views.h"
 
 namespace mico {
-namespace {
 
 // A braille spinner, advanced by the App's animation tick. Braille is a single
 // cell in every font that matters, so a turning frame never reflows the line.
@@ -35,6 +34,8 @@ char32_t spinner_glyph(uint64_t anim) {
                                      U'\u2807', U'\u280F'};
   return kFrames[anim % (sizeof(kFrames) / sizeof(kFrames[0]))];
 }
+
+namespace {
 
 std::string spinner_utf8(uint64_t anim) {
   std::string s;
@@ -82,8 +83,10 @@ class SessionPane final : public Pane {
 
   void render(Painter& p, bool focused) override {
     const Theme& th = app_->theme();
-    // Looking at it counts as having seen it.
-    if (focused) s_->mark_seen();
+    // On screen counts as seen, focused or not: a chat open beside the list
+    // is being read.
+    s_->mark_seen();
+    (void)focused;
 
     // The pty is spawned here, at the size it will be drawn at, and resized
     // only when the pane changes. Switching views must never resize it: both

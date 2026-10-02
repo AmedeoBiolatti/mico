@@ -111,10 +111,10 @@ folder that exists (the selected folder, another tracked one, or `$HOME`) with
 the status saying `(original folder unavailable)`, rather than leaving a dead
 pane that never started.
 
-Each folder carries a small colored dot when it has a live agent: yellow for one
-waiting on you, blue for one working, green for an idle one. A folder with
-several running agents shows the most urgent. Nothing running means no dot, so
-the sidebar still reads as a list of folders when the daemon is idle.
+Each folder carries the same mark as its chats (below) when it has a live
+agent. With several, it shows the one that wants you most: `!` needs you, then
+`●` a new reply, then the working spinner, then `○` ready. Nothing running means
+no mark, so the sidebar still reads as a list of folders when the daemon is idle.
 
 ### Sub-projects
 
@@ -651,10 +651,15 @@ name, then its state, agent and when it last moved:
 
 | glyph | state | |
 |---|---|---|
-| `◍` | working | the agent is working |
-| `●` | needs you | waiting for input or finished an unseen turn |
-| `○` | ready | live and idle, ready for input |
+| `!` | needs you | a question, a permission or a dialog is waiting on you |
+| `●` | new reply | finished a turn you have not looked at yet (its title is bold) |
+| `⠋` | working | the agent is working; the spinner turns |
+| `○` | ready | live and idle, and you have seen its last reply |
 | `·` | saved / stopped | nothing running; opens with automatic resume |
+
+A turn counts as finished once the agent has stayed idle for a moment, so the
+gaps between its steps are not taken for a reply. A chat is read as soon as it
+is on screen, whether or not its pane has the focus.
 
 **The order is when you last used a chat**, newest first: started or resumed
 it, or sent it a message (a saved chat: when its transcript last changed).
@@ -1189,7 +1194,7 @@ read off the agent's screen) keeps its cursor where it was.
 
 **`Ctrl+K`** (or `F12`, or `:go`) opens a switcher over every chat in every
 tracked folder: running agents first — the ones that need you at the top,
-with the same dots as the sidebar — then every saved chat, newest first. Each
+with the same marks as the sidebar — then every saved chat, newest first. Each
 row says its folder and agent, so `mico codex` finds the Codex chats in mico.
 `Enter` opens the chat exactly as a click in the sidebar does: a running one
 is focused, a saved one resumes. It needs no trip through the Projects pane,

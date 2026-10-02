@@ -17,16 +17,20 @@ inline std::string agent_label(std::string_view agent) {
   return std::string(agent);
 }
 
-// A chat's state as the sidebar shows it: its dot, the dot's colour, and the
-// word for it. `live` is null for a stored transcript. `rank` orders chats
-// by how much they want you: 0 needs you, 1 working, 2 ready, 3 saved.
+// A chat's state as the sidebar shows it: its mark, the mark's colour, and
+// the word for it. `live` is null for a stored transcript. `rank` orders
+// chats by how much they want you, which is also how a folder sums up its
+// chats: 0 needs you (a question or a permission), 1 a reply not yet looked
+// at, 2 working (a spinner, turned by `anim`), 3 ready, 4 saved or stopped.
 struct ChatState {
   char32_t glyph;
   Color color;
   const char* word;
   int rank;
 };
-ChatState chat_state(const LiveSession* live, const Theme& th);
+ChatState chat_state(const LiveSession* live, const Theme& th, uint64_t anim = 0);
+// One frame of the braille spinner a working agent shows, for App::anim().
+char32_t spinner_glyph(uint64_t anim);
 
 // One state chip's choices, as picker items: the values mico can set (the
 // current one checked), or the agent's own picker, plus "copy value". `live`

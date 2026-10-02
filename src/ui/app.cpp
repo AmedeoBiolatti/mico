@@ -1223,10 +1223,13 @@ void App::render_status(Surface& s) {
   }
   status_.clear();
 
-  int working = 0, attention = 0;
+  // The sidebar's states, counted: see chat_state.
+  int working = 0, attention = 0, unread = 0;
   for (const auto& ls : ws_.live()) {
-    if (ls->status() == LiveSession::Status::Working) working++;
-    if (ls->unseen()) attention++;
+    const int rank = chat_state(ls.get(), theme()).rank;
+    if (rank == 0) attention++;
+    else if (rank == 1) unread++;
+    else if (rank == 2) working++;
   }
   char buf[192];
   if (ws_.live().empty()) {
@@ -1241,6 +1244,8 @@ void App::render_status(Surface& s) {
     if (attention)
       n += snprintf(buf + n, sizeof buf - size_t(n), " · %d need%s you", attention,
                     attention == 1 ? "s" : "");
+    if (unread)
+      n += snprintf(buf + n, sizeof buf - size_t(n), " · %d new repl%s", unread, unread == 1 ? "y" : "ies");
     snprintf(buf + n, sizeof buf - size_t(n), " · density: %s", density_name(filters_.density));
   }
   int x = bar.text(text::str_width(left), 0, buf, Style{theme().text, theme().panel});

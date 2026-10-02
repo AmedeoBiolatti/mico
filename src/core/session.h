@@ -84,6 +84,7 @@ class LiveSession {
       return 30;
     if (!queue_.empty()) return 250;  // to notice the turn end that releases it
     if (turn_open_) return 250;         // to read the turn's end in the transcript
+    if (settle_at_ms_) return 100;      // to call the turn finished on time
     if (spawned_ && !pty_.exited() && transcript_.empty() && adapter_) return 500;
     return -1;
   }
@@ -204,6 +205,10 @@ class LiveSession {
   int64_t starting_until_ms_ = 0;
   int64_t trust_next_ms_ = 0;
   bool unseen_ = false;
+  // When work that stopped counts as a finished turn, if it stays stopped:
+  // Claude's spinner blinks out between steps, and each blink is no answer.
+  int64_t settle_at_ms_ = 0;
+  static constexpr int64_t kSettleMs = 1200;
   // Codex's turns as its transcript records them: task_started, then
   // task_complete or turn_aborted. Read from what it appends, a line's head at
   // a time; a resumed chat's history counts for nothing, since it can end
