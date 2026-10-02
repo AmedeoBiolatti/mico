@@ -1248,7 +1248,7 @@ void App::render_status(Surface& s) {
   std::string help = selection_
                          ? "SELECT — drag to copy with your terminal · F8 to resume"
                          : status_.empty()
-                             ? "F3 focus · F2 terminal · F10 detach"
+                             ? "alt-1/2/3 panes · alt-x command"
                              : status_;
   if (selection_) {
     bar.fill(Rect{0, 0, s.width(), 1}, Style{theme().bg, theme().attention});
@@ -1490,6 +1490,19 @@ void App::handle_key(const KeyEvent& k) {
   // Ctrl+L redraws everything, the usual terminal escape hatch for a screen
   // left dirty by something outside the program.
   if (k.is_ctrl('l')) { force_redraw(); return; }
+
+  // Alt+1, 2, 3: the folders, the chats, the chat itself (where its message
+  // box takes the keys). Alt+X: the command line. Global like the function
+  // keys, so they reach past a message being typed and out of a raw pane.
+  if (k.key == Key::Char && k.alt && !k.ctrl) {
+    if (k.ch >= '1' && k.ch <= '3' && !placed_.empty()) {
+      const size_t i = std::min(size_t(k.ch - '1'), placed_.size() - 1);
+      focus_ = (k.ch == '3' ? placed_.back() : placed_[i]).index;
+      mark_dirty();
+      return;
+    }
+    if (k.ch == 'x') { open_command_line(); return; }
+  }
 
   switch (k.key) {
     case Key::F3: focus_next(1); return;

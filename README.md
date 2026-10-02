@@ -35,6 +35,7 @@ Nothing bound to a keystroke stops them: that needs `mico kill` or the
 
 | key | |
 |---|---|
+| `alt-1` · `alt-2` · `alt-3` | focus Projects · Chats · the chat and its message box, from anywhere (over a raw pane too) |
 | `tab` / `shift-tab` | cycle pane focus |
 | `↑ ↓ j k`, `pgup/pgdn`, `end` | move / scroll |
 | `d` | cycle density · `a` show/hide archived chats |
@@ -45,7 +46,7 @@ Nothing bound to a keystroke stops them: that needs `mico kill` or the
 | drag a seam | resize the split either side of it |
 | drag the scrollbar | seek anywhere in the transcript; click the track to jump |
 | right click | context menu |
-| `:` or `F1` | mico's command line — `:help` lists everything |
+| `:`, `alt-x` or `F1` | mico's command line — `:help` lists everything; `alt-x` and `F1` work while typing a message, and over a raw pane |
 | `q` | detach — agents keep running (not while a raw pane has focus) |
 | `F2` | toggle raw ↔ chat for the focused agent |
 | `F3` | next pane · `F4` new Claude · `F5` new Codex · `F6` fork |
