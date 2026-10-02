@@ -1,3 +1,4 @@
+#include "base/log.h"
 #include "core/search.h"
 
 #include <fcntl.h>
@@ -110,6 +111,7 @@ void ChatSearch::merge(Work& w) {
 // One file, on a worker thread: everything here is the job's own.
 void ChatSearch::search_file(Work& w) {
   const Job& j = *w.job;
+  logs::Doing doing("searching", j.s.path.c_str());
   const Adapter* adapter = Store::adapter_for(j.s);
   if (!adapter) return;
   const int fd = ::open(j.s.path.c_str(), O_RDONLY | O_CLOEXEC);

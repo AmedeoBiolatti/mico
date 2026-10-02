@@ -179,6 +179,16 @@ std::optional<InputEvent> InputDecoder::parse(size_t& consumed) {
     case 'H': return key_ev(Key::Home, 0, ctrl, alt, shift);
     case 'F': return key_ev(Key::End, 0, ctrl, alt, shift);
     case 'Z': return key_ev(Key::BackTab);
+    case 'I':
+    case 'O': {
+      // Focus reporting (mode 1004): CSI I as the window gains focus, CSI O
+      // as it loses it.
+      if (!params.empty()) return std::nullopt;
+      InputEvent e;
+      e.type = InputEvent::Type::Focus;
+      e.focus_in = final == 'I';
+      return e;
+    }
     case 'u': {
       // CSI keycode;mods u: the unambiguous form some terminals send for
       // keys the legacy bytes cannot tell apart (Shift+Enter, Ctrl+Shift+Z).

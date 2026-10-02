@@ -28,12 +28,13 @@ void on_winch(int) { g_resized = 1; }
 
 namespace tty {
 
-// Enter: alt screen, hide cursor, SGR mouse (press/release/drag), bracketed paste.
-const char* const kInit = "\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[2J";
+// Enter: alt screen, hide cursor, SGR mouse (press/release/drag), bracketed
+// paste, focus reporting.
+const char* const kInit = "\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[2J";
 // OSC 111 restores the terminal's configured background; terminals that do not
 // know it ignore it, as they do OSC 11.
 const char* const kFini =
-    "\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[0m\x1b]111\x1b\\\x1b[?1049l";
+    "\x1b[?1004l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[0m\x1b]111\x1b\\\x1b[?1049l";
 
 std::string background_seq(Color bg) {
   if (bg == kDefaultColor) return {};
@@ -89,6 +90,10 @@ bool kitty_name(std::string_view term) {
   return term.find("kitty") != std::string_view::npos || term.find("ghostty") != std::string_view::npos;
 }
 
+bool starts_nocase(std::string_view s, std::string_view prefix) {
+  return s.size() >= prefix.size() && !strncasecmp(s.data(), prefix.data(), prefix.size());
+}
+
 }  // namespace
 
 ProbeReplies read_probe_replies(std::string_view buf, std::string* rest) {
@@ -135,6 +140,26 @@ ProbeReplies read_probe_replies(std::string_view buf, std::string* rest) {
   return r;
 }
 
+NotifyEscape notify_escape(std::string_view version) {
+  // The terminal's own answer first: TERM and TERM_PROGRAM are often another
+  // terminal's, inherited or set by hand, and TERM_PROGRAM does not cross ssh.
+  if (starts_nocase(version, "kitty")) return NotifyEscape::Osc99;
+  if (starts_nocase(version, "ghostty") || starts_nocase(version, "wezterm") ||
+      starts_nocase(version, "foot"))
+    return NotifyEscape::Osc777;
+  if (starts_nocase(version, "iterm2")) return NotifyEscape::Osc9;
+  if (!version.empty()) return NotifyEscape::Bell;
+  const char* term = getenv("TERM");
+  const char* prog = getenv("TERM_PROGRAM");
+  const std::string_view t = term ? term : "", pr = prog ? prog : "";
+  if (getenv("KITTY_WINDOW_ID") || t.find("kitty") != std::string_view::npos) return NotifyEscape::Osc99;
+  if (starts_nocase(pr, "ghostty") || starts_nocase(pr, "wezterm") || t.find("ghostty") != std::string_view::npos ||
+      t.starts_with("foot"))
+    return NotifyEscape::Osc777;
+  if (starts_nocase(pr, "iterm")) return NotifyEscape::Osc9;
+  return NotifyEscape::Bell;
+}
+
 bool kitty_version_ok(std::string_view version, bool kitty_term) {
   // Unicode placeholders arrived in kitty 0.28. An older kitty still says OK
   // to the graphics query, and would draw every placeholder as a stray glyph.
@@ -151,7 +176,10 @@ GfxCaps probe_graphics(std::string* rest) {
   cell_pixels(&c.cell_w, &c.cell_h);
   const char* env = getenv("MICO_GRAPHICS");
   const std::string_view mode = env ? env : "";
-  if (mode == "off" || mode == "0" || mode == "none") return c;
+  if (mode == "off" || mode == "0" || mode == "none") {
+    c.notify = notify_escape({});
+    return c;
+  }
   const bool force_kitty = mode == "kitty", force_sixel = mode == "sixel";
 
   if (getenv("TMUX")) {
@@ -214,6 +242,7 @@ GfxCaps probe_graphics(std::string* rest) {
   c.kitty = force_kitty || (kittyish && graphics_ok && new_enough);
   // Sixel pictures are drawn to exact pixels, so they need the cell size.
   c.sixel = !c.kitty && (force_sixel || da_sixel) && c.cell_w > 0 && c.cell_h > 0;
+  c.notify = notify_escape(r.version);
   return c;
 }
 

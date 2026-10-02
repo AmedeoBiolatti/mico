@@ -9,7 +9,9 @@
 #include <cstdlib>
 
 #include "adapters/adapters.h"
+#include "base/log.h"
 #include "base/text.h"
+#include "core/procmem.h"
 
 namespace mico {
 namespace {
@@ -187,6 +189,108 @@ std::string Workspace::title_of(const LiveSession& session) const {
   return "New " + session.agent() + " chat";
 }
 
+int Workspace::restore_running() {
+  int n = 0;
+  for (const auto& r : read_running()) {
+    if (!adapter_for(r.agent)) continue;
+    const Started s = continue_session(r.agent, r.session_id, r.cwd, false);
+    if (s.how == Started::How::Started) n++;
+    MLOG("restoring %s %s in %s: %s", r.agent.c_str(), r.session_id.c_str(), r.cwd.c_str(),
+         s.session ? "resumed" : s.error.c_str());
+  }
+  return n;
+}
+
+void Workspace::forget_running() {
+  remember_running_ = false;
+  running_written_.clear();
+  write_running({});
+}
+
+void Workspace::note_running() {
+  const int64_t now = now_ms();
+  std::vector<RunningAgent> list;
+  for (const auto& s : live_) {
+    // A chat with no transcript yet has nothing to resume.
+    if (!s->adapter() || s->session_id().empty() || s->transcript().empty()) continue;
+    if (s->exited()) {
+      const auto it = exited_at_.try_emplace(s.get(), now).first;
+      if (now - it->second >= kExitGraceMs) continue;
+    } else {
+      exited_at_.erase(s.get());
+    }
+    RunningAgent r{s->agent(), s->session_id(), s->cwd()};
+    if (std::find(list.begin(), list.end(), r) == list.end()) list.push_back(std::move(r));
+  }
+  std::erase_if(exited_at_, [&](const auto& e) {
+    return std::none_of(live_.begin(), live_.end(), [&](const auto& s) { return s.get() == e.first; });
+  });
+  if (list == running_written_) return;
+  write_running(list);
+  running_written_ = std::move(list);
+}
+
+std::string Workspace::describe(LiveSession& s) const {
+  return s.agent() + " \"" + title_of(s) + "\" (" + (s.session_id().empty() ? "no id yet" : s.session_id()) + ") in " +
+         s.cwd();
+}
+
+void Workspace::watch_memory() {
+  const int64_t now = now_ms();
+  if (now - mem_checked_ms_ < (mem_tight_ ? 3000 : 15000)) return;
+  mem_checked_ms_ = now;
+  std::erase_if(mem_level_, [&](const auto& e) {
+    return std::none_of(live_.begin(), live_.end(), [&](const auto& s) { return s.get() == e.first; });
+  });
+  if (live_.empty()) return;
+  proc::Table table;
+  table.read();
+  const proc::Memory mem = proc::system_memory();
+  mem_tight_ = mem.total > 0 && mem.available * 4 < mem.total;
+  const bool low = mem.total > 0 && mem.available * 10 < mem.total;
+
+  struct Row {
+    LiveSession* s;
+    proc::Usage u;
+  };
+  std::vector<Row> rows;
+  for (const auto& s : live_) {
+    if (!s->spawned() || s->exited() || s->pty().pid() <= 0) continue;
+    rows.push_back(Row{s.get(), table.tree(s->pty().pid())});
+  }
+  std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.u.rss > b.u.rss; });
+  const auto largest = [](const proc::Usage& u) {
+    return u.top_name + " (pid " + std::to_string(u.top_pid) + ") " + proc::bytes(u.top_rss);
+  };
+
+  // Each agent's work, as it grows past 1, 2, 4, 8 GB.
+  for (const Row& r : rows) {
+    int level = 0;
+    for (int64_t gb = int64_t(1) << 30; r.u.rss >= gb && level < 40; gb <<= 1) level++;
+    int& logged = mem_level_[r.s];
+    if (level > logged)
+      MLOG("memory: %s holds %s in %d processes; largest %s", describe(*r.s).c_str(), proc::bytes(r.u.rss).c_str(),
+           r.u.procs, largest(r.u).c_str());
+    logged = level;
+  }
+
+  // Short of memory: everyone, so the line before a kill names who it was.
+  if (low && now - low_logged_ms_ >= 30000) {
+    low_logged_ms_ = now;
+    MLOG("memory low: %s of %s available; mico itself holds %s", proc::bytes(mem.available).c_str(),
+         proc::bytes(mem.total).c_str(), proc::bytes(proc::self_rss()).c_str());
+    for (const Row& r : rows)
+      if (r.u.rss >= (int64_t(100) << 20))
+        MLOG("memory low:   %s %s; largest %s", proc::bytes(r.u.rss).c_str(), describe(*r.s).c_str(),
+             largest(r.u).c_str());
+    if (!rows.empty() && rows[0].u.rss >= (int64_t(512) << 20) && now - warned_ms_ >= 60000) {
+      warned_ms_ = now;
+      memory_warning_ = "memory low: " + proc::bytes(mem.available) + " left \xC2\xB7 " + title_of(*rows[0].s) + " uses " +
+                        proc::bytes(rows[0].u.rss) + " (" + rows[0].u.top_name + ")";
+    }
+  }
+}
+
 void Workspace::launched_later(LiveSession* s) { unlaunched_[s] = now_ms(); }
 
 void Workspace::launch_unsized() {
@@ -211,8 +315,22 @@ unsigned Workspace::service(bool usage_wanted) {
     launch_unsized();
     if (unlaunched_.size() != before) changed |= kSessions;
   }
-  for (auto& s : live_)
+  for (auto& s : live_) {
+    logs::Doing doing("pumping session", s->crumb());
     if (s->pump()) changed |= kSessions;
+  }
+  if (remember_running_) note_running();
+  watch_memory();
+  for (auto& s : live_) {
+    const bool busy = s->busy();
+    auto [it, fresh] = was_busy_.try_emplace(s.get(), busy);
+    if (!fresh && it->second && !busy) git_.refresh(s->cwd());
+    it->second = busy;
+  }
+  std::erase_if(was_busy_, [&](const auto& e) {
+    return std::none_of(live_.begin(), live_.end(), [&](const auto& s) { return s.get() == e.first; });
+  });
+  if (git_.pump()) changed |= kGit;
 
   if (!model_probe_.started()) {
     for (const auto& s : live_)
@@ -267,6 +385,7 @@ int Workspace::idle_timeout_ms(bool usage_wanted) const {
   // An index pass reads on worker threads; the loop merges what they finish.
   if (!activity_.complete() || (usage_wanted && !usage_.complete())) ms = std::min(ms, 10);
   if (model_probe_.running() || commands_.probing()) ms = 30;
+  if (git_.waiting()) ms = std::min(ms, 50);
   for (const auto& s : live_) {
     if (const int t = s->timer_ms(); t >= 0) ms = std::min(ms, t);
     // The spinner's beat, which also catches a quiet agent turning idle.

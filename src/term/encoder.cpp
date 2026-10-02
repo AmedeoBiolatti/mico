@@ -280,4 +280,38 @@ std::string clipboard_seq(std::string_view text) {
   return "\x1b]52;c;" + b64 + "\x07";
 }
 
+std::string notify_seq(NotifyEscape how, std::string_view title, std::string_view body) {
+  // Text from a chat title must not end the sequence early, nor, in OSC 777,
+  // start another field.
+  const auto clean = [](std::string_view s, bool semicolons) {
+    std::string out;
+    for (const char c : s) {
+      const auto u = uint8_t(c);
+      if (u < 0x20 || u == 0x7f) out.push_back(' ');
+      else if (c == ';' && !semicolons) out.push_back(',');
+      else out.push_back(c);
+    }
+    return out;
+  };
+  switch (how) {
+    case NotifyEscape::Osc99: {
+      // The title, then the body, as one notification: d=0 says more is
+      // coming under the same id. Each its own id, so none replaces another.
+      static unsigned serial = 0;
+      const std::string id = "i=mico" + std::to_string(++serial);
+      return "\x1b]99;" + id + ":d=0;" + clean(title, true) + "\x1b\\\x1b]99;" + id + ":p=body;" +
+             clean(body, true) + "\x1b\\";
+    }
+    case NotifyEscape::Osc777:
+      return "\x1b]777;notify;" + clean(title, false) + ";" + clean(body, true) + "\x1b\\";
+    case NotifyEscape::Osc9:
+      // A body alone, the body first: it is mico's own words, so it never
+      // starts with a digit and a semicolon, which some terminals read as a
+      // command of their own (9;4 is a progress bar).
+      return "\x1b]9;" + clean(body, true) + ": " + clean(title, true) + "\x07";
+    case NotifyEscape::Bell: break;
+  }
+  return "\x07";
+}
+
 }  // namespace mico

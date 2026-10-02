@@ -165,6 +165,9 @@ class LiveSession {
   bool unseen() const { return unseen_; }
   void mark_seen() { unseen_ = false; }
   std::string label() const;
+  // Who this is, for a crash report: "claude <id> in <folder>". Kept, so the
+  // pointer outlives the call (see logs::doing()).
+  const char* crumb();
   const std::string& start_error() const { return pty_.spawn_error(); }
   int exit_status() const { return pty_.exit_status(); }
 
@@ -244,6 +247,7 @@ class LiveSession {
   int64_t msg_key_ms_ = 0;
   bool msg_feedback_ = false;
   int last_w_ = 0, last_h_ = 0;
+  std::string crumb_, crumb_id_;
 };
 
 

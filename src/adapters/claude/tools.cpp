@@ -42,7 +42,7 @@ void ClaudeAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& 
     if (!b.is_object()) return true;
     std::string_view type;
     std::string id, name, use_id;
-    js::Value input{};
+    js::Value input{}, output{};
     bool error = false;
     js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
       if (k == "type") type = v.body();
@@ -51,10 +51,12 @@ void ClaudeAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& 
       else if (k == "input") input = v;
       else if (k == "tool_use_id") use_id = text_of(v);
       else if (k == "is_error") error = v.is_true();
+      else if (k == "content") output = v;
       return true;
     });
     if (type == "tool_use" && !id.empty()) sink.call(id, at, offset, name, subject(input));
-    else if (type == "tool_result" && !use_id.empty()) sink.result(use_id, at, error);
+    else if (type == "tool_result" && !use_id.empty())
+      sink.result(use_id, at, error, -1, sink.wants_output(use_id, {}) ? result_text(output) : std::string());
     return true;
   });
 }

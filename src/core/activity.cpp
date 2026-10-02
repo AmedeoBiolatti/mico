@@ -1,3 +1,4 @@
+#include "base/log.h"
 #include "core/activity.h"
 
 #include "adapters/adapters.h"
@@ -353,6 +354,60 @@ ToolKind classify_shell(std::string_view cmd, std::string* group, size_t* shown_
 
 }  // namespace
 
+bool makes_commits(std::string_view command) {
+  if (command.find("git") == std::string_view::npos) return false;
+  for (const Step& st : lex(command)) {
+    const std::vector<std::string_view> w = core_words(st);
+    if (w.empty() || lower(basename(w[0])) != "git") continue;
+    // The subcommand is the first word that is no option, past the global
+    // options that take a value of their own: git -C dir -c k=v commit.
+    for (size_t i = 1; i < w.size(); i++) {
+      if (w[i] == "-C" || w[i] == "-c") {
+        i++;
+        continue;
+      }
+      if (w[i].starts_with("-")) continue;
+      if (one_of(w[i], {"commit", "cherry-pick", "revert"})) return true;
+      break;
+    }
+  }
+  return false;
+}
+
+std::vector<ChatCommit> commits_announced(std::string_view output) {
+  std::vector<ChatCommit> out;
+  size_t i = 0;
+  while (i < output.size()) {
+    size_t e = output.find('\n', i);
+    if (e == std::string_view::npos) e = output.size();
+    std::string_view l = output.substr(i, e - i);
+    i = e + 1;
+    if (l.ends_with('\r')) l.remove_suffix(1);
+    // "[main 777c513] subject", "[main (root-commit) 0a1b2c3] subject",
+    // "[detached HEAD 0a1b2c3] subject".
+    if (!l.starts_with('[')) continue;
+    const size_t close = l.find("] ");
+    if (close == std::string_view::npos) continue;
+    const std::string_view inside = l.substr(1, close - 1);
+    const size_t sp = inside.rfind(' ');
+    if (sp == std::string_view::npos) continue;
+    const std::string_view hash = inside.substr(sp + 1);
+    if (hash.size() < 7 || hash.size() > 40 ||
+        !std::all_of(hash.begin(), hash.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+      continue;
+    std::string_view branch = inside.substr(0, sp);
+    if (branch.ends_with(" (root-commit)")) branch.remove_suffix(14);
+    // A branch name has no spaces; "detached HEAD" is the one that does.
+    if (branch.empty() || (branch.find(' ') != std::string_view::npos && branch != "detached HEAD")) continue;
+    ChatCommit cm;
+    cm.hash = std::string(hash);
+    if (branch != "detached HEAD") cm.branch = std::string(branch);
+    cm.subject = std::string(l.substr(close + 2));
+    out.push_back(std::move(cm));
+  }
+  return out;
+}
+
 ToolKind classify_tool(std::string_view tool, std::string_view command, std::string* group,
                        size_t* shown_from) {
   if (shown_from) *shown_from = 0;
@@ -386,9 +441,27 @@ struct Reader final : ToolSink {
   void call(std::string id, int64_t at, uint64_t offset, std::string tool, std::string command) override {
     r.pending[std::move(id)] = ActivityIndex::Pending{at, offset, std::move(tool), std::move(command)};
   }
+  // Only a command that commits is worth its output: the commits it made.
+  bool wants_output(const std::string& id, std::string_view command) const override {
+    if (id.empty()) return makes_commits(command);
+    const auto it = r.pending.find(id);
+    return it != r.pending.end() && makes_commits(it->second.command);
+  }
+  // The commits a call's output announces. A command that failed may still
+  // have committed first (git commit && make test).
+  void commits(std::string_view output, int64_t at, uint64_t offset) {
+    for (ChatCommit& c : commits_announced(output)) {
+      // Codex records a command twice: as a call, and as a finished item.
+      if (std::any_of(out.commits.begin(), out.commits.end(), [&](const ChatCommit& o) { return o.hash == c.hash; }))
+        continue;
+      c.at_ms = at;
+      c.call_offset = offset;
+      out.commits.push_back(std::move(c));
+    }
+  }
   // A result: the call it answers becomes a run. `exact_ms` is the agent's own
   // measure when it gives one.
-  void result(const std::string& id, int64_t at, bool failed, int64_t exact_ms) override {
+  void result(const std::string& id, int64_t at, bool failed, int64_t exact_ms, std::string_view output) override {
     if (auto pe = r.pending_edits.find(id); pe != r.pending_edits.end()) {
       if (!failed)
         for (FileEdit& e : pe->second) out.edits.push_back(std::move(e));
@@ -396,12 +469,14 @@ struct Reader final : ToolSink {
     }
     auto it = r.pending.find(id);
     if (it == r.pending.end()) return;
+    if (!output.empty()) commits(output, at, it->second.offset);
     run(it->second.start_ms, exact_ms >= 0 ? exact_ms : std::max<int64_t>(0, at - it->second.start_ms),
         it->second.offset, std::move(it->second.tool), std::move(it->second.command), failed, false);
     r.pending.erase(it);
   }
   void run(int64_t start, int64_t dur, uint64_t offset, std::string tool, std::string command, bool failed,
-           bool reading) override {
+           bool reading, std::string_view output = {}) override {
+    if (!output.empty()) commits(output, start + std::max<int64_t>(0, dur), offset);
     ToolRun tr;
     tr.start_ms = start;
     tr.dur_ms = dur;
@@ -538,6 +613,7 @@ bool ActivityIndex::step(int budget_ms) {
     batch_.start(std::move(work), [](Work& w) {
       Cached& c = w.c;
       const Job& job = w.job;
+      logs::Doing doing("indexing tool calls of", job.s.path.c_str());
       // A transcript only grows; one that shrank was rewritten.
       if (job.s.bytes < c.size) c = Cached{};
       c.mtime = job.s.mtime;

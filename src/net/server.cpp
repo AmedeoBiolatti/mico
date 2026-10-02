@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -13,6 +14,8 @@
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -25,14 +28,18 @@
 #include "term/sixel.h"
 #include "term/term.h"
 #include "net/web.h"
+#include "core/away.h"
+#include "core/opener.h"
 #include "ui/app.h"
 #include "ui/theme.h"
 
 namespace mico {
 namespace {
 
+// Why the loop ends: a signal's number, or one of these.
 volatile sig_atomic_t g_stop = 0;
-void on_term(int) { g_stop = 1; }
+constexpr int kStopKill = 1000, kStopQuit = 1001;
+void on_term(int sig) { g_stop = sig; }
 
 // One attached terminal. Each keeps its own front buffer, so a client that
 // joins late gets a full repaint without disturbing anyone already attached.
@@ -50,6 +57,8 @@ struct Client {
   bool dead = false;
   bool mouse_on = true;   // what this terminal was last told
   bool mouse_any = false; // 1003 (any-event) vs 1002 (button-event) tracking
+  // The window's focus, once the terminal has reported it (mode 1004).
+  bool focused = true, focus_known = false;
   GfxCaps caps{};
   math::KittyHeld images;  // the images this terminal already holds
 };
@@ -97,6 +106,158 @@ int listen_socket(const std::string& path) {
   return fd;
 }
 
+// $XDG_STATE_HOME/mico/daemon: "pid started last_alive", unix seconds. There
+// while a daemon runs; removed when it stops as it should.
+std::string pidfile_path() {
+  if (const char* x = getenv("XDG_STATE_HOME"); x && *x) return std::string(x) + "/mico/daemon";
+  const char* h = getenv("HOME");
+  return (h ? std::string(h) : std::string(".")) + "/.local/state/mico/daemon";
+}
+
+void write_pidfile(int64_t started) {
+  const std::string path = pidfile_path(), tmp = path + ".tmp";
+  char b[96];
+  const int n = snprintf(b, sizeof b, "%d %lld %lld\n", int(getpid()), (long long)started, (long long)time(nullptr));
+  const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) return;
+  const bool ok = n > 0 && write(fd, b, size_t(n)) == n;
+  close(fd);
+  if (ok) rename(tmp.c_str(), path.c_str());
+}
+
+std::string clock_of(int64_t t) {
+  const time_t tt = time_t(t);
+  tm v{};
+  localtime_r(&tt, &v);
+  char b[32];
+  strftime(b, sizeof b, "%b %d %H:%M:%S", &v);
+  return b;
+}
+
+// What a command prints, up to `cap` bytes and ten seconds; empty when it
+// cannot run.
+std::string capture(std::vector<std::string> argv, size_t cap) {
+  std::vector<char*> args;
+  for (auto& a : argv) args.push_back(a.data());
+  args.push_back(nullptr);
+  int fds[2];
+  if (pipe2(fds, O_CLOEXEC) != 0) return {};
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(fds[0]);
+    close(fds[1]);
+    return {};
+  }
+  if (pid == 0) {
+    dup2(fds[1], 1);
+    const int null = open("/dev/null", O_RDWR);
+    if (null >= 0) {
+      dup2(null, 0);
+      dup2(null, 2);
+    }
+    execvp(args[0], args.data());
+    _exit(127);
+  }
+  close(fds[1]);
+  std::string out;
+  char buf[65536];
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  for (;;) {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    pollfd pf{fds[0], POLLIN, 0};
+    if (left.count() <= 0 || ::poll(&pf, 1, int(left.count())) <= 0) break;
+    const ssize_t n = read(fds[0], buf, sizeof buf);
+    if (n <= 0) break;
+    out.append(buf, size_t(n));
+    if (out.size() >= cap) break;
+  }
+  close(fds[0]);
+  kill(pid, SIGTERM);
+  waitpid(pid, nullptr, 0);
+  return out;
+}
+
+// What became of the last daemon, found on a thread of its own: the
+// journal can take a moment, and the new daemon has agents to start.
+struct Postmortem {
+  std::mutex mu;
+  bool done = false;
+  std::string status;  // for the status bar; empty when there is nothing to say
+};
+
+std::shared_ptr<Postmortem> check_last_daemon() {
+  std::string buf;
+  int pid = 0;
+  long long started = 0, alive = 0;
+  if (FILE* f = fopen(pidfile_path().c_str(), "r")) {
+    if (fscanf(f, "%d %lld %lld", &pid, &started, &alive) < 2) pid = 0;
+    fclose(f);
+  }
+  if (pid <= 0) return nullptr;
+  // A file left behind is the mark of a daemon that did not stop as it
+  // should. One still running would hold the socket: we would not be here.
+  MLOG("the last daemon (pid %d, started %s, last seen %s) ended without stopping: killed, or crashed",
+       pid, clock_of(started).c_str(), clock_of(alive ? alive : started).c_str());
+  auto pm = std::make_shared<Postmortem>();
+  std::thread([pm, pid, started] {
+    const std::string since = "@" + std::to_string(started);
+    std::string journal = capture({"journalctl", "--no-pager", "-q", "-o", "short-iso", "--since", since,
+                                   "-g", "mico|oom|Killed"},
+                                  8u << 20);
+    // A journalctl without pattern matching (-g) prints nothing: read it all.
+    if (journal.empty())
+      journal = capture({"journalctl", "--no-pager", "-q", "-o", "short-iso", "--since", since}, 64u << 20);
+    const std::string me = " " + std::to_string(pid) + " (mico)";
+    const std::string killed = "Killed process " + std::to_string(pid) + " ";
+    // The lines about it, then the lines about the unit it was killed with.
+    std::string unit, when, how;
+    std::vector<std::string> lines;
+    size_t at = 0;
+    while (at < journal.size()) {
+      size_t e = journal.find('\n', at);
+      if (e == std::string::npos) e = journal.size();
+      const std::string l = journal.substr(at, e - at);
+      at = e + 1;
+      if (l.find(me) == std::string::npos && l.find(killed) == std::string::npos) continue;
+      lines.push_back(l);
+      if (when.empty()) when = l.substr(0, l.find(' '));
+      // "…systemd[3166]: app-gnome-kitty-55828.scope: Killing process …"
+      const size_t k = l.find(": Killing process");
+      if (k != std::string::npos && unit.empty()) {
+        const size_t s = l.rfind(' ', k);
+        unit = l.substr(s + 1, k - s - 1);
+      }
+      if (l.find("Killed process") != std::string::npos) how = "the kernel's OOM killer";
+    }
+    if (!unit.empty()) {
+      at = 0;
+      while (at < journal.size()) {
+        size_t e = journal.find('\n', at);
+        if (e == std::string::npos) e = journal.size();
+        const std::string l = journal.substr(at, e - at);
+        at = e + 1;
+        if (l.find(unit) == std::string::npos || std::find(lines.begin(), lines.end(), l) != lines.end()) continue;
+        lines.push_back(l);
+        if (l.find("systemd-oomd") != std::string::npos || l.find("oom-kill") != std::string::npos)
+          how = "systemd-oomd, for memory pressure, with everything in " + unit;
+      }
+    }
+    for (size_t i = 0; i < lines.size() && i < 16; i++) MLOG("the last daemon, from the journal: %s", lines[i].c_str());
+    std::string status;
+    const std::string t = when.size() >= 19 ? when.substr(11, 8) : when;
+    if (!how.empty()) status = "the last daemon was killed at " + t + " by " + how + " (see :log)";
+    else if (!lines.empty()) status = "the last daemon was killed at " + t + " (see :log)";
+    else {
+      MLOG("the last daemon: the journal says nothing of its end; a crash would be logged above it");
+      status = "the last daemon ended without stopping (see :log)";
+    }
+    std::lock_guard<std::mutex> lock(pm->mu);
+    pm->status = std::move(status);
+    pm->done = true;
+  }).detach();
+  return pm;
+}
+
 void flush_client(Client& c) {
   while (!c.out.empty()) {
     ssize_t n = write(c.fd, c.out.data(), c.out.size());
@@ -123,11 +284,23 @@ int run_daemon() {
   signal(SIGPIPE, SIG_IGN);
   signal(SIGTERM, on_term);
   signal(SIGINT, on_term);
+  signal(SIGHUP, on_term);
+  // Whether the last daemon stopped as it should, and if not, what the
+  // journal says ended it: an out-of-memory kill takes no log line with it.
+  std::shared_ptr<Postmortem> postmortem = check_last_daemon();
+  write_pidfile(time(nullptr));
 
   // The daemon owns the agents and what is known about them; the App is how
   // its clients see them. Today every client shares that one view.
   Workspace workspace;
+  // Agents the last daemon was running and did not stop on purpose come back:
+  // after a reboot, a crash, or `mico kill`. Then this daemon keeps the list.
+  const int restored = restore_agents_enabled() ? workspace.restore_running() : 0;
+  workspace.remember_running();
   App app(workspace);
+  if (restored)
+    app.set_status("Resumed " + std::to_string(restored) + " agent" + (restored == 1 ? "" : "s") +
+                   " that " + (restored == 1 ? "was" : "were") + " running when mico stopped");
   // The web view, when it is turned on (:web on): a second kind of client,
   // given state rather than frames.
   WebServer web(workspace);
@@ -139,9 +312,47 @@ int run_daemon() {
 
   std::vector<uint32_t> evicted;
   Color theme_bg = active_theme().bg;
+  const int64_t started = time(nullptr);
+  int64_t alive_written = started;
+  bool postmortem_shown = false;
   while (!g_stop && app.running()) {
     bool dirty = app.service();
+    // Alive, once a minute: a daemon that is killed leaves this behind, and
+    // the next one can say when it was last seen.
+    if (const int64_t now = time(nullptr); now - alive_written >= 60) {
+      alive_written = now;
+      write_pidfile(started);
+    }
+    if (postmortem && !postmortem_shown) {
+      std::lock_guard<std::mutex> lock(postmortem->mu);
+      if (postmortem->done) {
+        postmortem_shown = true;
+        if (!postmortem->status.empty()) app.set_status(postmortem->status);
+      }
+    }
     app.save_view_if_changed();
+
+    // An agent finished, or needs you. Nobody is told while someone is
+    // looking at mico; with no terminal attached, the desktop is.
+    if (auto notices = app.take_notices(); !notices.empty()) {
+      bool attached = false, watched = false;
+      for (const auto& c : clients) {
+        attached |= c->hello;
+        watched |= c->hello && c->focus_known && c->focused;
+      }
+      for (const auto& n : notices) {
+        if (!attached) {
+          if (notify_mode() == NotifyMode::Desktop) notify_desktop(n.title, n.body);
+          continue;
+        }
+        if (watched) continue;
+        for (auto& c : clients) {
+          if (!c->hello || !App::announce(n, c->focus_known, c->focused)) continue;
+          proto::encode(proto::Type::Frame, App::notice_seq(n, c->caps.notify), c->out);
+          flush_client(*c);
+        }
+      }
+    }
     web.sync();
     web.pump();
 
@@ -331,11 +542,17 @@ int run_daemon() {
               // produced and the daemon interprets it exactly as if local.
               c.dec.feed(payload);
               while (auto ev = c.dec.next()) {
+                // Focus is this terminal's alone, not something to act on.
+                if (ev->type == InputEvent::Type::Focus) {
+                  c.focused = ev->focus_in;
+                  c.focus_known = true;
+                  continue;
+                }
                 switch (app.feed(*ev)) {
                   // Only this client leaves; its agents carry on for everyone
                   // else, and for whoever attaches next.
                   case AppAction::Detach: c.dead = true; break;
-                  case AppAction::Shutdown: c.dead = true; g_stop = 1; break;
+                  case AppAction::Shutdown: c.dead = true; g_stop = kStopQuit; break;
                   default: break;
                 }
                 // A link this client's user clicked opens on their machine,
@@ -347,7 +564,7 @@ int run_daemon() {
               break;
             case proto::Type::Bye: c.dead = true; break;
             // Detaching leaves the agents running; only an explicit Kill ends them.
-            case proto::Type::Kill: c.dead = true; g_stop = 1; break;
+            case proto::Type::Kill: c.dead = true; g_stop = kStopKill; break;
             default: break;
           }
         }
@@ -365,7 +582,7 @@ int run_daemon() {
       if (auto ev = c->dec.flush()) {
         const auto action = app.feed(*ev);
         if (action != AppAction::None) c->dead = true;
-        if (action == AppAction::Shutdown) g_stop = 1;
+        if (action == AppAction::Shutdown) g_stop = kStopQuit;
       }
     }
 
@@ -380,6 +597,15 @@ int run_daemon() {
     }
   }
 
+  // Stopped on purpose (:quit, "Stop all agents and quit"): the agents go
+  // for good, and the next daemon starts none of them.
+  if (!app.running()) workspace.forget_running();
+  const int why = g_stop;
+  MLOG("daemon stopping: %s, with %zu agents",
+       !app.running() || why == kStopQuit ? ":quit" : why == kStopKill ? "mico kill" : why == SIGTERM ? "SIGTERM"
+       : why == SIGINT ? "SIGINT" : why == SIGHUP ? "SIGHUP" : "the loop ended",
+       workspace.live().size());
+  unlink(pidfile_path().c_str());
   for (auto& c : clients) {
     proto::encode(proto::Type::Detach, {}, c->out);
     flush_client(*c);

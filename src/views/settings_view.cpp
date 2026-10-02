@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "core/away.h"
+#include "core/scope.h"
 #include "core/session.h"
 #include "core/settings.h"
 #include "base/text.h"
@@ -90,6 +92,26 @@ std::vector<Section> sections() {
   s.back().rows.push_back(switch_row("Usage limits", "not read",
                                      "claude's subscription limits, through its status line, for the Usage tab",
                                      plan_limits_enabled, set_plan_limits));
+
+  s.push_back({"Away", "what mico does while you look elsewhere, or after it stops", {}});
+  Row notify;
+  notify.label = "Notifications";
+  notify.names = {"off", "bell", "desktop"};
+  notify.details = {"an agent that finished or needs you shows only in the sidebar and the status bar",
+                    "the terminal's bell, when its window is not the one in front",
+                    "a desktop notification through the terminal (kitty, Ghostty, WezTerm, foot, iTerm2; "
+                    "the bell elsewhere), or notify-send with no terminal attached"};
+  notify.get = [] { return int(notify_mode()); };
+  notify.set = [](int i) { set_notify_mode(NotifyMode(i)); };
+  s.back().rows.push_back(std::move(notify));
+  s.back().rows.push_back(switch_row("Resume agents", "agents end with the daemon",
+                                     "agents still running when the daemon went (a reboot, a crash, mico kill) "
+                                     "are resumed when it starts again; :quit ends them for good",
+                                     restore_agents_enabled, set_restore_agents));
+  s.back().rows.push_back(switch_row("Own scopes", "agents share the daemon's cgroup, and die with it",
+                                     "each agent, and the daemon, in a systemd scope of its own: killed for memory, "
+                                     "an agent's work takes only that agent (agents started from now on)",
+                                     scope::enabled, scope::set_enabled));
   return s;
 }
 

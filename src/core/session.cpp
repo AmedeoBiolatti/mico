@@ -1,11 +1,13 @@
 #include "adapters/adapters.h"
 #include "base/fs.h"
 #include "base/log.h"
+#include "core/scope.h"
 #include "core/session.h"
 #include "core/store.h"
 #include "vt/keys.h"
 
 #include <dirent.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -196,7 +198,14 @@ bool LiveSession::set_geometry(int w, int h) {
   last_h_ = h;
   vt_.resize(w, h);
   MLOG("session spawn: %s @ %dx%d", agent_.c_str(), w, h);
-  pty_.spawn(argv_, cwd_, w, h);
+  // Its own scope: what it runs is killed for memory without the daemon.
+  // Named afresh each spawn: a restart must not meet the scope of the run
+  // before, which a process it left behind can keep alive.
+  static unsigned spawns = 0;
+  pty_.spawn(argv_, cwd_, w, h,
+             scope::unit_name(agent_.substr(agent_.rfind('/') + 1) + "-" + std::to_string(getpid()) + "-" +
+                              std::to_string(++spawns)),
+             "mico: " + agent_ + " in " + cwd_);
   return true;
 }
 
@@ -380,6 +389,14 @@ void LiveSession::send_after_answer(std::string text) {
   after_answer_ms_ = now_ms() + 400;
 }
 
+const char* LiveSession::crumb() {
+  if (crumb_.empty() || crumb_id_ != session_id_) {
+    crumb_id_ = session_id_;
+    crumb_ = agent_ + " " + (session_id_.empty() ? std::string("(no id yet)") : session_id_) + " in " + cwd_;
+  }
+  return crumb_.c_str();
+}
+
 LiveSession::Status LiveSession::status() const {
   if (pty_.exited()) return Status::Exited;
   if (needs_input()) return Status::Waiting;
@@ -492,6 +509,10 @@ bool LiveSession::pump() {
     if (tail.size() > 400) tail = tail.substr(tail.size() - 400);
     MLOG("session EXITED: %s code=%d  last screen: %s", agent_.c_str(), pty_.exit_status(),
          tail.empty() ? "(blank)" : tail.c_str());
+    // Killed outright: nearly always for memory. Its scope is in the journal.
+    if (pty_.exit_signal() == SIGKILL)
+      MLOG("session KILLED (SIGKILL): %s; for memory, if the journal says so: journalctl --user -u %s", crumb(),
+           pty_.unit().empty() ? "(no scope of its own)" : pty_.unit().c_str());
   }
   bool finished = false;
   if (working || pty_.exited()) settle_at_ms_ = 0;

@@ -21,7 +21,10 @@ class Pty {
   Pty(const Pty&) = delete;
   Pty& operator=(const Pty&) = delete;
 
-  bool spawn(const std::vector<std::string>& argv, const std::string& cwd, int w, int h);
+  // With `unit`, the child runs in a systemd scope of that name, where scopes
+  // are available (core/scope.h).
+  bool spawn(const std::vector<std::string>& argv, const std::string& cwd, int w, int h,
+             const std::string& unit = {}, const std::string& description = {});
   // Non-empty after a spawn that could not even exec (binary not on PATH, or
   // the working directory is gone). Distinct from a process that ran and then
   // exited on its own.
@@ -41,6 +44,10 @@ class Pty {
   void poll_exit();
   bool exited() const { return exited_; }
   int exit_status() const { return status_; }
+  // The signal that ended it, or 0 when it exited on its own.
+  int exit_signal() const { return signal_; }
+  // The scope it runs in, when it has one of its own.
+  const std::string& unit() const { return unit_; }
   void terminate();
   // Release a reaped child before restarting it. Never stops a running child.
   bool reset_exited();
@@ -50,6 +57,8 @@ class Pty {
   pid_t pid_ = -1;
   bool exited_ = false;
   int status_ = 0;
+  int signal_ = 0;
+  std::string unit_;
   std::string spawn_error_;
   std::string pending_input_;
 };

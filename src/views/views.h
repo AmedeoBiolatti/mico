@@ -69,6 +69,11 @@ PanePtr make_tools_view(ActivityIndex& index);
 // outlive the pane, which is rebuilt whenever the sidebar selection moves.
 struct DiffSettings;
 PanePtr make_diff_view(ActivityIndex& index, DiffSettings& settings);
+// The selected folder's repository: its work trees and who works in each,
+// its branches, what is uncommitted and its commits, each with the chat
+// behind it. What it has focused outlives the pane.
+struct GitTabState;
+PanePtr make_git_view(GitTabState& state);
 // What the chat renders (pictures, LaTeX, charts…) and what agents are given,
 // each switched on or off.
 PanePtr make_settings_view();

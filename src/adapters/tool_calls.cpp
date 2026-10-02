@@ -29,6 +29,24 @@ std::string text_of(const js::Value& v) {
   return s;
 }
 
+std::string result_text(const js::Value& content) {
+  if (content.is_string()) return text_of(content);
+  std::string out;
+  if (!content.is_array()) return out;
+  js::scan_array(content.raw, [&](const js::Value& b) {
+    if (!b.is_object()) return true;
+    js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
+      if (k == "text" && v.is_string()) {
+        if (!out.empty() && out.back() != '\n') out += '\n';
+        js::unescape_append(v.body(), out);
+      }
+      return true;
+    });
+    return true;
+  });
+  return out;
+}
+
 std::string subject(const js::Value& input) {
   std::string cmd, other;
   if (input.is_object()) {

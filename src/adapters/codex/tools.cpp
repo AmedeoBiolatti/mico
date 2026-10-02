@@ -63,7 +63,7 @@ void CodexAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& s
 
   if (ptype == "item_completed" && it.is_object()) {
     std::string_view itype;
-    js::Value command{}, duration{}, parsed{}, changes{};
+    js::Value command{}, duration{}, parsed{}, changes{}, aggregated{};
     int exit_code = 0;
     std::string status, server, tool;
     js::scan_object(it.raw, [&](std::string_view k, const js::Value& v) {
@@ -74,6 +74,7 @@ void CodexAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& s
       else if (k == "status") status = text_of(v);
       else if (k == "parsed_cmd") parsed = v;
       else if (k == "changes") changes = v;
+      else if (k == "aggregated_output") aggregated = v;
       else if (k == "server") server = text_of(v);
       else if (k == "tool") tool = text_of(v);
       return true;
@@ -107,7 +108,8 @@ void CodexAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& s
         return false;
       });
       sink.run(start, std::max<int64_t>(0, dur), offset, "exec", cmd, exit_code != 0 || status == "failed",
-               hint == "read" || hint == "search" || hint == "list_files");
+               hint == "read" || hint == "search" || hint == "list_files",
+               sink.wants_output({}, cmd) ? text_of(aggregated) : std::string());
     } else if (itype == "McpToolCall") {
       sink.run(start, std::max<int64_t>(0, dur), offset, server + "." + tool, "", status == "failed");
     } else if (itype == "FileChange") {
@@ -154,7 +156,7 @@ void CodexAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& s
     // A patch that did not apply says so in words, with no exit code.
     if (output.find("verification failed") < 256 || output.starts_with("Failed to"))
       failed = true;
-    sink.result(call_id, at, failed, exact);
+    sink.result(call_id, at, failed, exact, sink.wants_output(call_id, {}) ? output : std::string());
   }
 }
 

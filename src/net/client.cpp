@@ -10,8 +10,10 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "core/opener.h"
+#include "core/scope.h"
 #include "net/proto.h"
 #include "base/log.h"
 #include "term/term.h"
@@ -41,11 +43,19 @@ int dial(const std::string& path) {
 }
 
 // Double-forks a detached daemon so it outlives this client and any terminal.
-bool spawn_daemon() {
+// With `scoped`, in a systemd scope of its own: in this terminal's, it would
+// go down whenever systemd-oomd kills the terminal for memory.
+bool spawn_daemon(bool scoped) {
   char self[4096];
   ssize_t n = readlink("/proc/self/exe", self, sizeof self - 1);
   if (n <= 0) return false;
   self[n] = '\0';
+  // Made before the fork: the child only execs.
+  std::vector<std::string> argv = {self, "--daemon"};
+  if (scoped) argv = scope::wrap(argv, scope::unit_name("daemon-" + std::to_string(getpid())), "mico daemon");
+  std::vector<char*> args;
+  for (auto& a : argv) args.push_back(a.data());
+  args.push_back(nullptr);
 
   pid_t pid = fork();
   if (pid < 0) return false;
@@ -59,7 +69,7 @@ bool spawn_daemon() {
       dup2(null, STDERR_FILENO);
       if (null > 2) close(null);
     }
-    execl(self, self, "--daemon", (char*)nullptr);
+    execv(args[0], args.data());
     _exit(127);
   }
   int st = 0;
@@ -71,13 +81,19 @@ int connect_or_spawn(const std::string& path, bool allow_spawn) {
   if (int fd = dial(path); fd >= 0) return fd;
   if (!allow_spawn) return -1;
   MLOG("no daemon at %s, spawning one", path.c_str());
-  if (!spawn_daemon()) { MLOG("spawn_daemon failed"); return -1; }
-
-  // The daemon has to bind before it can be reached; poll briefly rather than
-  // guessing a fixed sleep.
-  for (int i = 0; i < 200; i++) {
-    usleep(15000);
-    if (int fd = dial(path); fd >= 0) return fd;
+  // In a scope of its own when it can be; if that daemon never answers, one
+  // started as before.
+  const bool scoped = scope::available();
+  for (int attempt = 0; attempt < (scoped ? 2 : 1); attempt++) {
+    const bool in_scope = scoped && attempt == 0;
+    if (!spawn_daemon(in_scope)) { MLOG("spawn_daemon failed"); return -1; }
+    // The daemon has to bind before it can be reached; poll briefly rather
+    // than guessing a fixed sleep.
+    for (int i = 0; i < 200; i++) {
+      usleep(15000);
+      if (int fd = dial(path); fd >= 0) return fd;
+    }
+    if (in_scope) MLOG("the daemon started in a scope did not answer; starting one without");
   }
   return -1;
 }

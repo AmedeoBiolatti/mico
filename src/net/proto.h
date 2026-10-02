@@ -14,6 +14,7 @@ namespace mico::proto {
 
 enum class Type : uint8_t {
   Hello = 1,   // C->D  u16 w, u16 h [, u8 flags, u16 cell_w, u16 cell_h]
+               //       flags: 1 kitty, 2 sixel, 4 tmux, bits 3-4 NotifyEscape
   Input = 2,   // C->D  raw terminal bytes, undecoded
   Resize = 3,  // C->D  as Hello
   Bye = 4,     // C->D

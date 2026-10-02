@@ -34,10 +34,13 @@ struct MouseEvent {
 };
 
 struct InputEvent {
-  enum class Type { None, Key, Mouse, Resize, Paste } type = Type::None;
+  // Focus: the terminal window gained or lost focus (focus_in says which),
+  // reported once mico has asked for it with mode 1004.
+  enum class Type { None, Key, Mouse, Resize, Paste, Focus } type = Type::None;
   KeyEvent key{};
   MouseEvent mouse{};
   std::string paste;
+  bool focus_in = false;
 };
 
 }  // namespace mico

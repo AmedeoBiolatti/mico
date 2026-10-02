@@ -1,3 +1,4 @@
+#include "base/log.h"
 #include "core/usage.h"
 
 #include "adapters/adapters.h"
@@ -176,6 +177,7 @@ bool UsageIndex::step(int budget_ms) {
     batch_.start(std::move(work), [](Work& w) {
       Cache& c = w.c;
       const Job& job = w.job;
+      logs::Doing doing("adding up usage of", job.path.c_str());
       // A transcript only grows; one that shrank was rewritten and is read anew.
       if (job.size < c.size) c.resume = UsageResume{};
       c.entry = usage_for_file(job.path, job.agent, job.cwd, job.project, job.mtime, &c.resume, &c.entry);

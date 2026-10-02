@@ -1,10 +1,12 @@
 #include "ui/app.h"
 
 #include <poll.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <ctime>
 #include <cstdio>
@@ -13,6 +15,7 @@
 #include "adapters/adapters.h"
 #include "base/fs.h"
 #include "base/log.h"
+#include "core/away.h"
 #include "core/opener.h"
 #include "core/pty.h"
 #include "core/settings.h"
@@ -87,14 +90,14 @@ std::string App::view_state() const {
   const std::string chat = selected_live_ ? selected_live_->transcript() : selected_path_;
   std::string s;
   s += "density " + std::string(density) + "\n";
-  s += "tab " + std::to_string(tab_) + "\n";
+  s += "tab " + tabs_[tab_].name + "\n";
   s += "folder " + view_escape(project_path_) + "\n";
   s += "sub " + view_escape(sub_) + "\n";
   s += "chat " + view_escape(chat) + "\n";
   s += "all-folders " + std::string(all_folders_ ? "on" : "off") + "\n";
   s += "chat-filter " + std::string(chat_filter_ ? "on" : "off") + "\n";
   s += "diff-span " + std::to_string(diff_.span) + "\n";
-  s += "diff-by " + std::string(diff_.by_chat ? "chat" : "file") + "\n";
+  s += "diff-by " + std::string(diff_.group == 2 ? "commit" : diff_.group == 1 ? "chat" : "file") + "\n";
   s += "diff-selected " + view_escape(diff_.sel_key) + "\n";
   const size_t from = cmd_history_.size() > kViewHistory ? cmd_history_.size() - kViewHistory : 0;
   for (size_t i = from; i < cmd_history_.size(); i++) s += "command " + view_escape(cmd_history_[i]) + "\n";
@@ -115,8 +118,14 @@ void App::load_view() {
     if (key == "density") {
       filters_.density = value == "minimal" ? Density::Minimal : value == "full" ? Density::Full : Density::Normal;
     } else if (key == "tab") {
-      const size_t t = size_t(std::atoi(value.c_str()));
-      if (t < tabs_.size()) tab_ = t;
+      // By name; a number is from before the Git tab, when Settings was 5.
+      for (size_t t = 0; t < tabs_.size(); t++)
+        if (tabs_[t].name == value) tab_ = t;
+      if (!value.empty() && std::isdigit(uint8_t(value[0]))) {
+        const size_t t = size_t(std::atoi(value.c_str()));
+        if (t < 5) tab_ = t;
+        else if (t == 5) tab_ = 6;
+      }
     } else if (key == "folder") {
       project_path_ = value;
     } else if (key == "sub") {
@@ -130,7 +139,7 @@ void App::load_view() {
     } else if (key == "diff-span") {
       diff_.span = std::atoi(value.c_str());
     } else if (key == "diff-by") {
-      diff_.by_chat = value == "chat";
+      diff_.group = value == "commit" ? 2 : value == "chat" ? 1 : 0;
     } else if (key == "diff-selected") {
       diff_.sel_key = value;
     } else if (key == "command" && !value.empty()) {
@@ -183,7 +192,8 @@ void App::build_layout() {
   else if (tab_ == 2) main = Node::leaf(make_search_view(ws_.search()));
   else if (tab_ == 3) main = Node::leaf(make_tools_view(ws_.activity()));
   else if (tab_ == 4) main = Node::leaf(make_diff_view(ws_.activity(), diff_));
-  else if (tab_ == 5) main = Node::leaf(make_settings_view());
+  else if (tab_ == 5) main = Node::leaf(make_git_view(git_));
+  else if (tab_ == 6) main = Node::leaf(make_settings_view());
   if (!main && selected_live_) {
     bool alive = false;
     for (auto& s : ws_.live())
@@ -369,6 +379,7 @@ void App::reap_sessions() {
   const bool closed = ws_.reap([&](LiveSession* gone) {
     if (selected_live_ == gone) selected_live_ = nullptr;
     if (focus_after_build_ == gone) focus_after_build_ = nullptr;
+    watch_.erase(gone);
   });
   if (closed) layout_dirty_ = true;
   if (layout_dirty_) {
@@ -394,7 +405,7 @@ bool App::service() {
   const unsigned moved = ws_.service(tab_ == 1);
   // The activity index is shown only by Tools and Diff.
   if (moved & ~unsigned(Workspace::kActivity)) changed = true;
-  if ((moved & Workspace::kActivity) && (tab_ == 3 || tab_ == 4)) changed = true;
+  if ((moved & Workspace::kActivity) && (tab_ == 3 || tab_ == 4 || tab_ == 5)) changed = true;
   // Pictures prepared off this thread: the frame that shows them.
   if (math::collect_prepared()) changed = true;
 
@@ -422,12 +433,102 @@ bool App::service() {
     changed = true;
   }
 
+  watch_agents(now_ms);
+  if (std::string w = ws_.take_memory_warning(); !w.empty()) set_status(std::move(w));
+
+  // What git blame said: the chat behind the commit, when an agent made it.
+  for (GitIndex::Blame b; ws_.git().take_blame(b);) {
+    const std::string where = b.file + ":" + std::to_string(b.line);
+    if (!b.error.empty()) set_status(where + ": " + b.error);
+    else if (!open_commit(b.hash)) set_status(where + " is from " + b.hash.substr(0, 7) + ", not a commit by any chat mico knows");
+    changed = true;
+  }
+
   if (changed) dirty_ = true;
   return std::exchange(dirty_, false);
 }
 
+void App::watch_agents(int64_t now) {
+  next_watch_ms_ = 0;
+  for (const auto& owned : ws_.live()) {
+    LiveSession* s = owned.get();
+    // Only agents mico knows: a plain command's output says nothing about
+    // whether it is done.
+    if (!s->adapter() || !s->spawned() || s->exited()) {
+      // Killed outright while it was being watched: nearly always for memory.
+      if (s->exited() && watch_.erase(s) && s->pty().exit_signal() == SIGKILL)
+        set_status(session_title(*s) + " was killed (SIGKILL), most likely for memory \xC2\xB7 see :log");
+      watch_.erase(s);
+      continue;
+    }
+    const bool waiting = s->needs_input() && !s->starting();
+    const bool busy = s->busy();
+    // The first look only learns the state: an agent found already idle, as
+    // one resumed is, has finished nothing just now.
+    const auto [it, first] = watch_.try_emplace(s);
+    Watch& w = it->second;
+    if (first) {
+      w.waiting = waiting;
+      w.busy_since = busy ? now : 0;
+      continue;
+    }
+    std::string event;
+    if (waiting && !w.waiting) event = "needs you";
+    w.waiting = waiting;
+    if (busy) {
+      if (!w.busy_since) w.busy_since = now;
+      w.done_at = 0;
+    } else if (w.busy_since) {
+      w.busy_since = 0;
+      w.done_at = now + kSettleMs;
+    }
+    if (w.done_at && now >= w.done_at) {
+      w.done_at = 0;
+      // A question it stopped on has been announced as that.
+      if (!waiting && event.empty()) event = "finished";
+    }
+    if (w.done_at && (!next_watch_ms_ || w.done_at < next_watch_ms_)) next_watch_ms_ = w.done_at;
+    if (event.empty() || notify_mode() == NotifyMode::Off) continue;
+
+    Notice n;
+    n.title = session_title(*s);
+    n.body = std::string(s->adapter()->label()) + " " + event;
+    n.on_screen = tab_ == 0 && selected_live_ == s;
+    // Said here too, for when the terminal is the one being looked at.
+    if (!n.on_screen) set_status(n.title + " \xC2\xB7 " + event);
+    MLOG("notice: %s: %s", n.title.c_str(), n.body.c_str());
+    notices_.push_back(std::move(n));
+  }
+}
+
+std::string App::notice_seq(const Notice& n, NotifyEscape how) {
+  return notify_seq(notify_mode() == NotifyMode::Bell ? NotifyEscape::Bell : how, n.title, n.body);
+}
+
+bool App::open_commit(const std::string& hash) {
+  // The chat printed the hash abbreviated; the one asked for may be longer or
+  // shorter. Either begins the other.
+  for (const ChatActivity* c : ws_.activity().chats())
+    for (const ChatCommit& cm : c->commits) {
+      const size_t n = std::min(cm.hash.size(), hash.size());
+      if (n < 4 || cm.hash.compare(0, n, hash, 0, n) != 0) continue;
+      open_at(c->path, cm.call_offset, {});
+      set_status(cm.hash + " \xC2\xB7 " + cm.subject + " \xC2\xB7 made in " +
+                 (c->title.empty() ? agent_label(c->agent) + " chat" : text::oneline(c->title, 60)));
+      return true;
+    }
+  return false;
+}
+
 int App::idle_timeout_ms() const {
-  const int ms = ws_.idle_timeout_ms(tab_ == 1);
+  int ms = ws_.idle_timeout_ms(tab_ == 1);
+  // To call a turn finished on time when nothing else wakes the loop.
+  if (next_watch_ms_) {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const int64_t now = int64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+    ms = std::min(ms, int(std::clamp<int64_t>(next_watch_ms_ - now, 1, 1000)));
+  }
   return math::preparing() ? std::min(ms, 10) : ms;
 }
 
@@ -843,7 +944,16 @@ void App::render_chrome(Surface& s, const Node::Placed& p, bool focused) {
   frame.text_clipped(2, 0, t, ts, title_room);
 }
 
+// What is on screen, for a crash report: the tab, and on Sessions the chat.
+const char* App::screen_crumb() {
+  screen_crumb_ = tabs_[tab_].name + " tab";
+  if (tab_ == 0 && selected_live_) screen_crumb_ += ", chat " + std::string(selected_live_->crumb());
+  else if (tab_ == 0 && !selected_path_.empty()) screen_crumb_ += ", chat " + selected_path_;
+  return screen_crumb_.c_str();
+}
+
 void App::render(Surface& s) {
+  logs::Doing doing("drawing the", screen_crumb());
   viewport_w_ = s.width();
   viewport_h_ = s.height();
   reap_sessions();
@@ -1005,6 +1115,9 @@ constexpr Command kCommands[] = {
     {"search", "search every chat: search <text>"},
     {"tools", "show where the agents' time went"},
     {"diff", "show what the agents changed in files, and which chat did"},
+    {"git", "show the repository: work trees, who works in each, changes and commits"},
+    {"commit", "go to the chat that made a commit: commit <hash>"},
+    {"blame", "go to the chat that last changed a line: blame <file>:<line>"},
     {"charts", "tell agents they can draw charts: charts on|off"},
     {"mcp", "give agents mico's tools (plot) over MCP: mcp on|off"},
     {"web", "the web view, served by the daemon: web on [port] | off, or web to copy its address"},
@@ -1100,7 +1213,7 @@ void App::run_command(std::string line) {
     return;
   }
   if (cmd == "settings") {
-    show_tab(5);
+    show_tab(6);
     return;
   }
   if (cmd == "theme") {
@@ -1130,7 +1243,36 @@ void App::run_command(std::string line) {
   if (cmd == "usage") { show_tab(1); return; }
   if (cmd == "tools") { show_tab(3); return; }
   if (cmd == "diff") { show_tab(4); return; }
+  if (cmd == "git") { show_tab(5); return; }
   if (cmd == "search") { open_search(arg); return; }
+  if (cmd == "commit") {
+    if (arg.size() < 4 || arg.find_first_not_of("0123456789abcdef") != std::string::npos) {
+      set_status("commit <hash>: the commit, by its hash");
+      return;
+    }
+    if (!open_commit(arg))
+      set_status(ws_.activity().complete() ? "no chat mico knows made " + arg
+                                           : "no chat found to have made " + arg + " yet; still reading transcripts");
+    return;
+  }
+  if (cmd == "blame") {
+    // "file:line" or "file line", the file from the selected folder.
+    std::string file = arg;
+    int line_no = 0;
+    const size_t cut = arg.find_last_of(": ");
+    if (cut != std::string::npos) {
+      file = arg.substr(0, cut);
+      line_no = std::atoi(arg.c_str() + cut + 1);
+    }
+    while (!file.empty() && file.back() == ' ') file.pop_back();
+    if (file.empty() || line_no <= 0) {
+      set_status("blame <file>:<line>: which chat last changed that line");
+      return;
+    }
+    ws_.git().blame(selected_cwd(), file, line_no);
+    set_status("asking git who last changed " + file + ":" + std::to_string(line_no) + "\xE2\x80\xA6");
+    return;
+  }
   if (cmd == "web") {
     if (arg == "off") set_web(false);
     else if (arg == "on" || arg.starts_with("on ")) set_web(true, arg.size() > 3 ? std::atoi(arg.c_str() + 3) : 0);
@@ -1572,10 +1714,15 @@ void App::handle_key(const KeyEvent& k) {
 }
 
 void App::handle(const InputEvent& e) {
+  logs::Doing doing("handling input on the", screen_crumb());
   switch (e.type) {
     case InputEvent::Type::Key: handle_key(e.key); break;
     case InputEvent::Type::Mouse: handle_mouse(e.mouse); break;
     case InputEvent::Type::Paste: handle_paste(e.paste); break;
+    case InputEvent::Type::Focus:
+      term_focused_ = e.focus_in;
+      term_focus_known_ = true;
+      break;
     default: break;
   }
 }
@@ -1653,6 +1800,8 @@ int App::run() {
     if (std::string clip = take_clipboard(); !clip.empty()) term_.queue(clipboard_seq(clip));
     // Local mode: the terminal is on this machine, so the link opens here.
     if (std::string url = take_open_url(); !url.empty()) open_url(url);
+    for (const Notice& n : take_notices())
+      if (announce(n, term_focus_known_, term_focused_)) term_.queue(notice_seq(n, term_.caps().notify));
     // In selection mode the screen is drawn once and then held still, so the
     // terminal's own selection survives.
     if (!selection_ || !sel_drawn_) {

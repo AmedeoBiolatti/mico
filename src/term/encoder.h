@@ -2,6 +2,7 @@
 #include <string>
 #include <string_view>
 
+#include "term/caps.h"
 #include "vt/surface.h"
 
 namespace mico {
@@ -30,5 +31,8 @@ void encode_cell_at(const Cell& c, int x, int y, std::string& out);
 std::string mouse_mode_seq(bool on, bool any_event = false);
 // OSC 52: sets the system clipboard, and works across ssh.
 std::string clipboard_seq(std::string_view text);
+// A desktop notification, the way `how` says this terminal raises one; a
+// bell where it has no other way. It too crosses ssh.
+std::string notify_seq(NotifyEscape how, std::string_view title, std::string_view body);
 
 }  // namespace mico

@@ -120,6 +120,10 @@ add_library(mico_core STATIC
   src/core/commands.cpp
   src/core/files.cpp
   src/core/workspace.cpp
+  src/core/away.cpp
+  src/core/git.cpp
+  src/core/procmem.cpp
+  src/core/scope.cpp
   src/core/conversation.cpp
   src/core/web_access.cpp
 )
@@ -166,6 +170,7 @@ add_library(mico_tui STATIC
   src/views/settings_view.cpp
   src/views/tools.cpp
   src/views/diff.cpp
+  src/views/git_view.cpp
   src/views/search.cpp
   src/views/completion.cpp
 )
@@ -225,10 +230,18 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_input.py $<TARGET_FILE:mico>)
   add_test(NAME web-view
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_view.py $<TARGET_FILE:mico>)
+  add_test(NAME daemon-restore
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_restore.py $<TARGET_FILE:mico>)
+  add_test(NAME agent-scopes
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/agent_scopes.py $<TARGET_FILE:mico>)
+  add_test(NAME daemon-postmortem
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_postmortem.py $<TARGET_FILE:mico>)
+  add_test(NAME git-commits
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/git_commits.py $<TARGET_FILE:mico>)
   foreach(check claude_questions claude_permission claude_paste)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(daemon-input web-view claude-questions claude-permission claude-paste
+  set_tests_properties(daemon-input daemon-restore daemon-postmortem agent-scopes git-commits web-view claude-questions claude-permission claude-paste
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

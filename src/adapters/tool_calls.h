@@ -16,6 +16,9 @@ std::string text_of(const js::Value& v);
 // What a call works on, from its arguments: the command line, else a file,
 // a pattern or a URL.
 std::string subject(const js::Value& input);
+// What a tool result printed: a string, or the text blocks of an array of
+// content blocks ({"type": "text", "text": …}), one after another.
+std::string result_text(const js::Value& content);
 // The last component of a path.
 inline std::string_view basename(std::string_view p) {
   const size_t slash = p.rfind('/');

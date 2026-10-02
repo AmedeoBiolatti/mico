@@ -52,6 +52,11 @@
 #include "views/json_view.h"
 #include "views/notebook.h"
 #include "core/settings.h"
+#include "core/away.h"
+#include "core/git.h"
+#include "core/procmem.h"
+#include <sys/wait.h>
+#include "net/proto.h"
 #include "term/links.h"
 #include "core/images.h"
 #include "math/picture.h"
@@ -2266,7 +2271,7 @@ int run_selftest() {
     std::string buf;
     const std::string_view kept = fs::read_prefix(path, 4096, buf);
     check(b.filters().density == Density::Full && b.filtering() && b.all_folders() &&
-              kept.find("tab 4\n") != std::string_view::npos,
+              kept.find("tab Diff\n") != std::string_view::npos,
           "view: density, tab and filters come back after a restart");
     unlink(path.c_str());
   }
@@ -3579,6 +3584,240 @@ int run_selftest() {
   check(mouse_mode_seq(false, true).find("1003l") != std::string::npos &&
             mouse_mode_seq(false, true).find("1002l") != std::string::npos,
         "turning the mouse off clears both tracking modes");
+
+  // Notifications. Each terminal family gets the escape it shows, and text
+  // from a chat title can neither end the sequence nor add a field.
+  {
+    check_str(notify_seq(NotifyEscape::Osc777, "Fix; tabs\x1b", "Claude finished"),
+              "\x1b]777;notify;Fix, tabs ;Claude finished\x1b\\", "OSC 777 notification, cleaned");
+    check_str(notify_seq(NotifyEscape::Osc9, "1;2", "Claude needs you"),
+              "\x1b]9;Claude needs you: 1;2\x07", "OSC 9 starts with mico's words");
+    check_str(notify_seq(NotifyEscape::Bell, "t", "b"), "\x07", "a bell where nothing else works");
+    const std::string k = notify_seq(NotifyEscape::Osc99, "Fix\x07", "Claude finished");
+    check(k.starts_with("\x1b]99;i=mico") && k.find(":d=0;Fix \x1b\\") != std::string::npos &&
+              k.find(":p=body;Claude finished\x1b\\") != std::string::npos,
+          "kitty notification: title, then body under one id");
+    check(notify_seq(NotifyEscape::Osc99, "a", "b").substr(0, 14) != k.substr(0, 14),
+          "each kitty notification has its own id");
+
+    check(tty::notify_escape("kitty(0.32.2)") == NotifyEscape::Osc99, "kitty by XTVERSION");
+    check(tty::notify_escape("WezTerm 20240203") == NotifyEscape::Osc777, "WezTerm by XTVERSION");
+    check(tty::notify_escape("ghostty 1.1.0") == NotifyEscape::Osc777, "Ghostty by XTVERSION");
+    check(tty::notify_escape("foot(1.16.2)") == NotifyEscape::Osc777, "foot by XTVERSION");
+    check(tty::notify_escape("iTerm2 3.5.0") == NotifyEscape::Osc9, "iTerm2 by XTVERSION");
+    check(tty::notify_escape("XTerm(390)") == NotifyEscape::Bell, "an unknown terminal gets the bell");
+
+    // The escape travels in Hello's flags, beside what it says about images.
+    GfxCaps sent;
+    sent.kitty = true;
+    sent.tmux = true;
+    sent.cell_w = 9;
+    sent.cell_h = 18;
+    sent.notify = NotifyEscape::Osc99;
+    std::string wire, payload;
+    proto::encode_size(proto::Type::Hello, 80, 24, sent, wire);
+    proto::Type t{};
+    GfxCaps got;
+    check(proto::decode(wire, &t, &payload) && proto::decode_caps(payload, &got) && got == sent,
+          "Hello carries the notification escape");
+
+    InputDecoder d;
+    d.feed("\x1b[O\x1b[I");
+    auto out = d.next();
+    auto in = d.next();
+    check(out && out->type == InputEvent::Type::Focus && !out->focus_in, "CSI O is focus lost");
+    check(in && in->type == InputEvent::Type::Focus && in->focus_in, "CSI I is focus gained");
+
+    App::Notice shown{"t", "b", true}, hidden{"t", "b", false};
+    check(!App::announce(shown, true, true) && !App::announce(hidden, true, true),
+          "a focused terminal is told nothing");
+    check(App::announce(shown, true, false), "an unfocused terminal is told even of the chat it shows");
+    check(App::announce(hidden, false, true) && !App::announce(shown, false, true),
+          "without focus reports, only a chat not shown is announced");
+  }
+
+  // Memory by process tree, from /proc: what names the agent behind a kill.
+  {
+    pid_t ppid = 0;
+    std::string name;
+    int64_t pages = 0;
+    const std::string stat =
+        "4242 (my (odd) prog) S 17 4242 4242 0 -1 4194560 100 0 0 0 5 1 0 0 20 0 1 0 12345 104857600 2560 "
+        "18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0";
+    check(proc::Table::parse_stat(stat, &ppid, &name, &pages) && ppid == 17 && name == "my (odd) prog" &&
+              pages == 2560,
+          "/proc stat: parent, a name with parentheses, resident pages");
+    check(!proc::Table::parse_stat("4242 (cut", &ppid, &name, &pages), "a cut stat line is none");
+    // A child holding 64 MB counts toward this process's tree.
+    int ready[2];
+    if (pipe(ready) == 0) {
+      const pid_t child = fork();
+      if (child == 0) {
+        std::vector<char> hold(64u << 20, 1);
+        if (write(ready[1], "x", 1) != 1) {}
+        pause();
+        _exit(0);
+      }
+      char c;
+      if (read(ready[0], &c, 1) != 1) {}
+      proc::Table t;
+      t.read();
+      const proc::Usage u = t.tree(getpid());
+      check(u.procs >= 2 && u.rss >= (int64_t(64) << 20) && u.top_pid == child,
+            "a process tree adds up its children, the largest named");
+      check(t.tree(999999999).procs == 0, "a process that is gone holds nothing");
+      kill(child, SIGKILL);
+      waitpid(child, nullptr, 0);
+      close(ready[0]);
+      close(ready[1]);
+    }
+    const proc::Memory m = proc::system_memory();
+    check(m.total > 0 && m.available > 0 && m.available <= m.total, "/proc/meminfo: total and available");
+    check(proc::bytes(int64_t(3) << 29) == "1.5 GB" && proc::bytes(int64_t(412) << 20) == "412 MB", "sizes read as sizes");
+  }
+
+  // Commits, as agents' commands announce them.
+  {
+    check(makes_commits("git commit -m 'x'"), "git commit commits");
+    check(makes_commits("cd sub && git -C repo -c user.name=a commit --amend"), "past git's own options");
+    check(makes_commits("git add -A\ngit cherry-pick abc1234"), "a cherry-pick on a later line");
+    check(!makes_commits("grep -rn 'git commit' ."), "only mentioning a commit is none");
+    check(!makes_commits("git log --oneline"), "git log commits nothing");
+    check(!makes_commits("echo git commit"), "echo is not git");
+    const std::vector<ChatCommit> c = commits_announced(
+        "[main 777c513] The view is remembered\n 2 files changed\n"
+        "[feature/x (root-commit) 0a1b2c3d] First\r\n[detached HEAD 1234567] Loose\n"
+        "  [main 89abcde] indented\n[main nothex1] no\n[two words 1234567] no");
+    check(c.size() == 3, "three commits announced");
+    if (c.size() == 3) {
+      check(c[0].hash == "777c513" && c[0].branch == "main" && c[0].subject == "The view is remembered",
+            "hash, branch and subject");
+      check(c[1].branch == "feature/x" && c[1].hash == "0a1b2c3d" && c[1].subject == "First",
+            "a root commit, its carriage return dropped");
+      check(c[2].branch.empty() && c[2].hash == "1234567", "a detached HEAD has no branch");
+    }
+  }
+
+  // Codex records a command twice, as a call with its output and as a
+  // finished item with all it printed: one commit, read from either.
+  {
+    char path[] = "/tmp/mico_codex_commit_XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd >= 0) {
+      const std::string rollout =
+          "{\"timestamp\":\"2026-09-10T18:55:43.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\","
+          "\"name\":\"shell\",\"call_id\":\"c1\",\"arguments\":\"{\\\"command\\\":[\\\"bash\\\",\\\"-lc\\\",\\\"git commit -m x\\\"]}\"}}\n"
+          "{\"timestamp\":\"2026-09-10T18:55:44.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\","
+          "\"call_id\":\"c1\",\"output\":\"Exit code: 0\\nWall time: 0.1 seconds\\nOutput:\\n[main f574561] Port it\\n\"}}\n"
+          "{\"timestamp\":\"2026-09-10T18:55:44.100Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\","
+          "\"item\":{\"type\":\"CommandExecution\",\"command\":[\"/bin/bash\",\"-lc\",\"git diff --cached --check\\ngit commit -m x\"],"
+          "\"aggregated_output\":\"[main f574561] Port it\\n 1 file changed\\n\",\"exit_code\":0,\"status\":\"completed\"}}}\n"
+          "{\"timestamp\":\"2026-09-10T18:56:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\","
+          "\"item\":{\"type\":\"CommandExecution\",\"command\":[\"/bin/bash\",\"-lc\",\"cat log.txt\"],"
+          "\"aggregated_output\":\"[main 1234567] quoted in a log\\n\",\"exit_code\":0,\"status\":\"completed\"}}}\n";
+      if (write(fd, rollout.data(), rollout.size()) != ssize_t(rollout.size())) {}
+      close(fd);
+      const ChatActivity a = ActivityIndex::read_file(path, "codex");
+      check(a.commits.size() == 1 && a.commits[0].hash == "f574561" && a.commits[0].subject == "Port it",
+            "a codex commit, once, and not one a log quotes");
+      unlink(path);
+    }
+  }
+
+  // git status and git show, as mico reads them.
+  {
+    // Written with '|' where git writes a NUL: a literal ends at its first.
+    const auto nul = [](std::string t) {
+      std::replace(t.begin(), t.end(), '|', '\0');
+      return t;
+    };
+    GitStatus st;
+    const std::string porcelain = nul(std::string("# branch.oid 777c513aaaa|# branch.head main|") +
+                                  "# branch.upstream origin/main|# branch.ab +2 -1|" +
+                                  "1 .M N... 100644 100644 100644 a a src/a.cpp|" +
+                                  "1 M. N... 100644 100644 100644 a a src/b.cpp|" +
+                                  "2 R. N... 100644 100644 100644 a a R100 new.cpp|old.cpp|" +
+                                  "u UU N... 1 2 3 4 a b c conflict.cpp|? notes.txt|! build/|");
+    check(parse_status(porcelain, st) && st.repo, "porcelain v2 reads");
+    check(st.branch == "main" && st.head == "777c513" && st.upstream == "origin/main" && st.ahead == 2 &&
+              st.behind == 1,
+          "branch, head, upstream, ahead and behind");
+    check(st.changed == 1 && st.staged == 2 && st.conflicts == 1 && st.untracked == 1 && st.files == 5,
+          "each file counted once, a rename's old path not a file");
+    check(st.entries.size() == 5 && st.entries[0].path == "src/a.cpp" && st.entries[0].x == '.' &&
+              st.entries[0].y == 'M' && st.entries[2].path == "new.cpp" && st.entries[2].orig == "old.cpp" &&
+              st.entries[3].x == 'U' && st.entries[3].path == "conflict.cpp" && st.entries[4].x == '?' &&
+              st.entries[4].path == "notes.txt",
+          "each file's letters and path, a rename's old path with it");
+
+    const std::vector<GitWorktree> wts = parse_worktrees(
+        "worktree /r\nHEAD 0123456789abcdef\nbranch refs/heads/main\n\n"
+        "worktree /r-wt\nHEAD fedcba9876543210\ndetached\nlocked reason\n\nworktree /bare\nbare\n");
+    check(wts.size() == 3 && wts[0].path == "/r" && wts[0].branch == "main" && wts[0].head == "0123456" &&
+              wts[1].branch.empty() && wts[1].locked && wts[2].bare,
+          "git worktree list: paths, branches, detached, locked, bare");
+    const std::vector<GitBranch> brs = parse_branches(
+        nul("old|1111111|1600000000|||Old work|\nnew|2222222|1700000000|origin/new|[ahead 2]|New work|\n"));
+    check(brs.size() == 2 && brs[0].name == "new" && brs[0].upstream == "origin/new" && brs[0].track == "[ahead 2]" &&
+              brs[1].subject == "Old work",
+          "branches, newest first, with upstream and track");
+    const std::vector<GitLogEntry> log =
+        parse_log(nul("aaaa1111|Ada|1700000001|Second|HEAD -> main|\nbbbb2222|Bob|1700000000|First||\n"));
+    check(log.size() == 2 && log[0].author == "Ada" && log[0].refs == "HEAD -> main" && log[1].subject == "First" &&
+              log[1].refs.empty(),
+          "git log: hash, author, time, subject, refs");
+    const auto ns = parse_numstat(nul("3\t1\tsrc/a.cpp|-\t-\timg.png|2\t0\t|old.c|new.c|"));
+    check(ns.size() == 3 && ns[0].first == "src/a.cpp" && ns[0].second.added == 3 && ns[1].second.added == -1 &&
+              ns[2].first == "new.c" && ns[2].second.added == 2,
+          "numstat: counts, binary files, a rename by its new path");
+
+    GitStatus detached;
+    check(parse_status(nul("# branch.oid (initial)|# branch.head (detached)|"), detached) &&
+              detached.branch.empty() && detached.head.empty(),
+          "detached, with no commit yet");
+
+    GitCommit cm;
+    const std::string show = nul(std::string("0123456789abcdef0123456789abcdef01234567|Ada|1700000000|Fix it|\n") +
+                             "diff --git a/a.txt b/a.txt\nindex 1..2 100644\n--- a/a.txt\n+++ b/a.txt\n"
+                             "@@ -1,2 +1,2 @@\n-old\n+new\n same\n"
+                             "diff --git a/n.txt b/n.txt\nnew file mode 100644\n--- /dev/null\n+++ b/n.txt\n"
+                             "@@ -0,0 +1 @@\n+hello\n"
+                             "diff --git a/x.bin b/x.bin\nnew file mode 100644\nBinary files /dev/null and b/x.bin differ\n"
+                             "diff --git a/old.c b/new.c\nsimilarity index 100%\nrename from old.c\nrename to new.c\n");
+    check(parse_show(show, "/r", cm) && cm.found, "git show reads");
+    check(cm.subject == "Fix it" && cm.author == "Ada" && cm.time == 1700000000 && cm.hash.size() == 40,
+          "the commit's fields");
+    check(cm.files.size() == 4 && cm.added == 2 && cm.removed == 1, "four files, their lines counted");
+    if (cm.files.size() == 4) {
+      check(cm.files[0].file == "/r/a.txt" && cm.files[0].lines.size() == 4, "an edit, with its hunk");
+      check(cm.files[1].op == EditOp::Create && cm.files[1].file == "/r/n.txt", "a new file");
+      check(cm.files[2].file == "/r/x.bin" && cm.files[2].lines.empty(), "a binary file, no lines");
+      check(cm.files[3].file == "/r/old.c" && cm.files[3].moved_to == "/r/new.c", "a rename");
+    }
+    check(!parse_show("not a commit", "/r", cm) && !cm.found, "git's error is no commit");
+  }
+
+  // The agents a daemon is running, as the next one reads them back.
+  {
+    char dir[] = "/tmp/mico_running_XXXXXX";
+    if (mkdtemp(dir)) {
+      const char* old = getenv("XDG_STATE_HOME");
+      const std::string keep = old ? old : "";
+      setenv("XDG_STATE_HOME", dir, 1);
+      const std::vector<RunningAgent> list = {{"claude", "abc", "/w/one"}, {"codex", "def", "/w/two dir"}};
+      write_running(list);
+      check(read_running() == list, "running agents read back as written");
+      write_running({{"claude", "x", "/a\tb"}, {"pi", "y", "/w"}});
+      check(read_running() == std::vector<RunningAgent>{{"pi", "y", "/w"}},
+            "a folder that holds a tab is left out, not misread");
+      write_running({});
+      check(!fs::exists(running_path()) && read_running().empty(), "an empty list removes the file");
+      rmdir((std::string(dir) + "/mico").c_str());
+      rmdir(dir);
+      if (old) setenv("XDG_STATE_HOME", keep.c_str(), 1);
+      else unsetenv("XDG_STATE_HOME");
+    }
+  }
   {
     App app;
     check(!app.wants_motion(), "no menu open: ordinary button-event tracking");

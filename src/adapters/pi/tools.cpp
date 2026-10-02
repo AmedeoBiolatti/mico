@@ -36,7 +36,7 @@ void PiFamilyAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink
     return true;
   });
   if (role == "toolResult") {
-    sink.result(call_id, at, error);
+    sink.result(call_id, at, error, -1, sink.wants_output(call_id, {}) ? result_text(content) : std::string());
     return;
   }
   if (!content.is_array()) return;

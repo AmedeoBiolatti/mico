@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/activity.h"
+#include "core/git.h"
 #include "base/text.h"
 #include "ui/app.h"
 #include "views/code.h"
@@ -85,9 +86,25 @@ std::string chat_name(const ChatActivity& c) {
   return c.title.empty() ? agent_label(c.agent) + " chat" : text::oneline(c.title, 80);
 }
 
+// A line of a change as drawn: tabs set out, coloured runs, and the part
+// that changed when it pairs with a line on the other side.
+struct Shown {
+  std::string text;
+  std::vector<code::Run> runs;
+  uint32_t lo = 0, hi = 0;
+};
+struct Loaded {
+  FileChange fc;
+  std::vector<Shown> shown;
+  const code::Lang* lang = nullptr;
+  bool ok = false;
+};
+
 struct Ref {
   const ChatActivity* chat;
   const FileEdit* edit;
+  // A commit's change, read from git rather than from the transcript.
+  const Loaded* from_git = nullptr;
 };
 
 // A row of the list: a file and every change made to it, or a chat and
@@ -101,6 +118,10 @@ struct Group {
   std::vector<Ref> edits;  // newest first
   std::vector<const ChatActivity*> chats;
   std::vector<std::string> agents, files;
+  // By commit: the commit the chat announced, and git's record of it, null
+  // while git is read.
+  const ChatCommit* commit = nullptr;
+  const GitCommit* git = nullptr;
 };
 
 // What the agents changed in files: every change they made, by file or by
@@ -110,7 +131,9 @@ struct Group {
 class DiffView final : public Pane {
  public:
   DiffView(ActivityIndex& index, DiffSettings& settings)
-      : index_(index), span_(settings.span), by_chat_(settings.by_chat), sel_key_(settings.sel_key) {}
+      : index_(index), span_(settings.span), group_(settings.group), sel_key_(settings.sel_key) {
+    group_ = std::clamp(group_, 0, kGroups - 1);
+  }
   std::string title() const override { return "Diff"; }
 
   void render(Painter& p, bool focused) override {
@@ -130,7 +153,7 @@ class DiffView final : public Pane {
       const std::string state =
           index_.complete() ? "" : "  reading " + std::to_string(index_.done()) + "/" + std::to_string(index_.total());
       p.text_clipped(x, 0,
-                     state + "    t time range \xC2\xB7 g by " + (by_chat_ ? "file" : "chat") + " \xC2\xB7 a " +
+                     state + "    t time range \xC2\xB7 g by " + kGroupNames[(group_ + 1) % kGroups] + " \xC2\xB7 a " +
                          (app_->all_folders() ? "this folder" : "all folders"),
                      Style{th.dim, th.panel}, std::max(0, W - x - 1));
     }
@@ -139,7 +162,18 @@ class DiffView final : public Pane {
     if (H < 3) return;
 
     // The headline.
-    {
+    if (group_ == kByCommit) {
+      std::string s = count(long(groups_.size())) + (groups_.size() == 1 ? " commit" : " commits");
+      int x = p.text_clipped(1, 2, s, Style{th.text, th.panel, attr::kBold}, W - 2) + 1;
+      std::string who;
+      if (chats_) {
+        who = " \xC2\xB7 by " + count(long(chats_)) + (chats_ == 1 ? " chat" : " chats");
+        std::string names;
+        for (const auto& [agent, n] : agents_) names += (names.empty() ? "" : ", ") + agent_label(agent) + " " + std::to_string(n);
+        who += " (" + names + ")";
+      }
+      p.text_clipped(x, 2, who, Style{th.dim, th.panel}, std::max(0, W - x - 1));
+    } else {
       std::string s = count(long(files_)) + (files_ == 1 ? " file" : " files") + " changed";
       int x = p.text_clipped(1, 2, s, Style{th.text, th.panel, attr::kBold}, W - 2) + 1;
       x += p.text(x + 1, 2, "+" + count(added_), Style{th.added, th.panel, attr::kBold}) + 1;
@@ -155,7 +189,10 @@ class DiffView final : public Pane {
     }
     if (groups_.empty()) {
       if (H > 4)
-        p.text(3, 4, index_.complete() ? "no file changes in this span" : "reading transcripts\xE2\x80\xA6",
+        p.text(3, 4,
+               !index_.complete()      ? "reading transcripts\xE2\x80\xA6"
+               : group_ == kByCommit ? "no commits by agents in this span"
+                                     : "no file changes in this span",
                Style{th.dim, th.panel});
       view_h_ = 1;
       return;
@@ -175,23 +212,44 @@ class DiffView final : public Pane {
     const int name_w = std::max(10, W - 3 - 2 * count_w - 2 - by_w - 2 - when_w - 2);
     for (int r = 0; r < list_h && list_scroll_ + r < int(groups_.size()); r++) {
       const int i = list_scroll_ + r;
-      const Group& g = groups_[size_t(i)];
+      Group& g = groups_[size_t(i)];
       const int y = top + r;
       const bool sel = i == sel_;
+      // A commit's counts are git's: asked for as its row comes into view.
+      if (group_ == kByCommit && !g.git) {
+        g.git = app_->workspace().git().commit(g.chats[0]->cwd, g.commit->hash);
+        if (g.git) {
+          g.added = g.git->added;
+          g.removed = g.git->removed;
+        }
+      }
       const Color bg = sel ? (focused ? th.sel_bg : th.sel_inactive) : i % 2 ? th.panel_alt : th.panel;
       if (bg != th.panel) p.fill(Rect{1, y, W - 2, 1}, Style{th.text, bg});
       if (sel) p.put(1, y, U'❯', Style{th.accent, bg, attr::kBold});
       int x = 3;
-      x += p.text(x, y, pad("+" + count(g.added), count_w - 1, true) + " ", Style{th.added, bg});
-      x += p.text(x, y, pad("\xE2\x88\x92" + count(g.removed), count_w - 1, true) + "  ", Style{th.removed, bg});
-      std::string tag = g.deleted ? " deleted" : g.created ? " new" : "";
+      const bool counted = group_ != kByCommit || (g.git && g.git->found);
+      x += p.text(x, y, pad(counted ? "+" + count(g.added) : "", count_w - 1, true) + " ", Style{th.added, bg});
+      x += p.text(x, y, pad(counted ? "\xE2\x88\x92" + count(g.removed) : "", count_w - 1, true) + "  ",
+                  Style{th.removed, bg});
+      const std::string tag = group_ == kByCommit ? (!g.git || g.git->found ? "" : g.git->repo ? " not in git" : " no repo")
+                              : g.deleted         ? " deleted"
+                              : g.created         ? " new"
+                                                  : "";
       const int lw = name_w - text::str_width(tag);
-      const std::string shown = by_chat_ ? fit(g.label, lw) : fit_path(g.label, lw);
-      x += p.text(x, y, shown, Style{th.text, bg, sel ? attr::kBold : uint16_t(0)});
-      p.text(x, y, tag, Style{g.deleted ? th.removed : th.added, bg});
+      if (group_ == kByCommit) {
+        const std::string hash = g.commit->hash.substr(0, 7) + " ";
+        x += p.text(x, y, hash, Style{th.hunk, bg});
+        x += p.text(x, y, fit(g.label, lw - text::str_width(hash)), Style{th.text, bg, sel ? attr::kBold : uint16_t(0)});
+      } else {
+        const std::string shown = group_ == kByChat ? fit(g.label, lw) : fit_path(g.label, lw);
+        x += p.text(x, y, shown, Style{th.text, bg, sel ? attr::kBold : uint16_t(0)});
+      }
+      p.text(x, y, tag, Style{g.deleted || group_ == kByCommit ? th.removed : th.added, bg});
       x = 3 + 2 * count_w + 1 + name_w + 2;
       std::string by;
-      if (by_chat_) {
+      if (group_ == kByCommit) {
+        by = agent_label(g.chats[0]->agent) + " \xC2\xB7 " + chat_name(*g.chats[0]);
+      } else if (group_ == kByChat) {
         by = agent_label(g.chats.empty() ? "" : g.chats[0]->agent) + " \xC2\xB7 " + count(long(g.files.size())) +
              (g.files.size() == 1 ? " file" : " files");
       } else if (g.chats.size() == 1) {
@@ -209,9 +267,18 @@ class DiffView final : public Pane {
     // The rule between: what the diff below is of.
     const int rule = top + list_h;
     if (rule >= H) return;
-    const Group& g = groups_[size_t(sel_)];
+    Group& g = groups_[size_t(sel_)];
+    if (group_ == kByCommit && !commit_detail(g, p, rule)) return;
     sync_detail(g);
-    {
+    if (group_ == kByCommit) {
+      // The commit as git has it: which, by whom, and how many files.
+      p.hline(1, rule, std::max(0, W - 2), U'─', Style{th.border, th.panel});
+      std::string what = " " + g.git->hash.substr(0, 10) + " \xC2\xB7 " + g.git->author + " \xC2\xB7 " +
+                         count(long(g.edits.size())) + (g.edits.size() == 1 ? " file " : " files ");
+      int x = 2 + p.text_clipped(2, rule, what, Style{th.text, th.panel, attr::kBold}, std::max(0, W - 4));
+      p.text_clipped(x + 1, rule, " n/p file \xC2\xB7 enter open the chat that made it \xC2\xB7 pgup/pgdn scroll ",
+                     Style{th.dim, th.panel}, std::max(0, W - x - 3));
+    } else {
       p.hline(1, rule, std::max(0, W - 2), U'─', Style{th.border, th.panel});
       std::string what = " " + g.label + " \xC2\xB7 " + count(long(g.edits.size())) +
                          (g.edits.size() == 1 ? " change " : " changes ");
@@ -238,7 +305,7 @@ class DiffView final : public Pane {
       if (row.line == kHeader) {
         p.fill(Rect{1, y, W - 2, 1}, Style{th.text, th.strip_bg});
         int x = 2;
-        if (by_chat_) {
+        if (group_ != kByFile) {
           x += p.text_clipped(x, y, show_path(e.file, ref.chat->project), Style{th.text, th.strip_bg, attr::kBold},
                               std::max(0, W - 30 - x));
         } else {
@@ -312,7 +379,7 @@ class DiffView final : public Pane {
     if (k.is('n')) { jump(+1); return true; }
     if (k.is('p')) { jump(-1); return true; }
     if (k.is('t')) { span_ = (span_ + 1) % kSpanCount; reset_detail(); return true; }
-    if (k.is('g')) { by_chat_ = !by_chat_; sel_ = 0; sel_key_.clear(); reset_detail(); return true; }
+    if (k.is('g')) { regroup((group_ + 1) % kGroups); return true; }
     if (k.is('a')) { app_->set_all_folders(!app_->all_folders()); return true; }
     if (k.is('r')) { index_.start(app_->store().projects(), app_->store()); return true; }
     return false;
@@ -343,18 +410,86 @@ class DiffView final : public Pane {
     return false;
   }
   std::vector<MenuItem> context_menu(Point) override {
-    return {MenuItem{by_chat_ ? "Group by file" : "Group by chat", "group"}, MenuItem{"Next time range", "span"},
-            MenuItem{app_->all_folders() ? "Only this folder" : "All folders", "all"},
-            MenuItem{"Reread transcripts", "rescan"}};
+    std::vector<MenuItem> items;
+    for (int i = 0; i < kGroups; i++)
+      if (i != group_) items.push_back(MenuItem{std::string("Group by ") + kGroupNames[i], "group" + std::to_string(i)});
+    items.push_back(MenuItem{"Next time range", "span"});
+    items.push_back(MenuItem{app_->all_folders() ? "Only this folder" : "All folders", "all"});
+    items.push_back(MenuItem{"Reread transcripts", "rescan"});
+    return items;
   }
   void on_action(const std::string& a) override {
-    if (a == "group") { by_chat_ = !by_chat_; sel_ = 0; sel_key_.clear(); reset_detail(); }
+    if (a.starts_with("group")) regroup(std::atoi(a.c_str() + 5));
     else if (a == "span") { span_ = (span_ + 1) % kSpanCount; reset_detail(); }
     else if (a == "all") app_->set_all_folders(!app_->all_folders());
     else if (a == "rescan") index_.start(app_->store().projects(), app_->store());
   }
 
  private:
+  static constexpr int kByFile = 0, kByChat = 1, kByCommit = 2, kGroups = 3;
+  static constexpr const char* kGroupNames[kGroups] = {"file", "chat", "commit"};
+
+  void regroup(int to) {
+    group_ = std::clamp(to, 0, kGroups - 1);
+    sel_ = 0;
+    sel_key_.clear();
+    reset_detail();
+  }
+
+  // Below a commit's row: its diff, once git has it, made into changes the
+  // rest of the view draws like any other. False, with a note drawn in its
+  // place, while there is none to draw.
+  bool commit_detail(Group& g, Painter& p, int rule) {
+    const Theme& th = app_->theme();
+    const int W = p.width();
+    if (!g.git) g.git = app_->workspace().git().commit(g.chats[0]->cwd, g.commit->hash);
+    std::string note;
+    if (!g.git) note = "reading " + g.commit->hash + " from git\xE2\x80\xA6";
+    else if (!g.git->repo)
+      note = g.chats[0]->cwd + " is not a git repository now, or is gone";
+    else if (!g.git->found)
+      note = "git has no " + g.commit->hash + " in " + g.chats[0]->cwd +
+             ": rewritten since (an amend or a rebase), or made in another repository";
+    if (note.empty()) {
+      CommitDiff& d = commit_diffs_[g.key];
+      if (d.from != g.git) {
+        d.from = g.git;
+        d.edits.clear();
+        d.loaded.clear();
+        d.edits.reserve(g.git->files.size());
+        d.loaded.reserve(g.git->files.size());
+        for (const FileChange& fc : g.git->files) {
+          FileEdit e;
+          e.at_ms = g.commit->at_ms;
+          e.offset = e.call_offset = g.commit->call_offset;
+          e.file = fc.file;
+          e.moved_to = fc.moved_to;
+          e.op = fc.op;
+          e.added = fc.added;
+          e.removed = fc.removed;
+          d.edits.push_back(std::move(e));
+          Loaded l;
+          l.fc = fc;
+          l.ok = true;
+          prepare(l, fc.file);
+          d.loaded.push_back(std::move(l));
+        }
+      }
+      g.edits.clear();
+      for (size_t i = 0; i < d.edits.size(); i++) g.edits.push_back(Ref{g.chats[0], &d.edits[i], &d.loaded[i]});
+      if (!g.edits.empty()) return true;
+      note = "the commit changed no file git shows as text";
+    }
+    p.hline(1, rule, std::max(0, W - 2), U'─', Style{th.border, th.panel});
+    p.text_clipped(2, rule, " " + g.commit->hash + " ", Style{th.text, th.panel, attr::kBold}, std::max(0, W - 4));
+    if (rule + 2 < p.height()) p.text_clipped(3, rule + 2, note, Style{th.dim, th.panel}, std::max(0, W - 6));
+    detail_top_ = rule + 1;
+    rows_.clear();
+    built_ = 0;
+    detail_sig_.clear();
+    return false;
+  }
+
   struct Span {
     const char* label;
     int64_t seconds;  // 0: since local midnight; -1: all time
@@ -371,20 +506,6 @@ class DiffView final : public Pane {
     int edit;
     int line;
   };
-  // A line of a change as drawn: tabs set out, coloured runs, and the part
-  // that changed when it pairs with a line on the other side.
-  struct Shown {
-    std::string text;
-    std::vector<code::Run> runs;
-    uint32_t lo = 0, hi = 0;
-  };
-  struct Loaded {
-    FileChange fc;
-    std::vector<Shown> shown;
-    const code::Lang* lang = nullptr;
-    bool ok = false;
-  };
-
   static std::string expand_tabs(std::string_view s) {
     std::string out;
     int col = 0;
@@ -547,10 +668,49 @@ class DiffView final : public Pane {
     return file;
   }
 
+  // By commit: a row for each commit a chat announced in the span, newest
+  // first. What it changed is git's to say, read as the row is shown.
+  void gather_commits(int64_t from) {
+    std::vector<Group> groups;
+    std::map<std::string, long> agents;
+    chats_ = 0;
+    for (const ChatActivity* c : index_.chats()) {
+      if (c->commits.empty() || !app_->in_filter(c->project, c->path)) continue;
+      bool counted = false;
+      for (const ChatCommit& cm : c->commits) {
+        if (cm.at_ms < from) continue;
+        if (!counted) {
+          counted = true;
+          chats_++;
+          agents[c->agent]++;
+        }
+        Group g;
+        g.key = c->cwd + "\n" + cm.hash;
+        g.label = cm.subject;
+        g.last = cm.at_ms;
+        g.chats = {c};
+        g.agents = {c->agent};
+        g.commit = &cm;
+        groups.push_back(std::move(g));
+      }
+    }
+    std::stable_sort(groups.begin(), groups.end(), [](const Group& a, const Group& b) { return a.last > b.last; });
+    groups_ = std::move(groups);
+    files_ = 0;
+    added_ = removed_ = 0;
+    agents_.assign(agents.begin(), agents.end());
+    std::sort(agents_.begin(), agents_.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    sel_ = 0;
+    for (size_t i = 0; i < groups_.size(); i++)
+      if (groups_[i].key == sel_key_) sel_ = int(i);
+    if (commit_diffs_.size() > 64) commit_diffs_.clear();
+  }
+
   void gather() {
     project_paths_.clear();
     for (const auto& pr : app_->store().projects()) project_paths_[pr.name] = pr.path;
     const int64_t from = span_start_ms();
+    if (group_ == kByCommit) return gather_commits(from);
     std::unordered_map<std::string, size_t> at;
     std::vector<Group> groups;
     std::map<std::string, long> agents;
@@ -570,12 +730,12 @@ class DiffView final : public Pane {
         added_ += e.added;
         removed_ += e.removed;
         files[e.file]++;
-        const std::string& key = by_chat_ ? c->path : e.file;
+        const std::string& key = group_ == kByChat ? c->path : e.file;
         auto [it, fresh] = at.try_emplace(key, groups.size());
         if (fresh) {
           Group g;
           g.key = key;
-          g.label = by_chat_ ? chat_name(*c) : show_path(e.file, c->project);
+          g.label = group_ == kByChat ? chat_name(*c) : show_path(e.file, c->project);
           groups.push_back(std::move(g));
         }
         Group& g = groups[it->second];
@@ -584,7 +744,8 @@ class DiffView final : public Pane {
         g.edits.push_back(Ref{c, &e});
         if (std::find(g.chats.begin(), g.chats.end(), c) == g.chats.end()) g.chats.push_back(c);
         if (std::find(g.agents.begin(), g.agents.end(), c->agent) == g.agents.end()) g.agents.push_back(c->agent);
-        if (by_chat_ && std::find(g.files.begin(), g.files.end(), e.file) == g.files.end()) g.files.push_back(e.file);
+        if (group_ == kByChat && std::find(g.files.begin(), g.files.end(), e.file) == g.files.end())
+          g.files.push_back(e.file);
       }
     }
     for (Group& g : groups) {
@@ -629,7 +790,7 @@ class DiffView final : public Pane {
   void sync_detail(const Group& g) {
     const Ref& newest = g.edits.front();
     const std::string sig = g.key + "\n" + std::to_string(g.edits.size()) + "\n" + newest.chat->path + "\n" +
-                            std::to_string(newest.edit->offset) + (by_chat_ ? "c" : "f");
+                            std::to_string(newest.edit->offset) + char('0' + group_);
     if (sig == detail_sig_) return;
     const bool same_row = !detail_sig_.empty() && detail_sig_.starts_with(g.key + "\n");
     const int keep = scroll_;
@@ -646,6 +807,7 @@ class DiffView final : public Pane {
   }
 
   const Loaded* loaded(const Ref& r) {
+    if (r.from_git) return r.from_git;
     const std::string key = cache_key(r);
     auto it = cache_.find(key);
     if (it != cache_.end()) return it->second.ok ? &it->second : nullptr;
@@ -709,6 +871,10 @@ class DiffView final : public Pane {
   // Enter: the change at the top of the diff, the newest before any scrolling.
   void open_at_top() {
     if (groups_.empty()) return;
+    if (const Group& g = groups_[size_t(sel_)]; g.commit && g.edits.empty()) {
+      app_->open_at(g.chats[0]->path, g.commit->call_offset, {});
+      return;
+    }
     int e = 0;
     if (scroll_ < int(rows_.size())) e = rows_[size_t(scroll_)].edit;
     open_edit(e);
@@ -717,7 +883,15 @@ class DiffView final : public Pane {
   ActivityIndex& index_;
   int64_t next_pass_ = 0;
   int& span_;
-  bool& by_chat_;
+  int& group_;
+  // Each commit's changes as git gave them, kept while it is looked at: the
+  // rows of its diff point into them.
+  struct CommitDiff {
+    const GitCommit* from = nullptr;
+    std::vector<FileEdit> edits;
+    std::vector<Loaded> loaded;
+  };
+  std::map<std::string, CommitDiff> commit_diffs_;
   std::vector<Group> groups_;
   std::map<std::string, std::string> project_paths_;
   std::vector<std::pair<std::string, long>> agents_;

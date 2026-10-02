@@ -183,6 +183,7 @@ int main(int argc, char** argv) {
   }
 
   mico::logs::init(daemon ? "daemon" : local ? "local" : attach_only ? "attach" : "client");
+  mico::logs::install_crash_handler();
   if (kill) return mico::kill_daemon();
   if (daemon) return mico::run_daemon();
 

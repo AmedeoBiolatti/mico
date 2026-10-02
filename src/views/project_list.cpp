@@ -130,6 +130,26 @@ class ProjectList final : public Pane {
     if (best && best->rank < 4) p.put(x, y, best->glyph, Style{best->color, bg, attr::kBold});
   }
 
+  // What git says of `dir`, in at most `w` columns from x: the branch, then
+  // how many files differ, commits ahead and behind, and conflicts, as room
+  // allows. Nothing outside a repository. Returns the columns used.
+  int draw_git(Painter& p, int x, int y, int w, const std::string& dir, Color bg) {
+    const GitStatus* g = app_->workspace().git().status(dir);
+    if (!g || !g->repo || w < 4) return 0;
+    const Theme& th = app_->theme();
+    const std::string name = !g->branch.empty() ? g->branch : !g->head.empty() ? g->head : "no commits";
+    int used = p.text_clipped(x, y, name, Style{th.accent, bg}, w);
+    const auto part = [&](const std::string& s, Color c) {
+      if (used + 1 + text::str_width(s) > w) return;
+      used += 1 + p.text(x + used + 1, y, s, Style{c, bg});
+    };
+    if (g->files) part("\xC2\xB1" + std::to_string(g->files), th.warn);
+    if (g->conflicts) part("!" + std::to_string(g->conflicts), th.err);
+    if (g->ahead) part("\xE2\x86\x91" + std::to_string(g->ahead), th.dim);
+    if (g->behind) part("\xE2\x86\x93" + std::to_string(g->behind), th.dim);
+    return used;
+  }
+
   static bool in_project(const Project& pr, const std::string& cwd) {
     if (cwd == pr.path) return true;
     for (const auto& sp : pr.subs)
@@ -149,8 +169,9 @@ class ProjectList final : public Pane {
     draw_dot(p, 1, y, st.bg, [&](const LiveSession& s) { return in_project(pr, s.cwd()); });
     p.text_clipped(3, y, pr.name.empty() ? pr.path : pr.name, st, std::max(0, p.width() - 4));
 
-    // Second line: path on the left, "12 chats · 3h" on the right. The path
-    // gives way first on a narrow pane.
+    // Second line: git's branch and state, then the path, on the left;
+    // "12 chats · 3h" on the right. The path gives way first on a narrow
+    // pane, then the git state.
     const size_t n = pr.sessions.size();
     std::string info = n == 0 ? "no chats" : std::to_string(n) + (n == 1 ? " chat" : " chats");
     const std::string when = " \xC2\xB7 " + rel_time(pr.mtime);
@@ -158,7 +179,8 @@ class ProjectList final : public Pane {
     const int iw = text::str_width(info);
     const int room = p.width() - 3 - iw - 2;
     if (room >= 6) {
-      p.text_clipped(3, y + 1, abbreviate(pr.path), meta, room);
+      const int g = draw_git(p, 3, y + 1, room, pr.path, st.bg);
+      if (room - g - 2 >= 4) p.text_clipped(3 + (g ? g + 2 : 0), y + 1, abbreviate(pr.path), meta, room - (g ? g + 2 : 0));
       p.text(p.width() - iw, y + 1, info, meta);
     } else {
       p.text_clipped(3, y + 1, info, meta, std::max(0, p.width() - 4));
@@ -193,7 +215,11 @@ class ProjectList final : public Pane {
     const int iw = text::str_width(info);
     const int room = p.width() - 6 - iw - 2;
     if (room >= 6) {
-      p.text_clipped(6, y + 1, where, meta, room);
+      // A sub-project in a folder of its own may be on another branch, or
+      // another repository: it says so. One in the project's folder would
+      // only repeat the folder's line.
+      const int g = sp.path == pr.path ? 0 : draw_git(p, 6, y + 1, room, sp.path, st.bg);
+      if (room - g - 2 >= 4) p.text_clipped(6 + (g ? g + 2 : 0), y + 1, where, meta, room - (g ? g + 2 : 0));
       p.text(p.width() - iw, y + 1, info, meta);
     } else {
       p.text_clipped(6, y + 1, info, meta, std::max(0, p.width() - 7));

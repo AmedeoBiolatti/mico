@@ -67,10 +67,30 @@ struct FileEdit {
   int added = 0, removed = 0;
 };
 
+// A commit a chat made, as git announced it in what the call printed:
+// "[main 777c513] The view is remembered". Read from the agent's record, so
+// nothing is guessed; whether the commit is still in its repository is git's
+// to say (core/git.h).
+struct ChatCommit {
+  int64_t at_ms = 0;         // unix milliseconds
+  uint64_t call_offset = 0;  // where the call starts, to open the chat there
+  std::string hash;          // as printed, usually abbreviated
+  std::string branch;        // empty when HEAD was detached
+  std::string subject;
+};
+
+// True when `command` runs a git command that makes a commit and says so:
+// commit, cherry-pick, revert. Not one that only mentions them.
+bool makes_commits(std::string_view command);
+// The commits a command's output announces, one "[branch hash] subject"
+// line each, in order.
+std::vector<ChatCommit> commits_announced(std::string_view output);
+
 struct ChatActivity {
   std::string path, agent, id, title, project, cwd;
   std::vector<ToolRun> runs;    // in transcript order
   std::vector<FileEdit> edits;  // the changes that went through, in order
+  std::vector<ChatCommit> commits;  // in order, each hash once
 };
 
 // Every tool call in every chat mico knows, kept up to date the way the usage

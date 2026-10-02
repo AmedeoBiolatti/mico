@@ -1,4 +1,5 @@
 #include "core/pty.h"
+#include "core/scope.h"
 
 #include <fcntl.h>
 #include <pty.h>
@@ -73,7 +74,8 @@ static std::string resolve_bin(const std::string& bin) {
   return {};
 }
 
-bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, int w, int h) {
+bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, int w, int h, const std::string& unit,
+                const std::string& description) {
   spawn_error_.clear();
   if (argv.empty()) return false;
 
@@ -96,6 +98,11 @@ bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, in
   } else {
     MLOG("spawn: resolved '%s' -> %s", argv[0].c_str(), bin.c_str());
   }
+
+  // In a scope of its own, where there are scopes; built before the fork.
+  const std::vector<std::string> run = unit.empty() ? argv : scope::wrap(argv, unit, description);
+  unit_ = run.size() != argv.size() ? unit + ".scope" : std::string();
+  if (!unit_.empty()) MLOG("spawn: in scope %s", unit_.c_str());
 
   winsize ws{};
   ws.ws_col = (unsigned short)(w > 0 ? w : 80);
@@ -122,8 +129,8 @@ bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, in
       for (int fd = 3; fd < 4096; fd++) close(fd);
 
     std::vector<char*> args;
-    args.reserve(argv.size() + 1);
-    for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
+    args.reserve(run.size() + 1);
+    for (const auto& a : run) args.push_back(const_cast<char*>(a.c_str()));
     args.push_back(nullptr);
     execvp(args[0], args.data());
     _exit(127);
@@ -186,6 +193,7 @@ void Pty::poll_exit() {
   if (r == pid_) {
     exited_ = true;
     status_ = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    signal_ = WIFSIGNALED(st) ? WTERMSIG(st) : 0;
     if (WIFSIGNALED(st))
       MLOG("child pid %d killed by signal %d", int(pid_), WTERMSIG(st));
     else

@@ -26,7 +26,7 @@ cmake -S . -B build -G Ninja && cmake --build build
 | `mico` | attach, starting a daemon if needed |
 | `mico --attach` | attach only; fail if no daemon is running |
 | `mico --daemon` | run the daemon in the foreground |
-| `mico kill` | stop the daemon **and every agent it owns** |
+| `mico kill` | stop the daemon **and every agent it owns** (the next daemon resumes them) |
 | `mico --local` | single process; agents die with it |
 
 Detaching is just closing the client, or pressing `q`. Agents keep running.
@@ -429,6 +429,33 @@ has no project store yet, mico falls back to answering the dialog once.) Any
 *later* prompt is yours to answer; use F2 to open the agent's terminal when
 its prompt cannot be answered through a question card.
 
+## While you are away
+
+**Notifications.** When an agent finishes its turn, or stops on something
+only you can answer (a permission prompt, a question), mico says so. A turn
+counts as finished once the agent has stayed idle for a second and a half,
+so one pausing between steps does not. Nobody is told while mico is the
+window in front: the client turns on the terminal's focus reports, and a
+terminal that has focus gets nothing. One that does not report focus is
+told only about chats other than the one on screen. How it is said follows
+the terminal, learnt from its XTVERSION answer at attach: kitty's OSC 99,
+OSC 777 for Ghostty, WezTerm and foot, OSC 9 for iTerm2, the bell anywhere
+else (and inside tmux). It is all escape sequences in the frame, so it
+crosses ssh. With no client attached, a daemon on a machine with a desktop
+runs `notify-send` instead. A chat that is not on screen also gets a line in
+the status bar. Settings → Away → Notifications: off, bell or desktop.
+
+**Resuming agents.** The daemon keeps `$XDG_STATE_HOME/mico/running` listing
+the agents it runs — adapter, session id, folder — for chats that have a
+transcript to resume. When a daemon starts, it resumes the agents its
+predecessor listed, each in place, as the chat list's **resume** would. So a
+reboot, a crash or `mico kill` (to run a new build, say) costs the processes
+but not the conversations. An agent that exited stays listed for ten
+seconds, since at shutdown the agents are often killed a moment before their
+daemon; one you closed goes at once. `:quit` (or `:kill`, or "Stop all
+agents and quit") is the way to end them for good: it empties the list. A
+`--local` mico lists nothing. Settings → Away → Resume agents turns it off.
+
 ## Logs
 
 mico writes a line-per-event log to `$XDG_STATE_HOME/mico/mico.log`
@@ -436,6 +463,46 @@ mico writes a line-per-event log to `$XDG_STATE_HOME/mico/mico.log`
 spawn (argv, resolved binary, cwd, pid), transcript linking, and — when an
 agent exits — its code and the last screen it drew. `:log` shows the path.
 The file resets itself once it passes ~4 MB.
+
+**When the daemon goes down**, the log says how, as far as anything can:
+
+- **A crash** (SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, an uncaught
+  exception) writes a `---- CRASH` entry: the signal, what the crashing
+  thread was doing — pumping which session (agent, id, folder), drawing which
+  tab and chat, indexing or searching which transcript, running git where —
+  and a backtrace. `addr2line -Cfie build/mico +0x…` names a frame, for the
+  same build.
+- **A kill** (SIGKILL, which is what the OOM killer and `systemd-oomd`
+  send) leaves nothing: it cannot be caught. So the daemon keeps
+  `$XDG_STATE_HOME/mico/daemon` (pid, start, and a heartbeat each minute) and
+  removes it when it stops as it should, logging why (`mico kill`, `:quit`,
+  SIGTERM…). A daemon that finds the file left behind logs that its
+  predecessor died, when it was last seen alive, and what the journal says of
+  its end — for example `systemd-oomd` killing the terminal window's scope it
+  ran in — and says so in the status bar.
+- **Memory.** Every 15 s (every 3 s while less than a quarter is free) the
+  daemon adds up each agent's process tree from `/proc`, and logs a session as
+  it passes 1, 2, 4, 8… GB, naming its largest process. While less than a
+  tenth of memory is free it logs every agent's share each 30 s, and the
+  status bar names the one holding the most. The last of these lines before a
+  kill are what say whose work filled the machine.
+
+**Scopes of their own.** Under memory pressure `systemd-oomd` kills a whole
+cgroup. A daemon started from a terminal would share that terminal's — and
+so would its agents and everything they run, so one agent's runaway build or
+test took the daemon and every other agent with it. So where a systemd user
+manager runs scopes, the client starts the daemon in one of its own
+(`mico-daemon-<pid>.scope`), and the daemon starts each agent in another
+(`mico-claude-<daemon pid>-<n>.scope`), through `systemd-run --user --scope`,
+which moves itself into the scope and then becomes the command — the agent
+keeps its pid, its terminal and its environment. Now a kill for memory takes
+the agent whose work it was, with what it ran, and nothing else: the daemon
+logs `session KILLED (SIGKILL)` with the scope to look up
+(`journalctl --user -u <scope>`), the status bar says which chat it was, and
+it can be resumed. Whether scopes work is tried once, with a trial scope;
+without them (no systemd, a container, Settings → Away → Own scopes off, or
+`MICO_SCOPES=0`) everything runs as before. A daemon started in a scope that
+does not come up within three seconds is started again without one.
 
 ## Commands
 
@@ -452,7 +519,9 @@ command.
 :outline         the chat's outline (Ctrl+G)
 :claude [dir]    :codex [dir]   :pi [dir]   :omp [dir]
 :fork  :resume   act on the selected chat
-:usage  :tools  :diff  :sessions   switch tabs
+:commit <hash>   the chat that made a commit
+:blame <file>:<line>   the chat that last changed a line
+:usage  :tools  :diff  :git  :sessions   switch tabs
 :density m|n|f   :select   :redraw   :rescan   :close
 :detach          leave; agents keep running
 :quit            stop every agent and quit
@@ -474,9 +543,9 @@ The Projects and Chats column is on the left on every tab; the tabs switch
 the rest of the screen — click one, or `[` / `]` to cycle, and the keys go to
 what the tab shows. `Sessions` is the working view; `Usage` adds up what the
 agents spent, `Search` searches chats, `Tools` shows where their time went,
-`Diff` what they changed in files.
+`Diff` what they changed in files, `Git` the repository and who works where.
 
-On `Usage`, `Search`, `Tools` and `Diff` the column is the filter. Each list gains a
+On `Usage`, `Search`, `Tools`, `Diff` and `Git` the column is the filter. Each list gains a
 row at the top — **All folders** above the folders, **All chats** above the
 chats — and what is lit is what the tab covers:
 
@@ -568,6 +637,8 @@ line; a file from when each part was `on` or `off` still reads as it meant.
 - **Agents:** the agent hints (the note on what mico draws, added to their
   system prompt) and the plot tool (mico's MCP server), off or on. These apply
   to agents started from then on.
+- **Away:** notifications (off · bell · desktop) and whether a daemon resumes
+  the agents its predecessor was running; see **While you are away**.
 
 Pictures are their own axis, not part of density: shown, a screenshot or plot
 appears at every density, even among the folded steps of a finished turn;
@@ -595,7 +666,8 @@ first, each headed by its agent, chat and time:
    107 + int add_row() const { … }
 ```
 
-`g` groups by chat instead: each chat, and every file it touched. `↑`/`↓`
+`g` groups by chat instead: each chat, and every file it touched; `g` again
+groups by commit (see **Git** below). `↑`/`↓`
 choose a row; `PgUp`/`PgDn` (or the wheel over the diff) scroll it, `←`/`→`
 scroll it sideways, `n`/`p` jump between changes. `Enter`, or a click on a
 change's heading, opens the chat at the call that made it. `t` cycles today,
@@ -613,7 +685,87 @@ transcripts), so both tabs open on numbers; later passes re-read only the
 transcripts that grew.
 
 What it cannot see is a change made through the shell (`sed -i`, a script
-that writes a file): the transcript holds the command, not the diff.
+that writes a file): the transcript holds the command, not the diff. Once
+such a change is committed, grouping by commit shows it, from git.
+
+## Git
+
+mico reads git, never writes it: `status`, `show` and `blame`, each with
+`--no-optional-locks` so a look never takes the index lock from an agent
+that is committing, on a thread of their own so a slow repository never
+holds up a frame (`src/core/git.h`).
+
+**The sidebar** shows each tracked folder's branch on its second line —
+`main ±3 ↑1 ↓2`: the branch (or the commit, when HEAD is detached), how many
+files differ from it (staged, changed or untracked, each once), conflicts,
+and commits ahead of and behind its upstream. A sub-project in a folder of
+its own shows its own, since it may be another branch or another
+repository. A folder that is not in a work tree shows nothing. It is read
+again when an agent there finishes a turn, when git's HEAD, its log or the
+index change (a commit, a checkout, staging), and every half minute while it
+is on screen.
+
+**Commits by chat.** When an agent commits, git prints `[main 777c513] The
+subject` in what the call printed, and the activity index keeps it: which
+chat made which commit, and the call that did. Only a command that runs
+`git commit`, `cherry-pick` or `revert` counts — one that only mentions them
+(`grep 'git commit'`), or prints a log that quotes such a line, does not.
+The output is read only for those commands, so indexing every transcript
+costs no more than it did. The Diff tab's third grouping (`g` until it says
+"by commit") lists them, newest first, each with its chat; below the one
+selected is its diff as git has it, file by file, drawn like any other
+change — so it holds what a shell command or a formatter changed too, which
+the agents' own records cannot. `Enter` opens the chat at the commit. A
+commit git no longer has — amended, rebased away, made in another
+repository — is still listed, marked `not in git`.
+
+**From a commit, or a line, to its chat.** `:commit <hash>` (full or
+abbreviated) opens the chat that made the commit, at the call.
+`:blame <file>:<line>` asks git which commit last changed that line of a
+file in the selected folder, and opens the chat that made it — or says that
+no chat mico knows did.
+
+### The Git tab
+
+`:git`, or the tab after Diff: the selected folder's repository, and the
+agents in it.
+
+```
+ Work trees                                    │ src/core/git.cpp
+ ▸ main  ±38   ~/Desktop/llm/mico              │ last changed by Claude · Git tab
+     ◍ Claude Git tab                 working  │ ┄┄┄ line 1 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+   refactor  clean   ~/Desktop/llm/mico-refactor│   1 + #include "core/git.h"
+ Other branches                                │   2 +
+   old-ui  [gone]  Codex · Tabs           3d   │ …
+ Changes · mico · 38 files
+   M src/ui/app.cpp     +143 −9   Claude · Git tab
+  ?? src/core/git.cpp   new       Claude · Git tab
+ Commits · mico (HEAD)
+ ◆ 777c513 The view is remembered   Claude · View state   1h
+ · acae6a5 Subscription limits      bamedeo               2h
+```
+
+- **Work trees**, from `git worktree list`: each with its branch, `±N ↑a ↓b`,
+  and under it every running agent whose folder is in it (the deepest work
+  tree wins, so one nested in the main checkout is its own), with the same
+  marks as the chat list. `Enter` on an agent opens its chat; on a work tree,
+  focuses it: the sections below are its.
+- **Other branches**, the ones no work tree has checked out, newest first,
+  each with its upstream's state and the chat that last committed to it (from
+  what the chats announced), else its last subject. `Enter` lists its commits.
+- **Changes**: what the focused work tree has not committed, with git's two
+  letters and the lines added and removed, and the chat that last changed
+  each file since HEAD's commit, from the agents' own edit records. A file
+  changed through the shell, or by you, names no chat. `Enter` opens that chat
+  at the edit.
+- **Commits**: the focused branch's log, two hundred deep. `◆` marks one a
+  chat made, and names it; `Enter` opens it there.
+
+Beside the list (below it, on a narrow pane) is whatever is selected: a
+file's diff against HEAD, a commit's diff, or what is known of a work tree or
+branch. `PgUp`/`PgDn` scroll it, `r` reads git again. With every folder in
+the filter, the tab lists each folder's branch and state and how many agents
+work there; `Enter` narrows to one.
 
 ## Continuing a chat
 
@@ -1338,7 +1490,9 @@ and named daemons.
 ### Known gaps
 
 - Sessions die with the *daemon*: `mico kill`, a reboot, or a daemon crash takes
-  the agents with it. Nothing is re-attached on daemon restart.
+  the agents' processes with it. The next daemon resumes their conversations
+  (see **While you are away**), but a turn that was running is not carried on,
+  and a plain command or a chat with no transcript yet is not brought back.
 - Only one daemon per user (`default.sock`); named sessions are not implemented.
 - Forking branches from the end of a conversation only; see above.
 - Markdown covers what agents actually emit; nested lists are not special-cased

@@ -43,6 +43,9 @@ struct ProbeReplies {
   int cell_w = 0, cell_h = 0;
 };
 ProbeReplies read_probe_replies(std::string_view buf, std::string* rest);
+// How the terminal that answered XTVERSION with `version` raises a
+// notification; with no answer, what TERM and TERM_PROGRAM suggest.
+NotifyEscape notify_escape(std::string_view version);
 // False for a kitty too old for Unicode placeholders.
 bool kitty_version_ok(std::string_view version, bool kitty_term);
 void install_winch(void (*handler)(int));

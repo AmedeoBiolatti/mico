@@ -18,10 +18,17 @@ namespace mico {
 // socket than it does to a single local process.
 enum class AppAction { None, Detach, Shutdown };
 
+// What the Git tab has focused, kept while its pane comes and goes.
+struct GitTabState {
+  std::string scope;    // the folder it was showing
+  std::string wt, ref;  // the work tree, and the branch whose commits it lists
+  std::string sel_key;  // the row selected
+};
+
 // The Diff tab's choices, kept while its pane comes and goes.
 struct DiffSettings {
   int span = 1;          // last 7 days
-  bool by_chat = false;  // rows are chats rather than files
+  int group = 0;         // rows are files (0), chats (1) or commits (2)
   std::string sel_key;   // the selected file, or chat's transcript
 };
 
@@ -95,6 +102,11 @@ class App {
   // The unified chat list selects either a running session or a stored
   // transcript; exactly one is active at a time.
   void select_live(LiveSession* s);
+  // Selects a running chat and shows it, from another tab.
+  void open_live(LiveSession* s) {
+    select_live(s);
+    show_tab(0);
+  }
   void select_stored(const std::string& transcript_path);
   // Explicit opening resumes stopped/stored chats and focuses existing runs.
   // Selection alone remains a read-only preview.
@@ -219,6 +231,24 @@ class App {
   // A link the user clicked, for whoever owns their terminal to open.
   std::string take_open_url() { return std::exchange(open_url_, {}); }
 
+  // An agent that has finished its turn, or stopped to ask you something,
+  // for whoever owns a terminal to announce, as notify_mode() says. Whether
+  // to is theirs to decide: only they know if the terminal has focus.
+  struct Notice {
+    std::string title;       // the chat: "Fix the tabs"
+    std::string body;        // "Claude finished", "Claude needs you"
+    bool on_screen = false;  // its chat is the one mico is showing
+  };
+  std::vector<Notice> take_notices() { return std::exchange(notices_, {}); }
+  // What a terminal that raises notifications as `how` is sent for `n`:
+  // a bell when that is all the setting asks for.
+  static std::string notice_seq(const Notice& n, NotifyEscape how);
+  // Whether a terminal should announce `n`: one that reports its focus, only
+  // while it does not have it; one that does not, only for a chat not shown.
+  static bool announce(const Notice& n, bool focus_known, bool focused) {
+    return focus_known ? !focused : !n.on_screen;
+  }
+
   // Repaint every cell. Terminals leave selection highlighting on cells a diff
   // renderer never rewrites, so there has to be a way to say "draw it all".
   void force_redraw() { redraw_ = true; }
@@ -243,6 +273,9 @@ class App {
   // Opens the chat whose transcript is `path` — its running session when
   // there is one — scrolled to the line at byte `offset`, `query` lit.
   void open_at(const std::string& path, uint64_t offset, const std::string& query);
+  // Opens the chat that made commit `hash` (in full or abbreviated) at the
+  // call that made it. False when no chat mico knows announced it.
+  bool open_commit(const std::string& hash);
   // For the pane showing transcript `path`: where to reveal, once.
   bool take_reveal(const std::string& path, uint64_t* offset, std::string* query) {
     if (!reveal_ || reveal_->path != path) return false;
@@ -348,6 +381,8 @@ class App {
   void show_tab(size_t i);
   void reap_sessions();
   void render(Surface& s);
+  const char* screen_crumb();
+  std::string screen_crumb_;
   void render_chrome(Surface& s, const Node::Placed& p, bool focused);
   void render_status(Surface& s);
   void render_menu(Surface& s);
@@ -378,7 +413,24 @@ class App {
   void focus_next(int delta);
   void notify_state_changed();
 
+  // What each running agent was doing when last looked at, to tell when one
+  // finished or began to need you. A turn counts as finished once the agent
+  // has stayed idle for kSettleMs: one that pauses between steps has not.
+  struct Watch {
+    bool waiting = false;
+    int64_t busy_since = 0;  // 0: not working
+    int64_t done_at = 0;     // when its idleness counts as finished; 0: not due
+  };
+  static constexpr int kSettleMs = 1500;
+  std::map<LiveSession*, Watch> watch_;
+  std::vector<Notice> notices_;
+  int64_t next_watch_ms_ = 0;  // the soonest done_at, for idle_timeout_ms()
+  void watch_agents(int64_t now_ms);
+  // The terminal's focus as it reports it, when mico draws to it itself.
+  bool term_focused_ = true, term_focus_known_ = false;
+
   DiffSettings diff_;
+  GitTabState git_;
   ChatOrder chat_order_;
   std::string search_request_;
   bool search_requested_ = false;
@@ -425,7 +477,7 @@ class App {
   struct Tab {
     std::string name;
   };
-  std::vector<Tab> tabs_{{"Sessions"}, {"Usage"}, {"Search"}, {"Tools"}, {"Diff"}, {"Settings"}};
+  std::vector<Tab> tabs_{{"Sessions"}, {"Usage"}, {"Search"}, {"Tools"}, {"Diff"}, {"Git"}, {"Settings"}};
   size_t tab_ = 0;
   std::vector<Rect> tab_hit_;
   int tab_row_ = -1;

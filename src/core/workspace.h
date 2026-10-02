@@ -7,8 +7,10 @@
 #include <vector>
 
 #include "core/activity.h"
+#include "core/away.h"
 #include "core/commands.h"
 #include "core/files.h"
+#include "core/git.h"
 #include "core/models.h"
 #include "core/search.h"
 #include "core/session.h"
@@ -49,6 +51,8 @@ class Workspace {
   // asked once per folder for all its chats.
   CommandCatalog& commands() { return commands_; }
   FileIndex& files() { return files_; }
+  // What git says about the folders and the commits agents made in them.
+  GitIndex& git() { return git_; }
 
   // --- Running agents ------------------------------------------------------
 
@@ -111,6 +115,19 @@ class Workspace {
   // title, else "New <agent> chat".
   std::string title_of(const LiveSession& s) const;
 
+  // --- Across a restart -----------------------------------------------------
+
+  // From now on, keeps running_path() listing the agents running, so that if
+  // this daemon goes without being told to stop them — a reboot, a crash,
+  // `mico kill` — the next one can resume them. Only a daemon does this: a
+  // --local mico's agents are meant to go with it.
+  void remember_running() { remember_running_ = true; }
+  // Resumes the agents the list names, each in place, as the chat list's
+  // "resume" would. Returns how many started.
+  int restore_running();
+  // The agents were stopped on purpose: there is nothing to resume.
+  void forget_running();
+
   // --- Advancing -------------------------------------------------------------
 
   // What service() moved, for a front end to decide what to redraw.
@@ -120,6 +137,7 @@ class Workspace {
     kSearch = 1u << 2,
     kActivity = 1u << 3,  // the index behind Tools and Diff
     kUsage = 1u << 4,
+    kGit = 1u << 5,       // a status, a commit or a blame came back from git
   };
   // Advances agents, probes and index passes by a slice each. The usage index
   // reads only while `usage_wanted`: it is costly and only one view shows it.
@@ -131,6 +149,9 @@ class Workspace {
   void collect_fds(std::vector<int>& out) const;
   // True while some agent is working.
   bool any_busy() const;
+  // For the status bar, once: the machine is low on memory, and which agent's
+  // work holds the most. Empty when there is nothing new to say.
+  std::string take_memory_warning() { return std::exchange(memory_warning_, {}); }
 
  private:
   Store store_;
@@ -140,6 +161,10 @@ class Workspace {
   bool activity_warmed_ = false;
   CommandCatalog commands_;
   FileIndex files_;
+  GitIndex git_;
+  // Whether each agent was working when last looked at: when one stops, its
+  // folder's git status is read again, since that is when it changes.
+  std::map<LiveSession*, bool> was_busy_;
   std::vector<std::unique_ptr<LiveSession>> live_;
   std::vector<LiveSession*> to_close_;
   uint64_t sessions_version_ = 1;
@@ -154,6 +179,26 @@ class Workspace {
   std::map<LiveSession*, int64_t> unlaunched_;
   void launched_later(LiveSession* s);
   void launch_unsized();
+
+  // What each agent's process tree holds, looked at every 15 s (every 3 s
+  // while memory is short) and written to the log as it crosses 1, 2, 4 GB…,
+  // and all of them while the machine runs low: a kill for memory leaves no
+  // line of its own, so these are what say whose work it was.
+  void watch_memory();
+  std::string describe(LiveSession& s) const;
+  int64_t mem_checked_ms_ = 0, low_logged_ms_ = 0, warned_ms_ = 0;
+  bool mem_tight_ = false;
+  std::map<LiveSession*, int> mem_level_;  // the size last logged, as a power of two in GB
+  std::string memory_warning_;
+
+  bool remember_running_ = false;
+  std::vector<RunningAgent> running_written_;
+  // When each exited agent was first seen exited. One stays listed a while:
+  // at shutdown the agents are often killed a moment before their daemon,
+  // and an agent the user ended is still dropped soon enough.
+  std::map<LiveSession*, int64_t> exited_at_;
+  static constexpr int kExitGraceMs = 10000;
+  void note_running();
 
   // New chats started from a sub-project, filed under it once their agent
   // has told us their id: project path and sub-project name.

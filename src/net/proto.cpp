@@ -36,7 +36,8 @@ void encode_size(Type t, int w, int h, std::string& out) {
 
 void encode_size(Type t, int w, int h, const GfxCaps& caps, std::string& out) {
   const char b[9] = {char(w & 0xFF), char((w >> 8) & 0xFF), char(h & 0xFF), char((h >> 8) & 0xFF),
-                     char((caps.kitty ? 1 : 0) | (caps.sixel ? 2 : 0) | (caps.tmux ? 4 : 0)),
+                     char((caps.kitty ? 1 : 0) | (caps.sixel ? 2 : 0) | (caps.tmux ? 4 : 0) |
+                          (int(caps.notify) & 3) << 3),
                      char(caps.cell_w & 0xFF), char((caps.cell_w >> 8) & 0xFF),
                      char(caps.cell_h & 0xFF), char((caps.cell_h >> 8) & 0xFF)};
   encode(t, std::string_view(b, 9), out);
@@ -58,6 +59,7 @@ bool decode_caps(std::string_view p, GfxCaps* caps) {
   caps->kitty = (uint8_t(p[4]) & 1) != 0;
   caps->sixel = (uint8_t(p[4]) & 2) != 0;
   caps->tmux = (uint8_t(p[4]) & 4) != 0;
+  caps->notify = NotifyEscape((uint8_t(p[4]) >> 3) & 3);
   caps->cell_w = int(uint8_t(p[5])) | int(uint8_t(p[6])) << 8;
   caps->cell_h = int(uint8_t(p[7])) | int(uint8_t(p[8])) << 8;
   return true;
