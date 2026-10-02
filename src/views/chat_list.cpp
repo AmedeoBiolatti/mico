@@ -187,15 +187,15 @@ class ChatList final : public Pane {
     // Filtering the whole folder, no one chat is lit.
     const bool lit = !head_ || app_->chat_filter();
     for (int i = list_.list.top, y = 0; i < add && y < list_.list_h(); i++, y += TallList::kItemH)
-      draw_item(p, rows_[size_t(i)], y, lit && i == sel_, focused);
+      draw_item(p, rows_[size_t(i)], y, lit && i == sel_, focused, i % 2 ? th.panel_alt : th.panel);
     draw_list_button(p, th, list_, "+ New chat", sel_ == add, focused);
   }
 
   // Two lines: the title, then state · agent with the time on the right.
-  void draw_item(Painter& p, const Row& r, int y, bool cursor, bool focused) {
+  void draw_item(Painter& p, const Row& r, int y, bool cursor, bool focused, Color bg) {
     const Theme& th = app_->theme();
     const bool marked = !r.key.empty() && marked_.count(r.key) != 0;
-    Style base{th.text, (cursor || marked) ? (focused ? th.sel_bg : th.sel_inactive) : th.panel,
+    Style base{th.text, (cursor || marked) ? (focused ? th.sel_bg : th.sel_inactive) : bg,
                cursor ? attr::kBold : attr::kNone};
     const Style meta{th.dim, base.bg};
     p.fill(Rect{0, y, p.width(), TallList::kItemH}, base);

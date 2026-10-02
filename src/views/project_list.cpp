@@ -108,8 +108,9 @@ class ProjectList final : public Pane {
     for (int i = list_.list.top, y = 0; i < add && y < list_.list_h(); i++, y += TallList::kItemH) {
       const Item& it = items_[size_t(i)];
       const Project& pr = projects[size_t(it.project)];
-      if (it.sub < 0) draw_item(p, pr, y, lit && i == sel_, focused);
-      else draw_sub(p, pr, pr.subs[size_t(it.sub)], y, lit && i == sel_, focused);
+      const Color bg = i % 2 ? th.panel_alt : th.panel;  // by index: the stripes scroll with the rows
+      if (it.sub < 0) draw_item(p, pr, y, lit && i == sel_, focused, bg);
+      else draw_sub(p, pr, pr.subs[size_t(it.sub)], y, lit && i == sel_, focused, bg);
     }
     draw_list_button(p, th, list_, "+ Add folder", sel_ == add, focused);
   }
@@ -138,9 +139,9 @@ class ProjectList final : public Pane {
   }
 
   // Two lines: the name, then its path with how many chats and how recent.
-  void draw_item(Painter& p, const Project& pr, int y, bool sel, bool focused) {
+  void draw_item(Painter& p, const Project& pr, int y, bool sel, bool focused, Color bg) {
     const Theme& th = app_->theme();
-    Style st{sel ? th.text : th.dim, sel ? (focused ? th.sel_bg : th.sel_inactive) : th.panel,
+    Style st{sel ? th.text : th.dim, sel ? (focused ? th.sel_bg : th.sel_inactive) : bg,
              sel ? attr::kBold : attr::kNone};
     const Style meta{th.dim, st.bg};
     p.fill(Rect{0, y, p.width(), TallList::kItemH}, st);
@@ -167,9 +168,9 @@ class ProjectList final : public Pane {
 
   // A sub-project, indented under its folder: its name, then where it runs —
   // "same folder" or the path under the project — and its chats.
-  void draw_sub(Painter& p, const Project& pr, const SubProject& sp, int y, bool sel, bool focused) {
+  void draw_sub(Painter& p, const Project& pr, const SubProject& sp, int y, bool sel, bool focused, Color bg) {
     const Theme& th = app_->theme();
-    Style st{sel ? th.text : th.dim, sel ? (focused ? th.sel_bg : th.sel_inactive) : th.panel,
+    Style st{sel ? th.text : th.dim, sel ? (focused ? th.sel_bg : th.sel_inactive) : bg,
              sel ? attr::kBold : attr::kNone};
     const Style meta{th.dim, st.bg};
     p.fill(Rect{0, y, p.width(), TallList::kItemH}, st);

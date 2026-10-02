@@ -10,6 +10,9 @@ namespace mico {
 struct Theme {
   Color bg = 0x101419;
   Color panel = 0x171D25;
+  // Every other row of a list (projects, chats): a step off the panel, so a
+  // two-line row reads as one and its neighbours apart.
+  Color panel_alt = 0x1C232D;
   Color border = 0x303A47;
   Color border_focus = 0x74C7B6;
   Color text = 0xDCE4EE;

@@ -9,6 +9,7 @@ Theme light() {
   Theme t;
   t.bg = 0xFAFAF8;
   t.panel = 0xF4F3F0;
+  t.panel_alt = 0xEBEAE5;
   t.border = 0xD3D0CA;
   t.border_focus = 0x2A8C7C;
   t.text = 0x24292F;
@@ -60,6 +61,7 @@ Theme high_contrast() {
   Theme t;
   t.bg = 0x000000;
   t.panel = 0x000000;
+  t.panel_alt = 0x111417;
   t.border = 0x8A8A8A;
   t.border_focus = 0x00E8C2;
   t.text = 0xFFFFFF;
@@ -111,6 +113,7 @@ Theme warm() {
   Theme t;
   t.bg = 0x1D2021;
   t.panel = 0x282828;
+  t.panel_alt = 0x302E2C;
   t.border = 0x504945;
   t.border_focus = 0x8EC07C;
   t.text = 0xEBDBB2;
