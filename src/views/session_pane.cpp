@@ -75,7 +75,7 @@ class SessionPane final : public Pane {
     // Only a recognisable startup trust dialog may choose the terminal for
     // us. Ordinary prompt cursors and quoted questions also match needs_input;
     // using that heuristic here made sending a message switch views.
-    if (s_->transcript().empty() && s_->driver().startup_prompt(s_->vt())) return View::Raw;
+    if (s_->starting() && s_->driver().startup_prompt(s_->vt())) return View::Raw;
     return View::Chat;
   }
   bool showing_raw() const { return effective_view() == View::Raw; }

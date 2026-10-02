@@ -51,6 +51,10 @@ class LiveSession {
   // spawned the process.
   bool set_geometry(int w, int h);
   bool spawned() const { return spawned_; }
+  // From the spawn until the user first sends it something (a minute at
+  // most): when an agent asks its startup questions, a folder's trust. A
+  // resumed chat has its transcript from the start, so that cannot say.
+  bool starting() const;
   // The command start() settled on, including anything mico added to it.
   const std::vector<std::string>& argv() const { return argv_; }
 
@@ -192,6 +196,7 @@ class LiveSession {
   }
   bool was_exited_ = false;
   int trust_tries_ = 0;
+  int64_t starting_until_ms_ = 0;
   int64_t trust_next_ms_ = 0;
   bool unseen_ = false;
   // Codex's turns as its transcript records them: task_started, then

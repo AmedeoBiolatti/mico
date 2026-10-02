@@ -176,6 +176,7 @@ bool LiveSession::set_geometry(int w, int h) {
     return false;
   }
   spawned_ = true;
+  starting_until_ms_ = now_ms() + 60000;
   last_w_ = w;
   last_h_ = h;
   vt_.resize(w, h);
@@ -283,8 +284,11 @@ void LiveSession::follow_turns() {
   close(fd);
 }
 
+bool LiveSession::starting() const { return spawned_ && now_ms() < starting_until_ms_; }
+
 bool LiveSession::send_parts(const std::vector<MessagePart>& parts, std::string_view first) {
   if (!spawned_ || pty_.exited() || message_sending()) return false;
+  starting_until_ms_ = 0;
   used_at_ = int64_t(time(nullptr));
   const bool bracketed = vt_.bracketed_paste();
   bool has_image = false;
@@ -332,6 +336,7 @@ void LiveSession::flush_queue() {
 
 bool LiveSession::send_message(std::vector<Step> steps) {
   if (!spawned_ || pty_.exited() || message_sending() || steps.empty()) return false;
+  starting_until_ms_ = 0;
   msg_steps_ = std::move(steps);
   msg_step_ = 0;
   msg_key_ms_ = 0;  // the first step goes at once
@@ -341,6 +346,7 @@ bool LiveSession::send_message(std::vector<Step> steps) {
 
 bool LiveSession::send_answer(std::vector<std::string> steps) {
   if (!spawned_ || pty_.exited() || answer_sending() || steps.empty()) return false;
+  starting_until_ms_ = 0;
   answer_steps_ = std::move(steps);
   answer_step_ = 0;
   answer_key_ms_ = now_ms();
@@ -434,10 +440,10 @@ bool LiveSession::pump() {
   }
 
   // A dialog the agent opens at startup, answered for the user: the folder is
-  // on their tracked list, which is trust enough. Only before the first
-  // transcript line, which is exactly the startup window. One key at a time,
-  // each once the screen has been still for a moment.
-  if (transcript_.empty() && !answer_sending() && trust_tries_ < 20 &&
+  // on their tracked list, which is trust enough. Only while it is starting:
+  // a resumed chat is asked too, its transcript there all along. One key at a
+  // time, each once the screen has been still for a moment.
+  if (starting() && !answer_sending() && trust_tries_ < 20 &&
       now_ms() >= trust_next_ms_ && now_ms() - last_output_ms_ >= 250) {
     bool confirms = false;
     const std::string key = driver().startup_answer(vt_, &confirms);

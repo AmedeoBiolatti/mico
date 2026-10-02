@@ -3221,6 +3221,17 @@ int run_selftest() {
     no.write("Hi Amedeo!\r\n\r\nWhat would you like to work on?\r\n");
     check(screen_is_trust_prompt(yes), "the trust dialog is recognised");
     check(!screen_is_trust_prompt(no), "an ordinary reply is not a trust dialog");
+    {
+      // A resumed chat reprints its messages; one quoting the dialog, with
+      // the input box under it, is not the dialog.
+      Vt quoted;
+      quoted.resize(80, 20);
+      quoted.write("\xE2\x97\x8F The log said: Quick safety check ... Yes, I trust this folder\r\n"
+                   "  Enter to confirm \xC2\xB7 Esc to cancel\r\n\r\n"
+                   "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\r\n\xE2\x9D\xAF \r\n\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\r\n"
+                   "  ? for shortcuts\r\n");
+      check(!screen_is_trust_prompt(quoted), "the dialog quoted in a resumed chat's messages is not the dialog");
+    }
     check(screen_awaits_input(yes), "the trust dialog is awaiting input");
     check(!screen_awaits_input(no), "an ordinary reply is not awaiting input");
     // The cursor starts on "No, exit": a bare Enter would quit claude.

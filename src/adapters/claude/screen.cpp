@@ -132,8 +132,11 @@ bool screen_is_trust_prompt(const Vt& vt) {
   }
   const bool q = text.find("trust this folder") != std::string::npos ||
                  text.find("Quick safety check") != std::string::npos;
-  const bool confirm = text.find("Enter to confirm") != std::string::npos ||
-                       text.find("Yes, I trust") != std::string::npos;
+  // Its key line is the screen's last: a resumed chat reprints old messages,
+  // and one may quote the dialog.
+  const std::string last = row_text(vt.row(std::max(0, bottom)));
+  const bool confirm = last.find("Enter to confirm") != std::string::npos ||
+                       last.find("Esc to cancel") != std::string::npos;
   return q && confirm;
 }
 
