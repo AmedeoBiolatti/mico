@@ -109,6 +109,14 @@ int read_choices(const Vt& vt, int footer, std::string_view cursor, std::vector<
 
 // Rows [start, end) from column `from` as markdown, wrapped lines joined when
 // they ran to `wrap_at`, bold and italic marked from the cells' attributes.
-std::string rows_markdown(const Vt& vt, int start, int end, int from, int wrap_at);
+// Columns from `to` on are not read (-1: to the end of each row).
+std::string rows_markdown(const Vt& vt, int start, int end, int from, int wrap_at, int to = -1);
+
+// Where a panel drawn beside the agent's conversation (Claude's file diff)
+// starts in rows [start, end): the column of its left edge, a vertical rule
+// down most of the rows (two at least) with the conversation's own text left
+// of it on one or more. A table's rule is not one: its rows start with a rule
+// of their own. -1 when there is no such panel.
+int side_panel_edge(const Vt& vt, int start, int end, int from);
 
 }  // namespace mico

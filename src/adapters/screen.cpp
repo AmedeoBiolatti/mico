@@ -273,10 +273,11 @@ struct ReplyRow {
   bool all_bold = false, all_colored = false;
 };
 
-ReplyRow reply_row(const VtRow& r, int from) {
+ReplyRow reply_row(const VtRow& r, int from, int to) {
   ReplyRow out;
   int last = -1;
-  for (int x = 0; x < int(r.size()); x++)
+  const int n = to < 0 ? int(r.size()) : std::min(to, int(r.size()));
+  for (int x = 0; x < n; x++)
     if (r[size_t(x)].width && r[size_t(x)].cp != U' ' && r[size_t(x)].cp) last = x;
   out.width = last + 1;
   // A heading the agent shows with its hashes is markdown already.
@@ -351,12 +352,12 @@ int first_word_width(std::string_view t) {
 // lines it wrapped joined, bold and italic marked, highlighted code fenced.
 // Text starts at column `from`; a row wraps onto the next when that row's
 // first word would have run past column `wrap_at`.
-std::string rows_markdown(const Vt& vt, int start, int end, int from, int wrap_at) {
+std::string rows_markdown(const Vt& vt, int start, int end, int from, int wrap_at, int to) {
   std::vector<std::string> lines;
   int prev_width = 0;
   bool in_code = false;
   for (int y = start; y < end; y++) {
-    ReplyRow row = reply_row(vt.row(y), from);
+    ReplyRow row = reply_row(vt.row(y), from, to);
     // Highlighted code goes in a fence, as it was written: no markup read
     // into it, and no line of it joined to another.
     // A blank line inside the code does not end it.
@@ -493,7 +494,36 @@ std::string screen_reply(const Vt& vt, ReplyLayout layout) {
     end++;
   }
 
-  return rows_markdown(vt, start, end, 2, vt.width());
+  // A panel beside the conversation (Claude's diff of a file) shares the
+  // reply's rows: only what is left of it is the reply, wrapped at its edge.
+  const int edge = side_panel_edge(vt, start, input, 2);
+  return rows_markdown(vt, start, end, 2, edge < 0 ? vt.width() : edge, edge);
+}
+
+int side_panel_edge(const Vt& vt, int start, int end, int from) {
+  const auto rule = [](char32_t c) { return c == U'\u2502' || c == U'\u2503' || c == U'\u2551'; };
+  const auto box = [](char32_t c) { return c >= 0x2500 && c <= 0x257F; };
+  const int w = vt.width();
+  std::vector<int> rows(size_t(std::max(0, w)), 0), beside_text(size_t(std::max(0, w)), 0);
+  for (int y = std::max(0, start); y < end; y++) {
+    const VtRow& r = vt.row(y);
+    char32_t first = 0;  // the row's first glyph left of the column
+    for (int x = from; x < std::min(w, int(r.size())); x++) {
+      const Cell& c = r[size_t(x)];
+      if (!c.width) continue;
+      if (rule(c.cp) && !box(first)) {
+        rows[size_t(x)]++;
+        if (first) beside_text[size_t(x)]++;
+      }
+      if (!first && c.cp && c.cp != U' ') first = c.cp;
+    }
+  }
+  // A panel runs down beside all of it (the rule above the input box aside);
+  // a diagram's rule in a code block runs down a few of its rows.
+  const int need = std::max(2, (end - std::max(0, start) - 1) * 3 / 4);
+  for (int x = from + 1; x < w; x++)
+    if (rows[size_t(x)] >= need && beside_text[size_t(x)] >= 1) return x;
+  return -1;
 }
 
 void Vt::blank(VtRow& r) const { r.assign(size_t(w_), Cell{U' ', Style{}, 1}); }

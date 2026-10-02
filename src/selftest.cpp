@@ -2828,6 +2828,33 @@ int run_selftest() {
                 "claude").empty(),
           "under a dialog, the user's message is not taken for the input box");
     check(reply(claude_screen, "pi").empty(), "only claude and codex are read");
+    {
+      // Claude's diff of a file, drawn in a panel beside the conversation:
+      // its rule and its italic notes are not the reply.
+      const auto pad = [](std::string t, size_t to) {
+        while (text::str_width(t) < int(to)) t += ' ';
+        return t;
+      };
+      const std::string edge = "\xE2\x94\x82";  // │
+      std::string screen = "\xE2\x9D\xAF write the sim\r\n" + pad("", 40) + edge + "\x1b[1mai.cpp\x1b[22m\r\n" +
+                           white_dot + pad("Now sim tests, then I'll build the sim", 38) + edge +
+                           "\x1b[2;3mNot staged.\x1b[22;23m\r\n" +
+                           pad("  before writing the scene.", 40) + edge + "\x1b[2;3mRun `git add`.\x1b[22;23m\r\n";
+      for (int i = 0; i < 3; i++) screen += pad("", 40) + edge + "\r\n";
+      screen += claude_box;
+      check_str(reply(screen, "claude"), "Now sim tests, then I'll build the sim before writing the scene.",
+                "claude's reply beside a panel is read without the panel, wrapped at its edge");
+
+      const std::string table = white_dot + "Counts:\r\n\r\n"
+                                "  \xE2\x94\x8C\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\xAC\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x90\r\n"
+                                "  " + edge + " a " + edge + " b " + edge + "\r\n"
+                                "  " + edge + " 1 " + edge + " 2 " + edge + "\r\n"
+                                "  \xE2\x94\x94\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\xB4\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x98\r\n\r\n" +
+                                claude_box;
+      const std::string got = reply(table, "claude");
+      check(got.find(" b ") != std::string::npos && got.find(" 2 ") != std::string::npos,
+            "a table's rules are not taken for a panel's edge");
+    }
     // A running tool's bullet blinks: while it is off, its lines are indented
     // like the reply's, and only the colour left in the first cell tells.
     const std::string after_reply =
