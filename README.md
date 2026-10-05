@@ -50,10 +50,11 @@ agents keep running.
 
 ## Getting started
 
-You need Linux, CMake 3.20 or newer, Ninja and a C++23 compiler (GCC 13 or
-Clang 18).
+**From source.** You need Linux, CMake 3.20 or newer, Ninja and a C++23
+compiler (GCC 13 or Clang 18).
 
 ```sh
+git clone https://github.com/AmedeoBiolatti/mico && cd mico
 cmake -S . -B build -G Ninja && cmake --build build
 cmake --install build    # copies mico to ~/.local/bin; no root needed
 mico
@@ -61,6 +62,18 @@ mico
 
 `--prefix DIR` installs somewhere else. After a rebuild, install again and run
 `mico kill`, so the next daemon runs the new copy.
+
+**From a release.** Each release has a binary for x86-64 Linux, built on
+Ubuntu 24.04 (it runs there and on newer systems, WSL2 included). Check it
+before running it: the checksum says the download is whole, the attestation
+that GitHub built it from this repository's source.
+
+```sh
+gh release download -R AmedeoBiolatti/mico -p 'mico-*.tar.gz' -p SHA256SUMS
+sha256sum -c SHA256SUMS
+gh attestation verify mico-*.tar.gz -R AmedeoBiolatti/mico
+tar -xzf mico-*.tar.gz && install -Dm755 mico-*/bin/mico ~/.local/bin/mico
+```
 
 `mico` attaches to the daemon and starts one if none is running. Press `q` or
 close the terminal to detach: your agents keep running.
