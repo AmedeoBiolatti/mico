@@ -4,7 +4,8 @@
 
 namespace mico {
 
-// OpenAI Codex. Rollouts are ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
+// OpenAI Codex. Rollouts are $CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl
+// (~/.codex without it).
 // Codex cannot be told an id, so a new session's rollout is found after the
 // fact: one this agent's processes hold open, that did not exist before.
 class CodexAdapter final : public Adapter {
@@ -76,5 +77,8 @@ bool screen_awaits_codex_input(const Vt& vt);
 // Also its "Implement this plan?" (plan = true), each choice with a
 // description beside it and possibly disabled.
 bool parse_codex_permission_prompt(const Vt& vt, PermissionPrompt& out);
+
+// Where codex keeps its sessions and config: $CODEX_HOME, or ~/.codex.
+std::string codex_home();
 
 }  // namespace mico

@@ -15,7 +15,7 @@ namespace mico {
 namespace {
 
 void for_each_rollout(const std::function<void(const std::string&)>& fn) {
-  const std::string root = fs::home() + "/.codex/sessions";
+  const std::string root = codex_home() + "/sessions";
   fs::list_dir(root, true, [&](const std::string& y) {
     fs::list_dir(root + "/" + y, true, [&](const std::string& m) {
       const std::string md = root + "/" + y + "/" + m;
@@ -55,8 +55,7 @@ std::set<std::string> open_transcripts(pid_t leader) {
 // Whether the user's own config.toml sets developer_instructions: a -c
 // override would replace theirs, not add to it.
 bool config_has_instructions() {
-  const char* home = getenv("CODEX_HOME");
-  const std::string path = (home && *home ? std::string(home) : fs::home() + "/.codex") + "/config.toml";
+  const std::string path = codex_home() + "/config.toml";
   std::string buf;
   const std::string_view s = fs::read_prefix(path, 1u << 20, buf);
   for (size_t at = s.find("developer_instructions"); at != std::string_view::npos;
@@ -69,6 +68,11 @@ bool config_has_instructions() {
 }
 
 }  // namespace
+
+std::string codex_home() {
+  const char* home = getenv("CODEX_HOME");
+  return home && *home ? std::string(home) : fs::home() + "/.codex";
+}
 
 void CodexAdapter::prepare(Launch& l, const LaunchExtras& x) const {
   // No pre-assignable id: the transcript is discovered after the fact.

@@ -100,4 +100,11 @@ int trust_prompt_moves(const Vt& vt);
 // Claude's side-question panel; see BtwPanel.
 bool parse_btw_panel(const Vt& vt, BtwPanel& out);
 
+// Where claude keeps its transcripts and settings: $CLAUDE_CONFIG_DIR, or
+// ~/.claude.
+std::string claude_home();
+// Its global state (trusted folders, ...): .claude.json in $CLAUDE_CONFIG_DIR,
+// or ~/.claude.json.
+std::string claude_state_file();
+
 }  // namespace mico

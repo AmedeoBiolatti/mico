@@ -6,6 +6,16 @@
 
 namespace mico {
 
+std::string claude_home() {
+  const char* dir = getenv("CLAUDE_CONFIG_DIR");
+  return dir && *dir ? std::string(dir) : fs::home() + "/.claude";
+}
+
+std::string claude_state_file() {
+  const char* dir = getenv("CLAUDE_CONFIG_DIR");
+  return dir && *dir ? std::string(dir) + "/.claude.json" : fs::home() + "/.claude.json";
+}
+
 void ClaudeAdapter::prepare(Launch& l, const LaunchExtras& x) const {
   std::vector<std::string>& argv = l.argv;
   if (argv.empty()) {
@@ -87,7 +97,7 @@ bool ClaudeAdapter::continue_session(Launch& l, std::string_view id, bool fork, 
 // The transcript is exactly <uuid>.jsonl, so search for that name and accept
 // no substitutes.
 bool ClaudeAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& out) const {
-  const std::string root = fs::home() + "/.claude/projects";
+  const std::string root = claude_home() + "/projects";
   fs::list_dir(root, true, [&](const std::string& slug) {
     if (!out.path.empty()) return;
     std::string cand = root + "/" + slug + "/" + q.session_id + ".jsonl";

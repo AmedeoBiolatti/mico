@@ -14,7 +14,7 @@ namespace mico {
 
 void ClaudeAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) const {
   std::string buf;
-  const std::string root = fs::home() + "/.claude/projects";
+  const std::string root = claude_home() + "/projects";
   fs::list_dir(root, true, [&](const std::string& slug) {
     const std::string dir = root + "/" + slug;
     fs::list_dir(dir, false, [&](const std::string& fname) {
@@ -95,7 +95,7 @@ void ClaudeAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) 
 // the user added to mico never shows the dialog at all. A targeted text merge,
 // not a full re-serialise: only insert an entry that is not already there.
 void ClaudeAdapter::trust_folder(const std::string& abspath) const {
-  const std::string file = fs::home() + "/.claude.json";
+  const std::string file = claude_state_file();
   std::string buf;
   std::string_view blob = fs::read_prefix(file, 8u << 20, buf);
   if (blob.empty()) return;

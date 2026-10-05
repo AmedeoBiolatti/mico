@@ -19,7 +19,7 @@ namespace {
 std::map<std::string, std::string> load_codex_names() {
   std::map<std::string, std::string> names;
   std::string buf;
-  std::string_view blob = fs::read_prefix(fs::home() + "/.codex/session_index.jsonl", 4u << 20, buf);
+  std::string_view blob = fs::read_prefix(codex_home() + "/session_index.jsonl", 4u << 20, buf);
   fs::for_each_line(blob, [&](std::string_view line) {
     std::string_view id, name;
     js::scan_object(line, [&](std::string_view k, const js::Value& v) {
@@ -41,7 +41,7 @@ std::map<std::string, std::string> load_codex_names() {
 void CodexAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) const {
   std::string buf;
   const std::map<std::string, std::string> names = load_codex_names();
-  const std::string root = fs::home() + "/.codex/sessions";
+  const std::string root = codex_home() + "/sessions";
   // Layout is sessions/YYYY/MM/DD/rollout-*.jsonl.
   fs::list_dir(root, true, [&](const std::string& y) {
     fs::list_dir(root + "/" + y, true, [&](const std::string& m) {

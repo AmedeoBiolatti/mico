@@ -43,7 +43,7 @@ std::string user_status_command(const std::string& project) {
     files.push_back(project + "/.claude/settings.local.json");
     files.push_back(project + "/.claude/settings.json");
   }
-  files.push_back(fs::home() + "/.claude/settings.json");
+  files.push_back(claude_home() + "/settings.json");
   for (const auto& f : files) {
     std::string buf, cmd;
     js::scan_object(fs::read_prefix(f, 1u << 20, buf), [&](std::string_view k, const js::Value& v) {
