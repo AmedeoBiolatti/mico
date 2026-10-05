@@ -205,6 +205,12 @@ class App {
   void open_picker_above(Pane* owner, Point anchor, std::string title, std::vector<PickItem> items,
                          int cursor_item = 0);
   void close_menu() { menu_.reset(); }
+  // The picker `owner` opened at a point, while it is still open; null once
+  // it is closed, or when another menu took its place. For a list that
+  // changes while it is up.
+  Picker* pane_picker(const Pane* owner) {
+    return menu_ && menu_->owner == owner && menu_->flow.empty() ? &menu_->picker : nullptr;
+  }
   // Leave. In a client this closes the connection and leaves every agent
   // running; locally there is nothing to detach from, so it exits.
   void detach() { action_ = AppAction::Detach; }

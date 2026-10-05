@@ -83,6 +83,7 @@ class SessionPane final : public Pane {
   bool showing_raw() const { return effective_view() == View::Raw; }
 
   void render(Painter& p, bool focused) override {
+    refresh_background_list();
     const Theme& th = app_->theme();
     // On screen counts as seen, focused or not: a chat open beside the list
     // is being read.
@@ -1100,6 +1101,22 @@ class SessionPane final : public Pane {
 
   std::string take_url() override { return chat_.take_url(); }
 
+  // The background list, while it is open, follows the tasks: a progress
+  // read, a task started or ended after it opened.
+  void refresh_background_list() {
+    if (!bg_list_open_) return;
+    Picker* picker = app_->pane_picker(this);
+    if (!picker) {
+      bg_list_open_ = false;
+      return;
+    }
+    std::vector<PickItem> items = background_items(s_->background(), app_->theme());
+    const auto same = [](const PickItem& a, const PickItem& b) { return a.label == b.label && a.detail == b.detail && a.id == b.id; };
+    if (!std::equal(items.begin(), items.end(), picker->items().begin(), picker->items().end(), same))
+      picker->set_items(std::move(items));
+  }
+  bool bg_list_open_ = false;
+
   // At the strip's right end, what the agent runs in the background, as its
   // own footer says it ("2 monitors still running"): a chip that lists them.
   void draw_background(Painter& p, const Theme& th) {
@@ -1131,6 +1148,7 @@ class SessionPane final : public Pane {
           if (c.key == "background") {
             app_->open_picker_above(this, chip, "Running in the background \xC2\xB7 enter shows where it started",
                                     background_items(s_->background(), app_->theme()));
+            bg_list_open_ = true;
             return true;
           }
           open_chip_picker(app_, this, chip, chat_.state(), c.key, !s_->exited(), s_->agent());
