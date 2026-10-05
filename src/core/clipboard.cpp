@@ -12,72 +12,23 @@
 #include <cstring>
 
 #include "base/log.h"
+#include "base/process.h"
 
 namespace mico::clip {
 namespace {
 
-int64_t now_ms() {
-  timespec ts{};
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return int64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
-}
-
-bool on_path(const char* tool) {
-  const char* path = getenv("PATH");
-  if (!path) return false;
-  for (const char* p = path;;) {
-    const char* end = strchr(p, ':');
-    std::string dir(p, end ? size_t(end - p) : strlen(p));
-    if (!dir.empty() && access((dir + "/" + tool).c_str(), X_OK) == 0) return true;
-    if (!end) return false;
-    p = end + 1;
-  }
-}
+bool on_path(const char* tool) { return !proc::find_program(tool).empty(); }
 
 // Runs argv and collects its stdout, killing it at the deadline. A clipboard
 // owner can take its time answering, or never answer at all.
 bool run(const std::vector<const char*>& argv, int timeout_ms, std::string& out) {
-  constexpr size_t kMaxBytes = 64u << 20;  // a screenshot is a few MB
-  // Made before the fork: the child only execs.
-  std::vector<const char*> args = argv;
-  args.push_back(nullptr);
-  int fds[2];
-  if (pipe2(fds, O_CLOEXEC) != 0) return false;
-  const pid_t pid = fork();
-  if (pid < 0) { close(fds[0]); close(fds[1]); return false; }
-  if (pid == 0) {
-    const int null = open("/dev/null", O_RDWR);
-    dup2(null, STDIN_FILENO);
-    dup2(null, STDERR_FILENO);
-    dup2(fds[1], STDOUT_FILENO);
-    if (null > 2) close(null);
-    execvp(args[0], const_cast<char* const*>(args.data()));
-    _exit(127);
-  }
-  close(fds[1]);
-  out.clear();
-  const int64_t deadline = now_ms() + timeout_ms;
-  bool timed_out = false;
-  char buf[65536];
-  for (;;) {
-    const int left = int(deadline - now_ms());
-    if (left <= 0) { timed_out = true; break; }
-    pollfd pf{fds[0], POLLIN, 0};
-    if (poll(&pf, 1, left) <= 0) continue;
-    const ssize_t n = ::read(fds[0], buf, sizeof buf);
-    if (n > 0) {
-      out.append(buf, size_t(n));
-      if (out.size() > kMaxBytes) { timed_out = true; break; }
-      continue;
-    }
-    if (n < 0 && errno == EINTR) continue;
-    break;  // EOF
-  }
-  close(fds[0]);
-  if (timed_out) kill(pid, SIGKILL);
-  int status = 0;
-  waitpid(pid, &status, 0);
-  return !timed_out && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  proc::Options opt;
+  opt.cap = 64u << 20;  // a screenshot is a few MB
+  opt.timeout_ms = timeout_ms;
+  opt.stop_signal = SIGKILL;
+  proc::Result r = proc::capture(std::vector<std::string>(argv.begin(), argv.end()), opt);
+  out = std::move(r.out);
+  return r.ok();
 }
 
 // The tool that reads this desktop's clipboard, and the arguments for each

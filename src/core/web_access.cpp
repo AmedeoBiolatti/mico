@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "base/fs.h"
+#include "base/process.h"
 #include "core/store.h"
 
 namespace mico {
@@ -154,14 +155,10 @@ std::string web_remote_url() {
 }
 
 std::string tailscale_name() {
-  // No user text in the command, so no shell to mind.
-  FILE* p = popen("tailscale status --json 2>/dev/null", "r");
-  if (!p) return {};
-  std::string out;
-  char buf[8192];
-  size_t n;
-  while ((n = fread(buf, 1, sizeof buf, p)) > 0 && out.size() < (4u << 20)) out.append(buf, n);
-  pclose(p);
+  proc::Options opt;
+  opt.cap = 4u << 20;
+  opt.timeout_ms = 5000;
+  const std::string out = proc::capture({"tailscale", "status", "--json"}, opt).out;
   // "Self": {…, "DNSName": "machine.tailnet.ts.net.", …}
   const size_t self = out.find("\"Self\"");
   if (self == std::string::npos) return {};

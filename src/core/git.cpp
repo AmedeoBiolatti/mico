@@ -15,6 +15,7 @@
 
 #include "adapters/changes.h"
 #include "base/log.h"
+#include "base/process.h"
 
 namespace mico {
 namespace {
@@ -25,22 +26,9 @@ int64_t now_ms() {
       .count();
 }
 
-// Where git is, found once on the calling thread: the child of a fork from
-// a threaded process should do no more than exec, so it is handed a path
-// rather than left to search PATH itself.
+// Where git is, found once, on the thread that starts the worker.
 const std::string& git_path() {
-  static const std::string path = [] {
-    const char* env = getenv("PATH");
-    std::string_view dirs = env ? env : "/usr/bin:/bin";
-    while (!dirs.empty()) {
-      const size_t colon = dirs.find(':');
-      const std::string dir(dirs.substr(0, colon));
-      dirs = colon == std::string_view::npos ? std::string_view() : dirs.substr(colon + 1);
-      const std::string cand = (dir.empty() ? "." : dir) + "/git";
-      if (access(cand.c_str(), X_OK) == 0) return cand;
-    }
-    return std::string();
-  }();
+  static const std::string path = proc::find_program("git");
   return path;
 }
 
@@ -55,57 +43,16 @@ bool run_git(const std::string& dir, const std::vector<std::string>& args, std::
   // A repository's own config can name programs for git to run: an fsmonitor
   // hook on every status. mico asks about every tracked folder unbidden, so
   // that one is off; diffs are asked for with --no-ext-diff --no-textconv.
-  std::vector<std::string> all = {"git", "--no-optional-locks", "-c", "core.quotepath=off",
+  std::vector<std::string> all = {git, "--no-optional-locks", "-c", "core.quotepath=off",
                                   "-c", "core.fsmonitor=false", "-C", dir};
   all.insert(all.end(), args.begin(), args.end());
-  std::vector<char*> argv;
-  for (auto& a : all) argv.push_back(a.data());
-  argv.push_back(nullptr);
-  int fds[2];
-  if (pipe2(fds, O_CLOEXEC) != 0) return false;
-  const pid_t pid = fork();
-  if (pid < 0) {
-    close(fds[0]);
-    close(fds[1]);
-    return false;
-  }
-  if (pid == 0) {
-    dup2(fds[1], 1);
-    const int null = open("/dev/null", O_RDWR);
-    if (null >= 0) {
-      dup2(null, 0);
-      dup2(null, 2);
-    }
-    execv(git.c_str(), argv.data());
-    _exit(127);
-  }
-  close(fds[1]);
-  const int64_t deadline = now_ms() + 10000;
-  bool cut = false;
-  char chunk[65536];
-  for (;;) {
-    const int64_t left = deadline - now_ms();
-    pollfd p{fds[0], POLLIN, 0};
-    if (left <= 0 || ::poll(&p, 1, int(left)) == 0) {
-      cut = true;
-      break;
-    }
-    const ssize_t n = read(fds[0], chunk, sizeof chunk);
-    if (n < 0 && errno == EINTR) continue;
-    if (n <= 0) break;
-    out.append(chunk, size_t(n));
-    if (out.size() >= cap) {
-      cut = true;
-      break;
-    }
-  }
-  close(fds[0]);
-  if (cut) kill(pid, SIGTERM);
-  int status = 0;
-  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-  if (cut) return out.size() >= cap;  // too much is still an answer; too slow is none
-  return WIFEXITED(status) && (any_exit ? WEXITSTATUS(status) != 127 && WEXITSTATUS(status) < 128
-                                         : WEXITSTATUS(status) == 0);
+  proc::Options opt;
+  opt.cap = cap;
+  proc::Result r = proc::capture(all, opt);
+  out = std::move(r.out);
+  if (r.cut) return true;  // too much is still an answer; too slow is none
+  if (r.timed_out) return false;
+  return any_exit ? r.exit_code >= 0 && r.exit_code != 127 && r.exit_code < 128 : r.exit_code == 0;
 }
 
 // The field after the first `n` spaces of `f`: where porcelain v2 puts a

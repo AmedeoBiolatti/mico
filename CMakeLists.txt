@@ -36,6 +36,7 @@ add_library(mico_base STATIC
   src/base/json.cpp
   src/base/jsonl.cpp
   src/base/log.cpp
+  src/base/process.cpp
 )
 target_include_directories(mico_base PUBLIC src)
 # The index passes read files on worker threads.

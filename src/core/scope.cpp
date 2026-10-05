@@ -13,30 +13,18 @@
 
 #include "base/fs.h"
 #include "base/log.h"
+#include "base/process.h"
 #include "core/store.h"
 
 namespace mico::scope {
 namespace {
-
-std::string find_on_path(const char* name) {
-  const char* env = getenv("PATH");
-  std::string_view dirs = env ? env : "/usr/bin:/bin";
-  while (!dirs.empty()) {
-    const size_t colon = dirs.find(':');
-    const std::string dir(dirs.substr(0, colon));
-    dirs = colon == std::string_view::npos ? std::string_view() : dirs.substr(colon + 1);
-    const std::string cand = (dir.empty() ? "." : dir) + "/" + name;
-    if (access(cand.c_str(), X_OK) == 0) return cand;
-  }
-  return {};
-}
 
 // systemd-run, once a trial scope has run: a user manager that is not there
 // (a container, an ssh session without lingering) fails here, not under an
 // agent.
 const std::string& systemd_run() {
   static const std::string path = [] {
-    std::string bin = find_on_path("systemd-run");
+    std::string bin = proc::find_program("systemd-run");
     if (bin.empty()) {
       MLOG("scopes: no systemd-run; agents share the daemon's cgroup");
       return std::string();

@@ -48,6 +48,7 @@
 #include "views/chat_render.h"
 #include "views/code.h"
 #include "views/diagram.h"
+#include "base/process.h"
 #include "base/progress.h"
 #include "views/json_view.h"
 #include "views/notebook.h"
@@ -4712,6 +4713,32 @@ int run_selftest() {
     check(!json_view::pretty("{\"a\": 1,}", false, out) && !json_view::pretty("42", false, out) &&
               !json_view::pretty("{\"a\":1} trailing", false, out) && !json_view::pretty("not json", false, out),
           "json: not one valid object or array, not laid out");
+  }
+
+  // Short-lived programs: found on PATH, their output collected, cut short
+  // at the cap or what is enough, stopped at the deadline.
+  {
+    check(!proc::find_program("sh").empty() && proc::find_program("/bin/sh") == "/bin/sh" &&
+              proc::find_program("mico-no-such-program").empty() && proc::find_program("").empty(),
+          "process: programs are found on PATH, or by a path, or not at all");
+    proc::Result r = proc::capture({"sh", "-c", "printf hello; exit 0"});
+    check(r.ok() && r.out == "hello", "process: what a program prints, and that it succeeded");
+    r = proc::capture({"sh", "-c", "printf partial; exit 3"});
+    check(!r.ok() && r.ran && r.exit_code == 3 && r.out == "partial", "process: a failure keeps its exit code and output");
+    r = proc::capture({"mico-no-such-program"});
+    check(!r.ran && !r.ok(), "process: a missing program does not run");
+    proc::Options cap;
+    cap.cap = 10;
+    r = proc::capture({"sh", "-c", "yes"}, cap);
+    check(r.cut && r.out.size() == 10 && !r.ok(), "process: output past the cap stops the program");
+    proc::Options enough;
+    enough.enough = [](const std::string& got) { return got.find('\n') != std::string::npos; };
+    r = proc::capture({"sh", "-c", "echo one; sleep 5; echo two"}, enough);
+    check(r.cut && r.out == "one\n", "process: enough output lets the program go early");
+    proc::Options slow;
+    slow.timeout_ms = 100;
+    r = proc::capture({"sh", "-c", "sleep 5"}, slow);
+    check(r.timed_out && !r.ok() && r.exit_code == -1, "process: a program past its deadline is stopped");
   }
 
   // Progress read from a running command's output.

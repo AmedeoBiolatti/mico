@@ -12,6 +12,8 @@
 #include <set>
 #include <string_view>
 
+#include "base/process.h"
+
 namespace mico {
 
 namespace {
@@ -25,46 +27,15 @@ int64_t now_ms() {
 // `git ls-files` for `cwd`, NUL-separated; false when it is not a work tree
 // or git is missing.
 bool git_files(const std::string& cwd, size_t cap, std::vector<std::string>& out) {
-  int fds[2];
-  if (pipe2(fds, O_CLOEXEC) != 0) return false;
-  const pid_t pid = fork();
-  if (pid < 0) {
-    close(fds[0]);
-    close(fds[1]);
-    return false;
-  }
-  if (pid == 0) {
-    dup2(fds[1], 1);
-    const int null = open("/dev/null", O_RDWR);
-    if (null >= 0) {
-      dup2(null, 0);
-      dup2(null, 2);
-      if (null > 2) close(null);
-    }
-    const char* argv[] = {"git", "-c", "core.fsmonitor=false", "-C", cwd.c_str(), "ls-files", "-z", "--cached", "--others",
-                          "--exclude-standard", nullptr};
-    execvp(argv[0], const_cast<char* const*>(argv));
-    _exit(127);
-  }
-  close(fds[1]);
-  std::string buf;
-  char chunk[65536];
-  bool full = false;
-  for (;;) {
-    const ssize_t n = read(fds[0], chunk, sizeof chunk);
-    if (n <= 0) break;
-    buf.append(chunk, size_t(n));
-    // Enough: stop reading and let git go.
-    if (size_t(std::count(buf.begin(), buf.end(), '\0')) >= cap) {
-      full = true;
-      break;
-    }
-  }
-  close(fds[0]);
-  if (full) kill(pid, SIGTERM);
-  int status = 0;
-  waitpid(pid, &status, 0);
-  if (!full && !(WIFEXITED(status) && WEXITSTATUS(status) == 0)) return false;
+  proc::Options opt;
+  opt.cap = 256u << 20;
+  // Enough: stop reading and let git go.
+  opt.enough = [cap](const std::string& got) { return size_t(std::count(got.begin(), got.end(), '\0')) >= cap; };
+  const proc::Result r = proc::capture({"git", "-c", "core.fsmonitor=false", "-C", cwd, "ls-files", "-z", "--cached",
+                                        "--others", "--exclude-standard"},
+                                       opt);
+  if (!r.cut && !r.ok()) return false;
+  const std::string& buf = r.out;
   for (size_t i = 0; i < buf.size() && out.size() < cap;) {
     const size_t e = buf.find('\0', i);
     if (e == std::string::npos) break;

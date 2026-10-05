@@ -23,6 +23,7 @@
 #include "term/encoder.h"
 #include "term/input.h"
 #include "base/log.h"
+#include "base/process.h"
 #include "term/kitty.h"
 #include "math/math.h"
 #include "term/sixel.h"
@@ -136,45 +137,10 @@ std::string clock_of(int64_t t) {
 
 // What a command prints, up to `cap` bytes and ten seconds; empty when it
 // cannot run.
-std::string capture(std::vector<std::string> argv, size_t cap) {
-  std::vector<char*> args;
-  for (auto& a : argv) args.push_back(a.data());
-  args.push_back(nullptr);
-  int fds[2];
-  if (pipe2(fds, O_CLOEXEC) != 0) return {};
-  const pid_t pid = fork();
-  if (pid < 0) {
-    close(fds[0]);
-    close(fds[1]);
-    return {};
-  }
-  if (pid == 0) {
-    dup2(fds[1], 1);
-    const int null = open("/dev/null", O_RDWR);
-    if (null >= 0) {
-      dup2(null, 0);
-      dup2(null, 2);
-    }
-    execvp(args[0], args.data());
-    _exit(127);
-  }
-  close(fds[1]);
-  std::string out;
-  char buf[65536];
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  for (;;) {
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-    pollfd pf{fds[0], POLLIN, 0};
-    if (left.count() <= 0 || ::poll(&pf, 1, int(left.count())) <= 0) break;
-    const ssize_t n = read(fds[0], buf, sizeof buf);
-    if (n <= 0) break;
-    out.append(buf, size_t(n));
-    if (out.size() >= cap) break;
-  }
-  close(fds[0]);
-  kill(pid, SIGTERM);
-  waitpid(pid, nullptr, 0);
-  return out;
+std::string capture(const std::vector<std::string>& argv, size_t cap) {
+  proc::Options opt;
+  opt.cap = cap;
+  return proc::capture(argv, opt).out;
 }
 
 // What became of the last daemon, found on a thread of its own: the

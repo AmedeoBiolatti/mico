@@ -15,6 +15,7 @@
 #include <strings.h>
 
 #include "term/encoder.h"
+#include "base/process.h"
 #include "base/text.h"
 
 namespace mico {
@@ -72,17 +73,14 @@ bool cell_pixels(int* cw, int* ch) {
 namespace {
 
 // Runs a tmux command and returns its first line of output, trimmed.
-std::string tmux_query(const char* args) {
-  std::string cmd = "tmux ";
-  cmd += args;
-  cmd += " 2>/dev/null";
-  std::string out;
-  if (FILE* p = popen(cmd.c_str(), "r")) {
-    char buf[256];
-    if (fgets(buf, sizeof buf, p)) out = buf;
-    pclose(p);
-  }
-  while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ')) out.pop_back();
+std::string tmux_query(std::vector<std::string> args) {
+  args.insert(args.begin(), "tmux");
+  proc::Options opt;
+  opt.cap = 4096;
+  opt.timeout_ms = 2000;
+  std::string out = proc::capture(args, opt).out;
+  out.resize(std::min(out.size(), out.find('\n')));
+  while (!out.empty() && (out.back() == '\r' || out.back() == ' ')) out.pop_back();
   return out;
 }
 
@@ -186,8 +184,8 @@ GfxCaps probe_graphics(std::string* rest) {
     // tmux answers queries itself, so the terminal outside is asked about
     // through tmux instead. Images get through only with passthrough on, and
     // the placeholders' colour (the image id) only if tmux keeps truecolour.
-    const std::string pass = tmux_query("show-options -Apv allow-passthrough");
-    const std::string client = tmux_query("display-message -p '#{client_termname}|#{client_termfeatures}'");
+    const std::string pass = tmux_query({"show-options", "-Apv", "allow-passthrough"});
+    const std::string client = tmux_query({"display-message", "-p", "#{client_termname}|#{client_termfeatures}"});
     const size_t bar = client.find('|');
     const std::string_view outer = std::string_view(client).substr(0, bar);
     const bool rgb = bar != std::string::npos && client.find("RGB", bar) != std::string::npos;

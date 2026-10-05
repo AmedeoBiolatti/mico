@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "base/log.h"
+#include "base/process.h"
 #include <string>
 #include <string_view>
 
@@ -61,28 +62,6 @@ Pty::~Pty() {
   }
 }
 
-// Resolves `bin` the way execvp will: as-is if it contains a slash, otherwise
-// against each PATH entry. Returns the full path, or empty if nothing runnable
-// was found — so a missing binary reports cleanly instead of a bare exit 127.
-static std::string resolve_bin(const std::string& bin) {
-  if (bin.find('/') != std::string::npos)
-    return access(bin.c_str(), X_OK) == 0 ? bin : std::string();
-  const char* path = getenv("PATH");
-  std::string p = path ? path : "/usr/local/bin:/usr/bin:/bin";
-  size_t i = 0;
-  while (i < p.size()) {
-    size_t j = p.find(':', i);
-    if (j == std::string::npos) j = p.size();
-    std::string cand = p.substr(i, j - i);
-    if (!cand.empty()) {
-      cand += "/" + bin;
-      if (access(cand.c_str(), X_OK) == 0) return cand;
-    }
-    i = j + 1;
-  }
-  return {};
-}
-
 bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, int w, int h, const std::string& unit,
                 const std::string& description) {
   spawn_error_.clear();
@@ -99,7 +78,7 @@ bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, in
     MLOG("spawn FAILED: %s", spawn_error_.c_str());
     return false;
   }
-  if (const std::string bin = resolve_bin(argv[0]); bin.empty()) {
+  if (const std::string bin = proc::find_program(argv[0]); bin.empty()) {
     spawn_error_ = "'" + argv[0] + "' is not on PATH";
     exited_ = true;
     MLOG("spawn FAILED: %s  (PATH=%s)", spawn_error_.c_str(), getenv("PATH") ? getenv("PATH") : "");
