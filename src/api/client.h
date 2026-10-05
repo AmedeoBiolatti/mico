@@ -21,6 +21,10 @@
 //   agents     {agents: [{key, agent, title, cwd, session_id,  whenever a running
 //               transcript, status, queued: [text]}]}          agent changed
 //               status: "working" | "idle" | "waiting" | "exited"
+//               permission: {title: [text], question, options: [text],
+//               details: [text], disabled: [bool], cursor, amend, plan},
+//               only while the agent shows a permission dialog or a plan
+//               to approve: what a client answers with answer_permission
 //   chat       {path, events: [event], where: "tail"|"older"|"newer",
 //               start: bool}                                   start: nothing older
 //   chat_state {path, state: {key: value}, waiting: [id],      when it changed
@@ -45,6 +49,14 @@
 //   resume {rid, agent, id, fork}      a stored chat
 //   stop   {rid, key}
 //   send   {rid, key, text}            a message to a running agent
+//   answer_permission {rid, key, index, note?}
+//                                      choice `index` of the dialog the agent
+//                                      shows; `note` goes where it has room
+//   answer {rid, key, tool, chosen}    the question card whose call is `tool`
+//                                      (a waiting id from chat_state): `chosen`
+//                                      lists, per question, the option
+//                                      indexes picked, [[1], [0, 2]]
+//   interrupt {rid, key}               Esc to the agent: stop what it is doing
 namespace mico::api {
 
 inline constexpr int kProtocol = 1;
@@ -75,6 +87,9 @@ class Client {
   void resume(std::string_view rid, const std::string& agent, const std::string& id, bool fork);
   void stop(std::string_view rid, uint64_t key);
   void send(std::string_view rid, uint64_t key, const std::string& text);
+  void answer_permission(std::string_view rid, uint64_t key, int index, const std::string& note);
+  void answer_question(std::string_view rid, uint64_t key, const std::string& tool, std::string_view chosen);
+  void interrupt(std::string_view rid, uint64_t key);
   void result(std::string_view rid, bool ok, std::string_view error = {}, uint64_t key = 0);
   void error(std::string_view message);
 

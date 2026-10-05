@@ -1,10 +1,12 @@
 #include "api/client.h"
 
+#include <algorithm>
 #include <cstdlib>
 
 #include "adapters/adapters.h"
 #include "base/json.h"
 #include "base/json_write.h"
+#include "core/answers.h"
 
 namespace mico::api {
 namespace {
@@ -58,6 +60,9 @@ Client::~Client() = default;
 void Client::receive(std::string_view message) {
   std::string type, path, rid, agent, cwd, id, text;
   uint64_t key = 0;
+  int index = -1;
+  std::string tool, note;
+  std::string_view chosen;
   bool fork = false;
   bool object = false;
   js::scan_object(message, [&](std::string_view k, const js::Value& v) {
@@ -71,6 +76,10 @@ void Client::receive(std::string_view message) {
     else if (k == "text") text = text_of(v);
     else if (k == "key") key = std::strtoull(std::string(v.is_string() ? v.body() : v.raw).c_str(), nullptr, 10);
     else if (k == "fork") fork = v.is_true();
+    else if (k == "index" && v.type == js::Type::Number) index = std::atoi(std::string(v.raw).c_str());
+    else if (k == "note") note = text_of(v);
+    else if (k == "tool") tool = text_of(v);
+    else if (k == "chosen" && v.is_array()) chosen = v.raw;
     return true;
   });
   if (!object) return error("a message is a JSON object");
@@ -84,6 +93,9 @@ void Client::receive(std::string_view message) {
   if (type == "resume") return resume(rid, agent, id, fork);
   if (type == "stop") return stop(rid, key);
   if (type == "send") return send(rid, key, text);
+  if (type == "answer_permission") return answer_permission(rid, key, index, note);
+  if (type == "answer") return answer_question(rid, key, tool, chosen);
+  if (type == "interrupt") return interrupt(rid, key);
   error("unknown message type: " + type);
 }
 
@@ -265,6 +277,23 @@ void Client::send_agents(std::vector<std::string>& out) {
         .field("session_id", s->session_id())
         .field("transcript", s->transcript())
         .field("status", status_name(s->status()));
+    // A dialog the agent is waiting on, read off its screen: the same one the
+    // terminal's panel shows.
+    PermissionPrompt prompt;
+    if (s->needs_input() && s->driver().permission_prompt(s->vt(), prompt)) {
+      w.key("permission").begin_object();
+      w.key("title").begin_array();
+      for (const auto& t : prompt.title) w.str(t);
+      w.end_array().field("question", prompt.question);
+      w.key("options").begin_array();
+      for (const auto& o : prompt.options) w.str(o);
+      w.end_array().key("details").begin_array();
+      for (const auto& d : prompt.details) w.str(d);
+      w.end_array().key("disabled").begin_array();
+      for (size_t i = 0; i < prompt.options.size(); i++) w.boolean(i < prompt.disabled.size() && prompt.disabled[i]);
+      w.end_array().field("cursor", int64_t(prompt.cursor)).field("amend", prompt.amend).field("plan", prompt.plan);
+      w.end_object();
+    }
     w.key("queued").begin_array();
     for (const auto& parts : s->queued()) {
       std::string text;
@@ -326,6 +355,85 @@ void Client::send(std::string_view rid, uint64_t key, const std::string& text) {
   if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
   if (text.empty()) return result(rid, false, "nothing to send");
   if (!s->send_parts({MessagePart{false, text}})) return result(rid, false, "the agent is not ready");
+  result(rid, true, {}, key);
+}
+
+void Client::answer_permission(std::string_view rid, uint64_t key, int index, const std::string& note) {
+  LiveSession* s = session(key);
+  if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
+  PermissionPrompt prompt;
+  if (!s->needs_input() || !s->driver().permission_prompt(s->vt(), prompt))
+    return result(rid, false, "the agent shows no permission dialog now");
+  if (s->answer_sending()) return result(rid, false, "still answering the last one");
+  PermissionAnswer answer;
+  if (!permission_answer(prompt, index, note, answer)) return result(rid, false, "that choice is not available");
+  if (!s->send_answer(answer.steps)) return result(rid, false, "could not answer");
+  if (!answer.after.empty()) s->send_after_answer(std::move(answer.after));
+  result(rid, true, {}, key);
+}
+
+void Client::answer_question(std::string_view rid, uint64_t key, const std::string& tool, std::string_view chosen) {
+  LiveSession* s = session(key);
+  if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
+  const uint64_t id = std::strtoull(tool.c_str(), nullptr, 16);
+  // The card is read from the chat the client has open: the question as the
+  // agent asked it, never as the client says it was.
+  const auto it = chats_.find(s->transcript());
+  if (it == chats_.end() || !id) return result(rid, false, "open the chat first");
+  const Conversation& conv = *it->second.conv;
+  const auto& waiting = conv.pending_questions();
+  if (!conv.at_tail() || std::find(waiting.begin(), waiting.end(), id) == waiting.end())
+    return result(rid, false, "that question is not waiting for an answer");
+  QuestionCard card;
+  bool found = false;
+  const auto& events = conv.events();
+  for (size_t i = events.size(); i-- > 0 && !found;)
+    if (events[i].kind == EventKind::Question && events[i].tool_id == id) {
+      card.tool_id = id;
+      parse_question_card(conv.arena().view(events[i].detail), card);
+      found = true;
+    }
+  if (!found || card.questions.empty()) return result(rid, false, "no such question");
+  if (card.async) return result(rid, false, "that one is answered with a message");
+  if (s->answer_sending()) return result(rid, false, "still answering the last one");
+
+  // Per question, the options picked: a flag for each.
+  std::vector<std::vector<uint8_t>> picked;
+  for (const auto& q : card.questions) picked.emplace_back(q.options.size(), uint8_t(0));
+  size_t qi = 0;
+  js::scan_array(chosen, [&](const js::Value& row) {
+    if (qi < picked.size() && row.is_array())
+      js::scan_array(row.raw, [&](const js::Value& n) {
+        const int at = n.type == js::Type::Number ? std::atoi(std::string(n.raw).c_str()) : -1;
+        if (at >= 0 && size_t(at) < picked[qi].size()) picked[qi][size_t(at)] = 1;
+        return true;
+      });
+    qi++;
+    return true;
+  });
+  std::vector<bool> multi;
+  std::vector<int> recommended, options;
+  for (size_t i = 0; i < card.questions.size(); i++) {
+    const auto& q = card.questions[i];
+    const size_t n = std::count(picked[i].begin(), picked[i].end(), uint8_t(1));
+    if (n == 0 || (!q.multi && n > 1)) return result(rid, false, "choose an option for each question");
+    multi.push_back(q.multi);
+    recommended.push_back(q.recommended);
+    options.push_back(int(q.options.size()));
+  }
+  const auto steps = question_answer_steps(s->driver(), multi, recommended, options, picked);
+  if (s->driver().menu_keys().paced) {
+    if (!s->send_answer(steps)) return result(rid, false, "could not send the answer");
+  } else {
+    for (const auto& step : steps) s->pty().write(step);
+  }
+  result(rid, true, {}, key);
+}
+
+void Client::interrupt(std::string_view rid, uint64_t key) {
+  LiveSession* s = session(key);
+  if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
+  s->pty().write("\x1b");
   result(rid, true, {}, key);
 }
 

@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "model/background.h"
 #include "model/changes.h"
 #include "model/commands.h"
 #include "model/event.h"
@@ -132,6 +133,12 @@ class Adapter {
   // Reports the tool calls and results one transcript line records, the line
   // starting at byte `offset`. The activity index times and classifies them.
   virtual void read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const {}
+
+  // What one transcript line, starting at byte `offset`, says of work the
+  // agent runs in the background: a call that may start or stop some, its
+  // result, a notice of an event or an end. A live session feeds it the lines
+  // its agent writes, and shows what is still running.
+  virtual void read_background(std::string_view raw, uint64_t offset, BackgroundTasks& t) const {}
 
   // --- Usage ---------------------------------------------------------------
 

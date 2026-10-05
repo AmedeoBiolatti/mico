@@ -2,39 +2,79 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141416" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>mico</title>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
 <body>
-<div id="app">
-  <aside id="side">
-    <header id="brand">mico <span id="conn" class="conn off" title="connection">●</span></header>
-    <section>
-      <h2>Running</h2>
-      <ul id="agents" class="list"></ul>
-    </section>
-    <section>
-      <h2>Folders</h2>
-      <div id="folders"></div>
-    </section>
+<div id="banner" role="alert" hidden>Disconnected from mico — trying again…</div>
+<div id="app" data-screen="list">
+  <aside id="side" aria-label="Chats">
+    <header id="brand">
+      <span class="logo">mico</span>
+      <span id="conn" class="conn off" title="Not connected" role="img" aria-label="connection"></span>
+      <span id="count"></span>
+    </header>
+    <div class="search">
+      <input id="filter" type="search" placeholder="Filter chats" autocomplete="off" autocapitalize="off"
+             spellcheck="false" aria-label="Filter chats" enterkeyhint="search">
+      <kbd title="Press / to filter">/</kbd>
+    </div>
+    <div id="side-scroll">
+      <section id="running-sec">
+        <h2>Running</h2>
+        <div id="agents" class="list"></div>
+      </section>
+      <section>
+        <h2>Folders</h2>
+        <div id="folders"></div>
+      </section>
+    </div>
   </aside>
   <main id="main">
-    <header id="chat-head">
-      <div id="chat-title">Pick a chat</div>
-      <div id="chat-meta"></div>
+    <header id="chat-head" hidden>
+      <button id="back" class="icon" type="button" aria-label="Back to chats">‹</button>
+      <div class="titles">
+        <div id="chat-title"></div>
+        <div id="chat-meta"></div>
+      </div>
+      <button id="interrupt" class="ghost" type="button" hidden title="Interrupt what it is doing (Esc)">Interrupt</button>
+      <button id="stop" class="ghost danger" type="button" hidden>Stop</button>
     </header>
-    <div id="chat" tabindex="-1">
-      <button id="older" hidden>Load older messages</button>
-      <div id="events"></div>
+    <div id="empty">
+      <div class="empty-card">
+        <div class="logo big">mico</div>
+        <p id="empty-text">Pick a chat on the left, or start an agent in a folder with <b>+</b>.</p>
+        <p class="tip">Press <kbd>/</kbd> to filter chats.</p>
+      </div>
     </div>
+    <div id="chat" tabindex="-1" hidden>
+      <button id="older" type="button" hidden>Load older messages</button>
+      <div id="events"></div>
+      <div id="activity" hidden></div>
+    </div>
+    <button id="latest" type="button" hidden>↓ Latest</button>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <div id="perm" role="alertdialog" aria-label="The agent needs your permission" hidden></div>
     <form id="prompt" hidden>
-      <textarea id="prompt-text" rows="2" placeholder="Message the agent — Enter sends, Shift+Enter for a new line"></textarea>
-      <button type="submit">Send</button>
+      <div class="box">
+        <textarea id="prompt-text" rows="1" aria-label="Message" enterkeyhint="send"></textarea>
+        <button id="send" type="submit" aria-label="Send" disabled>↑</button>
+      </div>
+      <div id="hint"></div>
     </form>
-    <div id="status" role="status"></div>
+    <div id="resume-bar" hidden>
+      <span>A stored chat.</span>
+      <button id="resume" type="button" class="primary">Resume</button>
+      <button id="fork" type="button">Fork</button>
+    </div>
   </main>
 </div>
 </body>

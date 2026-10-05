@@ -163,6 +163,20 @@ void App::save_view_if_changed() {
   saved_view_ = std::move(now);
 }
 
+LayoutMode layout_mode() {
+  std::string buf;
+  const std::string_view v = fs::read_prefix(config_dir() + "/layout-mode", 64, buf);
+  return v.starts_with("wide") ? LayoutMode::Wide : v.starts_with("compact") ? LayoutMode::Compact : LayoutMode::Auto;
+}
+
+void set_layout_mode(LayoutMode m) {
+  mkdir(config_dir().c_str(), 0700);
+  if (FILE* f = fopen((config_dir() + "/layout-mode").c_str(), "w")) {
+    fputs(m == LayoutMode::Wide ? "wide\n" : m == LayoutMode::Compact ? "compact\n" : "auto\n", f);
+    fclose(f);
+  }
+}
+
 App::~App() = default;
 
 void App::build_layout() {
@@ -176,6 +190,14 @@ void App::build_layout() {
     return std::none_of(ws_.live().begin(), ws_.live().end(),
                         [&](const auto& s) { return s.get() == entry.first; });
   });
+  // Compact: the one pane the screen shows.
+  if (compact_ && screen_ != Screen::Main) {
+    root_ = Node::leaf(screen_ == Screen::Folders ? make_project_list() : make_chat_list());
+    root_->for_each_pane([&](Pane& p) { p.set_app(this); });
+    layout_dirty_ = false;
+    return;
+  }
+
   // Sidebar: the tracked folders, then the unified chat list for the selected
   // folder (running sessions and stored transcripts together). It stays on
   // every tab: on Sessions it picks the chat, elsewhere what the tab covers.
@@ -207,6 +229,13 @@ void App::build_layout() {
   if (!main) {
     if (tab_ == 0) selected_live_ = nullptr;
     main = Node::leaf(make_chat_view());
+  }
+
+  if (compact_) {
+    root_ = std::move(main);
+    root_->for_each_pane([&](Pane& p) { p.set_app(this); });
+    layout_dirty_ = false;
+    return;
   }
 
   std::vector<std::unique_ptr<Node>> cols;
@@ -288,6 +317,12 @@ void App::open_at(const std::string& path, uint64_t offset, const std::string& q
 }
 
 void App::show_tab(size_t i) {
+  // Compact: whatever shows a tab, or opens a chat, goes to the main screen.
+  if (compact_ && screen_ != Screen::Main && i < tabs_.size()) {
+    screen_ = Screen::Main;
+    layout_dirty_ = true;
+    focus_chat_after_build_ = true;
+  }
   if (i >= tabs_.size() || i == tab_) return;
   tab_ = i;
   layout_dirty_ = true;
@@ -693,7 +728,21 @@ void App::select_stored(const std::string& transcript_path) {
   notify_state_changed();
 }
 
+void App::compact_show(Screen s) {
+  if (s == screen_) return;
+  screen_ = s;
+  layout_dirty_ = true;
+  focus_ = 0;
+  mark_dirty();
+}
+
+void App::compact_back() {
+  if (screen_ == Screen::Main) compact_show(Screen::Chats);
+  else if (screen_ == Screen::Chats) compact_show(Screen::Folders);
+}
+
 bool App::open_selected_chat() {
+  if (compact_ && (selected_live_ || current_session())) show_tab(0);
   if (selected_live_) {
     selected_live_->pty().poll_exit();
     if (selected_live_->exited())
@@ -956,6 +1005,16 @@ void App::render(Surface& s) {
   logs::Doing doing("drawing the", screen_crumb());
   viewport_w_ = s.width();
   viewport_h_ = s.height();
+  // Compact on a narrow terminal, or as the setting says.
+  const LayoutMode mode = layout_mode();
+  const bool want = mode == LayoutMode::Compact || (mode == LayoutMode::Auto && s.width() < kCompactWidth);
+  if (want != compact_) {
+    compact_ = want;
+    // Into compact: where the work is, the chat if one is open.
+    screen_ = tab_ != 0 || selected_live_ || !selected_path_.empty() ? Screen::Main : Screen::Chats;
+    layout_dirty_ = true;
+    focus_ = 0;
+  }
   reap_sessions();
   s.clear(Style{theme().text, theme().bg});
 
@@ -986,8 +1045,9 @@ void App::render(Surface& s) {
 
   for (const auto& p : placed_) {
     bool focused = p.index == focus_;
-    render_chrome(s, p, focused);
-    Rect inner = p.rect.inset(1, 1);
+    // Compact panes have no border: on a phone every column counts.
+    if (!compact_) render_chrome(s, p, focused);
+    Rect inner = inner_of(p);
     if (inner.empty()) continue;
     Painter pp(s, inner);
     p.pane->render(pp, focused);
@@ -1052,7 +1112,9 @@ void App::render_dividers(Surface& s) {
 
 void App::render_tabs(Surface& s) {
   tab_hit_.clear();
+  back_hit_ = menu_hit_ = Rect{};
   if (tab_row_ < 0) return;
+  if (compact_) return render_compact_bar(s);
   Painter p(s, Rect{0, tab_row_, s.width(), 1});
   p.clear(Style{theme().dim, theme().bg});
 
@@ -1075,6 +1137,58 @@ void App::render_tabs(Surface& s) {
   const char* hint = "F1 or : for commands";
   const int hw = text::str_width(hint);
   if (s.width() - hw - 2 > x) p.text(s.width() - hw - 1, 0, hint, Style{theme().dim, theme().bg});
+}
+
+// Compact's top row: back, where you are, and the menu. Tap targets, so wide.
+void App::render_compact_bar(Surface& s) {
+  const Theme& th = theme();
+  Painter p(s, Rect{0, tab_row_, s.width(), 1});
+  p.clear(Style{th.text, th.panel});
+  const int W = s.width();
+  // The menu, at the right edge: what the tab strip and F-keys did.
+  const std::string menu = " \xE2\x89\xA1 ";  // ≡
+  p.text(W - 3, 0, menu, Style{th.accent, th.panel, attr::kBold});
+  menu_hit_ = Rect{W - 5, tab_row_, 5, 1};
+  int x = 0;
+  if (screen_ != Screen::Folders) {
+    const std::string back = screen_ == Screen::Chats ? " \xE2\x80\xB9 Folders " : " \xE2\x80\xB9 Chats ";  // ‹
+    x = p.text(0, 0, back, Style{th.accent, th.panel, attr::kBold});
+    back_hit_ = Rect{0, tab_row_, x + 1, 1};
+    p.put(x, 0, U'│', Style{th.border, th.panel});
+    x += 2;
+  } else {
+    x = 1 + p.text(1, 0, "mico", Style{th.accent, th.panel, attr::kBold}) + 2;
+  }
+  // Where you are.
+  std::string here;
+  const Project* pr = current_project();
+  if (screen_ == Screen::Folders) here = "Folders";
+  else if (screen_ == Screen::Chats) here = pr ? (pr->name.empty() ? pr->path : pr->name) : "Chats";
+  else if (tab_ != 0) here = tabs_[tab_].name;
+  else if (selected_live_) here = session_title(*selected_live_);
+  else if (const SessionRef* sr = current_session()) here = sr->title.empty() ? agent_label(sr->agent) + " chat" : sr->title;
+  else here = "Sessions";
+  p.text_clipped(x, 0, text::oneline(here, 200), Style{th.text, th.panel, attr::kBold}, std::max(0, W - x - 5));
+}
+
+// Compact's menu: the tabs, and what the function keys and right-click do.
+void App::open_compact_menu() {
+  std::vector<MenuItem> items = {
+      MenuItem{"Go to a chat\xE2\x80\xA6", "go"},
+      MenuItem{"New agent\xE2\x80\xA6", "new"},
+      MenuItem{"Raw terminal \xE2\x86\x94 chat view", "view", tab_ == 0 && screen_ == Screen::Main},
+      MenuItem{"This pane's menu\xE2\x80\xA6", "panemenu"},
+      MenuItem::sep(),
+  };
+  for (size_t i = 0; i < tabs_.size(); i++) {
+    MenuItem it{tabs_[i].name, "tab " + std::to_string(i)};
+    it.checked = i == tab_ && screen_ == Screen::Main;
+    items.push_back(std::move(it));
+  }
+  items.push_back(MenuItem::sep());
+  items.push_back(MenuItem{"All commands\xE2\x80\xA6", "help"});
+  items.push_back(MenuItem{"Detach (agents keep running)", "detach"});
+  open_menu(nullptr, Point{std::max(0, viewport_w_ - 2), tab_row_ + 1}, std::move(items), "mico");
 }
 
 void App::render_command(Surface& s) {
@@ -1120,7 +1234,7 @@ constexpr Command kCommands[] = {
     {"blame", "go to the chat that last changed a line: blame <file>:<line>"},
     {"charts", "tell agents they can draw charts: charts on|off"},
     {"mcp", "give agents mico's tools (plot) over MCP: mcp on|off"},
-    {"web", "the web view, served by the daemon: web on [port] | off, or web to copy its address"},
+    {"web", "the web view, served by the daemon: web on [port] | off | tailscale | host <name>, or web to copy its address"},
     {"sessions", "show the sessions tab"},
     {"redraw", "repaint everything"},
     {"log", "show where the log file is"},
@@ -1244,6 +1358,21 @@ void App::run_command(std::string line) {
   if (cmd == "tools") { show_tab(3); return; }
   if (cmd == "diff") { show_tab(4); return; }
   if (cmd == "git") { show_tab(5); return; }
+  if (cmd == "tab") { show_tab(size_t(std::atoi(arg.c_str()))); return; }
+  if (cmd == "back") { compact_back(); return; }
+  if (cmd == "view") {
+    // Raw terminal ↔ chat view for the focused agent, as F2.
+    if (focus_ < placed_.size() && placed_[focus_].pane->session()) placed_[focus_].pane->on_action("toggle_view");
+    return;
+  }
+  if (cmd == "panemenu") {
+    // The focused pane's menu, as F9 or a right-click.
+    if (focus_ < placed_.size()) {
+      const Rect r = inner_of(placed_[focus_]);
+      open_menu(placed_[focus_].pane, Point{r.x + 1, r.y + 1}, placed_[focus_].pane->context_menu(Point{-1, -1}));
+    }
+    return;
+  }
   if (cmd == "search") { open_search(arg); return; }
   if (cmd == "commit") {
     if (arg.size() < 4 || arg.find_first_not_of("0123456789abcdef") != std::string::npos) {
@@ -1274,6 +1403,37 @@ void App::run_command(std::string line) {
     return;
   }
   if (cmd == "web") {
+    if (arg == "tailscale") {
+      // This machine's name on the tailnet, kept; the address with it is
+      // copied. mico does not start `tailscale serve` itself: what a machine
+      // offers to its network is for its user to say.
+      const std::string name = tailscale_name();
+      if (name.empty()) {
+        set_status("tailscale: no name found (is it installed and up? `tailscale status`)");
+        return;
+      }
+      set_web(true);
+      set_web_host(name);
+      copy_to_clipboard(web_remote_url());
+      set_status("tailnet address copied. Now run: tailscale serve --bg " + std::to_string(web_port()) +
+                 "  (never funnel)");
+      return;
+    }
+    if (arg == "host off" || arg == "host") {
+      set_web_host({});
+      set_status("web view: no other host answered to");
+      return;
+    }
+    if (arg.starts_with("host ")) {
+      set_web_host(arg.substr(5));
+      if (web_host().empty()) set_status("web view: not a host name");
+      else {
+        set_web(true);
+        copy_to_clipboard(web_remote_url());
+        set_status("web view also answers to " + web_host() + " (over https); its address is on the clipboard");
+      }
+      return;
+    }
     if (arg == "off") set_web(false);
     else if (arg == "on" || arg.starts_with("on ")) set_web(true, arg.size() > 3 ? std::atoi(arg.c_str() + 3) : 0);
     if (!web_enabled()) {
@@ -1282,8 +1442,9 @@ void App::run_command(std::string line) {
     }
     // The address carries the token: copied rather than only shown, so it
     // need not be typed, and it stays out of the screen's scrollback.
-    copy_to_clipboard(web_url());
+    copy_to_clipboard(web_remote_url().empty() ? web_url() : web_remote_url());
     set_status("web view on 127.0.0.1:" + std::to_string(web_port()) +
+               (web_host().empty() ? "" : ", and " + web_host() + " over https") +
                " \xE2\x80\x94 its address (with the token) is on the clipboard");
     return;
   }
@@ -1482,7 +1643,8 @@ void App::handle_mouse(const MouseEvent& m) {
     cancel_selection();
     for (const auto& p : placed_)
       if (p.pane == mouse_capture_) {
-        p.pane->on_mouse(m, Point{m.pos.x - p.rect.x - 1, m.pos.y - p.rect.y - 1});
+        const Rect in = inner_of(p);
+        p.pane->on_mouse(m, Point{m.pos.x - in.x, m.pos.y - in.y});
         break;
       }
     if (m.kind == MouseKind::Release) mouse_capture_ = nullptr;
@@ -1497,6 +1659,11 @@ void App::handle_mouse(const MouseEvent& m) {
   if (m.kind == MouseKind::Press && m.button == MouseButton::Left) {
     // The tab strip and the command line sit outside the pane tree.
     if (tab_row_ >= 0 && m.pos.y == tab_row_) {
+      if (compact_) {
+        if (back_hit_.contains(m.pos)) compact_back();
+        else if (menu_hit_.contains(m.pos)) open_compact_menu();
+        return;
+      }
       for (size_t i = 0; i < tab_hit_.size(); i++)
         if (tab_hit_[i].contains(m.pos)) { show_tab(i); return; }
       return;
@@ -1519,7 +1686,7 @@ void App::handle_mouse(const MouseEvent& m) {
     sel_copy_pending_ = false;
     sel_dragging_ = true;
     sel_anchor_ = sel_cursor_ = m.pos;
-    sel_area_ = hit ? hit->rect.inset(1, 1) : Rect{m.pos.x, m.pos.y, 1, 1};
+    sel_area_ = hit ? inner_of(*hit) : Rect{m.pos.x, m.pos.y, 1, 1};
   } else if (sel_dragging_ && (m.kind == MouseKind::Drag || m.kind == MouseKind::Move)) {
     // Extend the range, clamped to the pane it began in.
     Point c = m.pos;
@@ -1543,7 +1710,8 @@ void App::handle_mouse(const MouseEvent& m) {
 
   if (!hit) return;
 
-  Point local{m.pos.x - hit->rect.x - 1, m.pos.y - hit->rect.y - 1};
+  const Rect hit_inner = inner_of(*hit);
+  Point local{m.pos.x - hit_inner.x, m.pos.y - hit_inner.y};
   if (m.kind == MouseKind::Press) {
     focus_ = hit->index;
     if (m.button == MouseButton::Right) {
@@ -1638,16 +1806,23 @@ void App::handle_key(const KeyEvent& k) {
   // left dirty by something outside the program.
   if (k.is_ctrl('l')) { force_redraw(); return; }
 
-  // Alt+1, 2, 3: the folders, the chats, the chat itself (where its message
-  // box takes the keys). Alt+X: the command line. Global like the function
-  // keys, so they reach past a message being typed and out of a raw pane.
-  if (k.key == Key::Char && k.alt && !k.ctrl) {
-    if (k.ch >= '1' && k.ch <= '3' && !placed_.empty()) {
+  // Alt+1, 2, 3 (or Ctrl+1, 2, 3, where the terminal can send them): the
+  // folders, the chats, the chat itself (where its message box takes the
+  // keys). Alt+X: the command line. Global like the function keys, so they
+  // reach past a message being typed and out of a raw pane.
+  if (k.key == Key::Char && (k.alt != k.ctrl) && k.ch >= '1' && k.ch <= '3') {
+    if (compact_) {
+      compact_show(k.ch == '1' ? Screen::Folders : k.ch == '2' ? Screen::Chats : Screen::Main);
+      return;
+    }
+    if (!placed_.empty()) {
       const size_t i = std::min(size_t(k.ch - '1'), placed_.size() - 1);
       focus_ = (k.ch == '3' ? placed_.back() : placed_[i]).index;
       mark_dirty();
       return;
     }
+  }
+  if (k.key == Key::Char && k.alt && !k.ctrl) {
     if (k.ch == 'x') { open_command_line(); return; }
   }
 
@@ -1710,7 +1885,14 @@ void App::handle_key(const KeyEvent& k) {
     }
   }
 
-  if (focus_ < placed_.size()) placed_[focus_].pane->on_key(k);
+  if (focus_ < placed_.size()) {
+    const bool used = placed_[focus_].pane->on_key(k);
+    // Compact, on the folders or the chats: ← or Backspace goes back, and
+    // Esc does when the list had no use for it.
+    if (compact_ && screen_ != Screen::Main &&
+        (k.key == Key::Left || k.key == Key::Backspace || (k.key == Key::Escape && !used)))
+      compact_back();
+  }
 }
 
 void App::handle(const InputEvent& e) {

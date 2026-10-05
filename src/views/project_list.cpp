@@ -257,6 +257,8 @@ class ProjectList final : public Pane {
     }
     if (!list_.on_key(k)) return false;
     set_sel(list_.list.sel);
+    // Compact: a folder chosen goes on to its chats.
+    if (k.key == Key::Enter && app_->compact() && sel_ < add_row()) app_->compact_show(App::Screen::Chats);
     return true;
   }
 
@@ -268,7 +270,11 @@ class ProjectList final : public Pane {
     const Point local{at.x, at.y - head_};
     const int hit = list_.on_mouse(m, local);
     if (hit == add_row()) app_->pick_folder();
-    else if (hit >= 0) set_sel(hit);
+    else if (hit >= 0) {
+      set_sel(hit);
+      // Compact: a tap on a folder goes on to its chats.
+      if (app_->compact() && m.kind == MouseKind::Press) app_->compact_show(App::Screen::Chats);
+    }
     return true;
   }
 

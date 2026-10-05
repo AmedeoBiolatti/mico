@@ -121,6 +121,7 @@ add_library(mico_core STATIC
   src/core/files.cpp
   src/core/workspace.cpp
   src/core/away.cpp
+  src/core/answers.cpp
   src/core/git.cpp
   src/core/procmem.cpp
   src/core/scope.cpp
@@ -164,7 +165,7 @@ add_library(mico_tui STATIC
   src/views/chart_image.cpp
   src/views/chart_figure.cpp
   src/views/diagram.cpp
-  src/views/progress.cpp
+  src/base/progress.cpp
   src/views/json_view.cpp
   src/views/notebook.cpp
   src/views/settings_view.cpp
@@ -230,8 +231,16 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_input.py $<TARGET_FILE:mico>)
   add_test(NAME web-view
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_view.py $<TARGET_FILE:mico>)
+  add_test(NAME web-answers
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_answers.py $<TARGET_FILE:mico>)
+  add_test(NAME web-ui
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_ui.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-restore
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_restore.py $<TARGET_FILE:mico>)
+  add_test(NAME claude-background
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/claude_background.py $<TARGET_FILE:mico>)
+  add_test(NAME compact-mode
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/compact_mode.py $<TARGET_FILE:mico>)
   add_test(NAME agent-scopes
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/agent_scopes.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-postmortem
@@ -242,6 +251,6 @@ if(Python3_FOUND)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(daemon-input daemon-restore daemon-postmortem agent-scopes git-commits web-view claude-questions claude-permission claude-paste
+  set_tests_properties(daemon-input web-answers web-ui daemon-restore daemon-postmortem agent-scopes compact-mode git-commits web-view claude-questions claude-permission claude-paste claude-background
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

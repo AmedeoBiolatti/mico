@@ -235,7 +235,11 @@ void WebServer::accept_all() {
 
 bool WebServer::allowed_host(std::string_view host) const {
   const std::string port = ":" + std::to_string(port_);
-  return host == "127.0.0.1" + port || host == "localhost" + port;
+  if (host == "127.0.0.1" + port || host == "localhost" + port) return true;
+  // The name something in front of this (tailscale serve) forwards under, and
+  // no other: a page on a site that points its own name here is refused.
+  const std::string remote = web_host();
+  return !remote.empty() && lower(host) == remote;
 }
 
 void WebServer::read_http(Conn& c) {
@@ -284,7 +288,11 @@ void WebServer::read_http(Conn& c) {
   }
 
   if (path == "/ws") {
+    // The page came over http from 127.0.0.1, or over https from the name
+    // that is forwarded here.
     const std::string own = "http://" + host;
+    const std::string remote = web_host();
+    const bool forwarded = !remote.empty() && lower(host) == remote;
     std::string token;
     for (size_t at = 0; at <= query.size();) {
       size_t e = query.find('&', at);
@@ -295,7 +303,8 @@ void WebServer::read_http(Conn& c) {
     }
     if (upgrade != "websocket" || connection.find("upgrade") == std::string::npos || key.empty() || version != "13")
       return respond(c, 400, "text/plain", "a WebSocket is expected here\n");
-    if (origin != own) return respond(c, 403, "text/plain", "wrong origin\n");
+    if (origin != own && !(forwarded && lower(origin) == "https://" + remote))
+      return respond(c, 403, "text/plain", "wrong origin\n");
     if (!same_secret(token, web_token())) return respond(c, 403, "text/plain", "wrong token\n");
     c.out += "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
              "Sec-WebSocket-Accept: " + websocket_accept(key) + "\r\n\r\n";
@@ -324,7 +333,8 @@ void WebServer::respond(Conn& c, int status, std::string_view type, std::string_
            "\r\nContent-Length: " + std::to_string(body.size()) +
            "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer"
            "\r\nContent-Security-Policy: default-src 'self'; connect-src ws://127.0.0.1:" + port +
-           " ws://localhost:" + port + "; frame-ancestors 'none'\r\nConnection: close\r\n\r\n";
+           " ws://localhost:" + port + (web_host().empty() ? "" : " wss://" + web_host()) +
+           "; frame-ancestors 'none'\r\nConnection: close\r\n\r\n";
   c.out += body;
   c.closing = true;
   flush(c);

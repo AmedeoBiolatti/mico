@@ -1,4 +1,4 @@
-#include "views/progress.h"
+#include "base/progress.h"
 
 #include <algorithm>
 #include <cmath>

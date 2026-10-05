@@ -19,4 +19,16 @@ std::string web_token();
 // never sends to a server or puts in a Referer.
 std::string web_url();
 
+// The name this machine is reached by from elsewhere, when something in front
+// of the web view (tailscale serve, over HTTPS) forwards to it: kept in `web-host`,
+// empty when none. The daemon still listens on 127.0.0.1 only; this is the
+// one other host it answers to, and the page is then https with a wss socket.
+std::string web_host();
+void set_web_host(const std::string& host);  // "" clears it; lower case, [a-z0-9.-] only
+// Where to point a browser on another machine; empty without a web_host().
+std::string web_remote_url();
+// This machine's name on the tailnet, from `tailscale status`; empty when
+// tailscale is not there or not up.
+std::string tailscale_name();
+
 }  // namespace mico

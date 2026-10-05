@@ -1,6 +1,7 @@
 #include "adapters/adapters.h"
 #include "base/fs.h"
 #include "base/log.h"
+#include "base/progress.h"
 #include "core/scope.h"
 #include "core/session.h"
 #include "core/store.h"
@@ -308,6 +309,152 @@ void LiveSession::follow_turns() {
   close(fd);
 }
 
+bool LiveSession::follow_background() {
+  if (!adapter_ || transcript_.empty()) return false;
+  const uint64_t before = bg_.version;
+  if (pty_.exited()) {
+    bg_.clear();  // what it ran went with it
+    return bg_.version != before;
+  }
+  const int64_t now = now_ms();
+  if (transcript_ == bg_file_ && now - bg_poll_ms_ < 300) return false;
+  bg_poll_ms_ = now;
+  struct stat st{};
+  if (stat(transcript_.c_str(), &st) != 0) return false;
+  const uint64_t size = uint64_t(st.st_size);
+  if (transcript_ != bg_file_) {
+    // A chat this process continued (a resume, a fork) is followed from where
+    // it was: tasks from before ran in an agent that is gone.
+    bg_file_ = transcript_;
+    bg_.clear();
+    bg_line_.clear();
+    bg_skip_ = false;
+    bg_read_ = origin_.empty() ? 0 : size;
+  }
+  if (size < bg_read_) bg_read_ = size;  // rewritten
+  if (size > bg_read_) {
+    const int fd = open(transcript_.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    // A record past this is a tool's output, no start or end of a task.
+    constexpr size_t kMaxLine = 4u << 20;
+    char buf[65536];
+    while (bg_read_ < size) {
+      const ssize_t n = pread(fd, buf, std::min<uint64_t>(sizeof buf, size - bg_read_), off_t(bg_read_));
+      if (n <= 0) break;
+      std::string_view chunk(buf, size_t(n));
+      uint64_t at = bg_read_;
+      bg_read_ += uint64_t(n);
+      while (!chunk.empty()) {
+        const size_t nl = chunk.find('\n');
+        const std::string_view part = chunk.substr(0, nl);
+        if (!bg_skip_) {
+          if (bg_line_.size() + part.size() > kMaxLine) {
+            bg_skip_ = true;
+            bg_line_.clear();
+          } else {
+            bg_line_.append(part);
+          }
+        }
+        if (nl == std::string_view::npos) break;
+        if (!bg_skip_) adapter_->read_background(bg_line_, at + nl - bg_line_.size(), bg_);
+        bg_line_.clear();
+        bg_skip_ = false;
+        chunk.remove_prefix(nl + 1);
+        at += nl + 1;
+      }
+    }
+    close(fd);
+  }
+  bg_.expire(int64_t(time(nullptr)) * 1000);
+  return bg_.version != before;
+}
+
+namespace {
+
+// The last `n` bytes of a file.
+bool read_tail(const std::string& path, size_t n, std::string& out) {
+  out.clear();
+  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return false;
+  struct stat st{};
+  if (fstat(fd, &st) == 0 && st.st_size > 0) {
+    const off_t from = st.st_size > off_t(n) ? st.st_size - off_t(n) : 0;
+    out.resize(size_t(st.st_size - from));
+    const ssize_t got = pread(fd, out.data(), out.size(), from);
+    out.resize(got > 0 ? size_t(got) : 0);
+  }
+  close(fd);
+  return !out.empty();
+}
+
+// The newest progress in what a command printed: its last line that reads as
+// some. A bar that redraws itself does so with \r, so that ends a line too.
+bool last_progress(std::string_view text, progress::Progress& out) {
+  size_t end = text.size();
+  while (end > 0) {
+    const size_t start = text.find_last_of("\r\n", end - 1);
+    const size_t from = start == std::string_view::npos ? 0 : start + 1;
+    if (end > from && progress::parse(text.substr(from, end - from), out)) return true;
+    if (start == std::string_view::npos) break;
+    end = start;
+  }
+  return false;
+}
+
+}  // namespace
+
+// Claude writes a task's output to <tmp>/claude-<uid>/<folder>/<session>/tasks/
+// <task>.output. A background command's result names it; a monitor's does
+// not, so it is looked for beside another task's, else under Claude's tmp.
+std::string LiveSession::find_task_output(const std::string& id) {
+  if (bg_tasks_dir_.empty())
+    for (const auto& t : bg_.running)
+      if (!t.output.empty() && t.output.rfind('/') != std::string::npos)
+        bg_tasks_dir_ = t.output.substr(0, t.output.rfind('/'));
+  if (bg_tasks_dir_.empty() && !session_id_.empty()) {
+    const char* tmp = getenv("TMPDIR");
+    const std::string root = std::string(tmp && *tmp ? tmp : "/tmp") + "/claude-" + std::to_string(getuid());
+    fs::list_dir(root, true, [&](const std::string& folder) {
+      const std::string dir = root + "/" + folder + "/" + session_id_ + "/tasks";
+      if (bg_tasks_dir_.empty() && fs::exists(dir)) bg_tasks_dir_ = dir;
+    });
+  }
+  if (bg_tasks_dir_.empty()) return {};
+  const std::string path = bg_tasks_dir_ + "/" + id + ".output";
+  return fs::exists(path) ? path : std::string();
+}
+
+bool LiveSession::read_background_progress() {
+  if (bg_.running.empty()) return false;
+  const int64_t now = now_ms();
+  if (now - bg_progress_ms_ < 1000) return false;
+  bg_progress_ms_ = now;
+  const int64_t wall = int64_t(time(nullptr)) * 1000;
+  bool moved = false;
+  std::string tail;
+  for (auto& t : bg_.running) {
+    if (t.output.empty()) t.output = find_task_output(t.id);
+    progress::Progress p;
+    bool has = !t.output.empty() && read_tail(t.output, 8192, tail) && last_progress(tail, p);
+    if (!has && !t.last_event.empty()) has = progress::parse(t.last_event, p);
+    if (!has) continue;
+    // The pace is measured from the first sight of it, or from a restart.
+    if (t.fraction < 0 || p.fraction < t.fraction) {
+      t.since_ms = wall;
+      t.since_fraction = p.fraction;
+    }
+    if (p.fraction != t.fraction || p.done != t.done || p.total != t.total || p.eta_s != t.eta_s) {
+      t.fraction = p.fraction;
+      t.done = p.done;
+      t.total = p.total;
+      t.eta_s = p.eta_s;
+      moved = true;
+    }
+  }
+  if (moved) bg_.version++;
+  return moved;
+}
+
 bool LiveSession::starting() const { return spawned_ && now_ms() < starting_until_ms_; }
 
 bool LiveSession::send_parts(const std::vector<MessagePart>& parts, std::string_view first) {
@@ -488,6 +635,10 @@ bool LiveSession::pump() {
   }
 
   follow_turns();
+  // Both, every time: one finding nothing must not skip the other.
+  const bool followed = follow_background();
+  const bool progressed = read_background_progress();
+  const bool background_moved = followed || progressed;
   // Mark the moment a turn ends, not the state itself: that is what the user
   // missed while their attention was on another pane.
   const bool working = busy();
@@ -523,7 +674,7 @@ bool LiveSession::pump() {
     unseen_ = true;
   }
   const bool changed = answer_changed || !buf_.empty() || working != was_working_ ||
-                       pty_.exited() != was_exited_ || finished;
+                       pty_.exited() != was_exited_ || finished || background_moved;
   was_working_ = working;
   was_exited_ = pty_.exited();
 
@@ -541,6 +692,9 @@ bool LiveSession::pump() {
 
   const std::string before = transcript_;
   discover_transcript();
+  // Followed from the moment it is found, not the next turn of the loop (up
+  // to a second later): what the agent writes in between would be skipped.
+  if (transcript_ != before) follow_background();
   const bool moved = changed || queue_.size() != held || transcript_ != before;
   if (moved) ++generation_;
   return moved;

@@ -170,6 +170,19 @@ std::optional<InputEvent> InputDecoder::parse(size_t& consumed) {
 
   int mod = num(1, 1) - 1;
   bool shift = mod & 1, alt = mod & 2, ctrl = mod & 4;
+  // A key by its code point, with the modifiers above.
+  const auto coded = [&](int code) -> std::optional<InputEvent> {
+    if (code == 13) return key_ev(Key::Enter, 0, ctrl, alt, shift);
+    if (code == 9) return key_ev(shift ? Key::BackTab : Key::Tab, 0, ctrl, alt, shift);
+    if (code == 27) return key_ev(Key::Escape, 0, ctrl, alt, shift);
+    if (code == 127 || code == 8) return key_ev(Key::Backspace, 0, ctrl, alt, shift);
+    if (code >= 0x20 && code < 0x110000) {
+      char32_t ch = char32_t(code);
+      if (ctrl && ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+      return key_ev(Key::Char, ch, ctrl, alt, shift);
+    }
+    return std::nullopt;
+  };
 
   switch (final) {
     case 'A': return key_ev(Key::Up, 0, ctrl, alt, shift);
@@ -189,23 +202,15 @@ std::optional<InputEvent> InputDecoder::parse(size_t& consumed) {
       e.focus_in = final == 'I';
       return e;
     }
-    case 'u': {
+    case 'u':
       // CSI keycode;mods u: the unambiguous form some terminals send for
-      // keys the legacy bytes cannot tell apart (Shift+Enter, Ctrl+Shift+Z).
-      const int code = num(0, 0);
-      if (code == 13) return key_ev(Key::Enter, 0, ctrl, alt, shift);
-      if (code == 9) return key_ev(shift ? Key::BackTab : Key::Tab, 0, ctrl, alt, shift);
-      if (code == 27) return key_ev(Key::Escape, 0, ctrl, alt, shift);
-      if (code == 127 || code == 8) return key_ev(Key::Backspace, 0, ctrl, alt, shift);
-      if (code >= 0x20 && code < 0x110000) {
-        char32_t ch = char32_t(code);
-        if (ctrl && ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
-        return key_ev(Key::Char, ch, ctrl, alt, shift);
-      }
-      return std::nullopt;
-    }
+      // keys the legacy bytes cannot tell apart (Shift+Enter, Ctrl+Shift+Z,
+      // Ctrl+1, which is a plain '1' otherwise).
+      return coded(num(0, 0));
     case '~': {
       switch (num(0, 0)) {
+        // xterm's modifyOtherKeys: CSI 27 ; mods ; keycode ~, the same thing.
+        case 27: return coded(num(2, 0));
         case 1: case 7: return key_ev(Key::Home, 0, ctrl, alt, shift);
         case 2: return key_ev(Key::None);
         case 3: return key_ev(Key::Delete, 0, ctrl, alt, shift);

@@ -87,4 +87,65 @@ std::string web_url() {
   return "http://127.0.0.1:" + std::to_string(web_port()) + "/#token=" + web_token();
 }
 
+namespace {
+bool valid_host(const std::string& h) {
+  if (h.empty() || h.size() > 253) return false;
+  for (const char c : h)
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) return false;
+  return true;
+}
+}  // namespace
+
+std::string web_host() {
+  std::string buf;
+  std::string_view v = fs::read_prefix(config_dir() + "/web-host", 300, buf);
+  while (!v.empty() && (v.back() == '\n' || v.back() == ' ')) v.remove_suffix(1);
+  const std::string h(v);
+  return valid_host(h) ? h : std::string();
+}
+
+void set_web_host(const std::string& host) {
+  std::string h;
+  for (const char c : host) h.push_back(c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c);
+  while (!h.empty() && h.back() == '.') h.pop_back();  // a DNS name's trailing dot
+  mkdir(config_dir().c_str(), 0700);
+  const std::string path = config_dir() + "/web-host";
+  if (!valid_host(h)) {
+    unlink(path.c_str());
+    return;
+  }
+  if (FILE* f = fopen(path.c_str(), "w")) {
+    fprintf(f, "%s\n", h.c_str());
+    fclose(f);
+  }
+}
+
+std::string web_remote_url() {
+  const std::string h = web_host();
+  return h.empty() ? std::string() : "https://" + h + "/#token=" + web_token();
+}
+
+std::string tailscale_name() {
+  // No user text in the command, so no shell to mind.
+  FILE* p = popen("tailscale status --json 2>/dev/null", "r");
+  if (!p) return {};
+  std::string out;
+  char buf[8192];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof buf, p)) > 0 && out.size() < (4u << 20)) out.append(buf, n);
+  pclose(p);
+  // "Self": {…, "DNSName": "machine.tailnet.ts.net.", …}
+  const size_t self = out.find("\"Self\"");
+  if (self == std::string::npos) return {};
+  const size_t key = out.find("\"DNSName\"", self);
+  if (key == std::string::npos) return {};
+  const size_t open = out.find('"', out.find(':', key) + 1);
+  if (open == std::string::npos) return {};
+  const size_t close = out.find('"', open + 1);
+  if (close == std::string::npos) return {};
+  std::string name = out.substr(open + 1, close - open - 1);
+  while (!name.empty() && name.back() == '.') name.pop_back();
+  return valid_host(name) ? name : std::string();
+}
+
 }  // namespace mico

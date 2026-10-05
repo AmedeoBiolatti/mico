@@ -228,7 +228,13 @@ class ChatList final : public Pane {
     const int limit = p.width() - (ww ? ww + 2 : 1);
     x += p.text_clipped(x, y + 1, word, Style{c, base.bg}, std::max(0, limit - x));
     const std::string agent = " · " + agent_label(agent_of(r));
-    if (x + text::str_width(agent) <= limit) p.text(x, y + 1, agent, meta);
+    if (x + text::str_width(agent) <= limit) x += p.text(x, y + 1, agent, meta);
+    // Work it left running in the background, as its footer would say.
+    if (r.live && !r.live->exited() && !r.live->background().empty()) {
+      const std::string bg = " \xC2\xB7 " + std::to_string(r.live->background().size()) + " in background" +
+                             background_percent(r.live->background());
+      if (x + text::str_width(bg) <= limit) p.text(x, y + 1, bg, Style{th.working, base.bg});
+    }
     if (ww && p.width() - ww > x) p.text(p.width() - ww, y + 1, when, meta);
   }
 

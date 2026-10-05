@@ -89,6 +89,36 @@ terminal cells at several sizes using synthetic chats (requires Pillow).
 `--vt` is how the emulator is regression-tested: capture real agent output with
 `script`, replay it, diff the grid.
 
+## On a phone
+
+Below 80 columns — a phone in portrait, over ssh — mico shows one pane at a
+time instead of the sidebar beside the chat:
+
+```
+ ‹ Folders │ mico                    ≡
+▌· Fix the tabs
+▌  working · Claude · 1 in background
+ · Themes improvement
+   saved · Claude                   3h
+```
+
+- **Folders**, **Chats**, **the chat**: tap a folder for its chats, a chat
+  to open it. `‹` in the top bar goes back (so do `←` and Backspace on the
+  lists); `Alt+1`/`Alt+2`/`Alt+3` jump to each, and so do `Ctrl+1`/`2`/`3`
+  where the terminal can send them. A plain terminal has no bytes for
+  Ctrl+digit (Ctrl+1 is a `1`, Ctrl+3 an Esc); they arrive only as kitty's
+  `CSI 49;5u` or xterm's modifyOtherKeys `CSI 27;5;49~`. `mico --keys` shows
+  what a terminal sends for each key, and what mico makes of it.
+- **≡** is the menu: go to any chat, a new agent, raw terminal ↔ chat view,
+  the pane's own menu (what right-click opens), every tab, all commands, and
+  detach — nothing needs a function key.
+- Panes lose their borders: on a phone every column is the chat's.
+
+Settings → Appearance → Layout chooses `auto` (compact below 80 columns),
+`wide` or `compact`. Every attached terminal shares one layout, sized to the
+smallest: while a phone is attached, a terminal attached elsewhere is drawn
+at the phone's size too.
+
 ## Projects
 
 mico tracks a **curated list of folders**, not every directory an agent has ever
@@ -177,8 +207,42 @@ clipboard. The address carries a token, `#token=…`, which the page needs to
 connect; add `&chat=<transcript path>` to open a chat directly.
 
 The page lists the tracked folders and the running agents, shows a chat as it
-grows, loads older history on request, starts agents, and sends a running one a
-message. Questions and permission dialogs are still answered in mico itself.
+grows, loads older history, starts, stops, resumes and forks agents, and sends a
+running one a message, answers its questions and permission dialogs, and
+interrupts it.
+
+- **Questions** the agent asks (a multiple-choice card) become buttons while
+  they wait: tap an option (several, for a multi-select), then **Send answer**.
+- **A permission dialog or a plan** to approve takes the message box's place:
+  each choice a button, with a note field where the dialog takes one.
+- **Interrupt** sends Esc, as in the terminal; **Stop** ends the agent.
+
+mico answers as its terminal panel does: the protocol carries the *choice*
+(`answer_permission {key, index, note}`, `answer {key, tool, chosen}`,
+`interrupt {key}`), and the daemon walks the agent's own cursor there and
+confirms, through the same code (`src/core/answers.cpp`) — and only a question
+that is waiting, read from the agent's own transcript, never as a client says it
+was.
+
+- **A phone gets one screen at a time**, the list and then the chat, with a ‹ that
+  is the browser's own back (so the phone's back gesture works), tap targets
+  that fit a thumb, and a message box that sits above the keyboard. On a touch
+  screen Enter is a new line and ↑ sends; with a keyboard, Enter sends.
+- **The list** filters as you type (`/` focuses it), folds folders (remembered),
+  shows what is running first with its state — working, ready, needs you — and
+  counts the agents that need you in the browser tab's title.
+- **The chat** renders markdown — headings, nested and numbered lists, task
+  lists, tables, quotes, code blocks with a Copy button, links — folds a run of
+  tool calls into one line ("4 tool calls · 1 failed"), shows a failed call's
+  error, thinking folded, a working indicator while the agent works, and
+  "↓ 3 new" when you have scrolled up. Older history loads as you reach the top.
+  The address keeps the chat, so a reload comes back to it.
+- **What a transcript says is never markup.** The page builds nodes with
+  `createElement` and `textContent`; a message containing `<img onerror>`,
+  `<script>` or a `javascript:` link shows them as text, and only http, https
+  and mailto links are followed. `tests/web_ui.py` drives a real (headless)
+  Chrome against a daemon to check this, and the rendering; it skips where
+  there is no Chrome.
 
 It is a client of mico's state protocol (`src/api/client.h`): JSON over a
 WebSocket, carrying chats and agents rather than terminal frames, so any program
@@ -194,8 +258,22 @@ can be another client. It is for this machine only:
 - a client can open only chats mico lists, and start only agents mico has an
   adapter for, in folders you track.
 
-Reaching it from another machine means TLS and a login in front of the same
-protocol; until then, forward the port over ssh.
+**From a phone, over Tailscale.** The daemon still listens on 127.0.0.1 only;
+`tailscale serve` puts HTTPS in front of it, inside your tailnet:
+
+```
+:web tailscale                  # in mico: remembers this machine's tailnet name,
+                                # copies https://<name>/#token=…
+tailscale serve --bg 7311       # in a shell: forward it (never `funnel`)
+```
+
+mico does not run `tailscale serve` itself: what a machine offers its network
+is for you to say. The tailnet name is kept in `web-host`; the daemon then
+answers to that one host as well (any other is refused), accepts a WebSocket
+from that host's https page, and lets the page open its `wss://` socket. The
+token is still required, and still rides in the fragment. `:web host <name>`
+sets the name by hand (another reverse proxy, say), `:web host off` clears
+it. HTTPS also lets a phone install the page and copy from it.
 
 ## Three data planes
 
@@ -419,6 +497,35 @@ guess at. Chips with no known command show their value and can be copied — "co
 value" stays in the picker whatever is typed. A
 stored transcript is read-only: there is nothing running to command.
 
+### What it runs in the background
+
+Claude can leave work running beside its turn: a monitor streaming a
+command's lines back to it, a command moved to the background. Its footer
+says "2 monitors still running"; the chat view says so too. At the right of
+the strip, `◉ 1 monitor · 1 command running ▾` lists them when clicked —
+each with how long it has run, when a monitor times out, and its last event
+— and choosing one goes to the call that started it. The chat's row in the
+list adds `· 2 in background`.
+
+It is read from what Claude writes while the session runs: a `Monitor` or
+`Bash` call whose result names a task (`taskId`, `backgroundTaskId`), the
+`<task-notification>` notices that carry a monitor's events and each task's
+end, and `TaskStop`. A resumed chat is followed from where it was resumed —
+what an earlier Claude process left running went with it — and nothing
+shows once the agent has exited. `mico --background FILE` replays a
+transcript's starts and ends.
+
+Each task's progress shows too, read the way the activity row reads a
+foreground command's: from the end of what it prints, its last line that is
+a tqdm bar, a `[n/m]` or `[ NN%]` counter, or a bar with a count. Claude
+writes a task's output to `<tmp>/claude-<uid>/<folder>/<session>/tasks/<task>.output`
+— a background command's result names the file; a monitor's is found beside
+it — and mico reads its last few kilobytes once a second; a monitor with no
+file is read from its latest event. The chip and the chat's row add the
+first task's percentage (`◉ 1 command running 45% ▾`), and the list gives
+each a bar, its count and the time left — its own estimate, or worked out
+from its pace since mico first saw it.
+
 ## New sessions in a new folder
 
 Claude Code asks "do you trust this folder?" the first time it runs anywhere.
@@ -616,7 +723,7 @@ itself out again) and is kept in `~/.config/mico/render`, one `name way` per
 line; a file from when each part was `on` or `off` still reads as it meant.
 
 - **Appearance:** the theme — `dark` (mico's own), `light`, `high contrast`,
-  `warm`. Also `:theme <name>`. The terminal's own background follows it.
+  `warm`, `dracula`. Also `:theme <name>`. The terminal's own background follows it.
 - **Rendering**, the plainest way first:
 
   | | |

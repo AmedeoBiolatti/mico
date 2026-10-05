@@ -1,8 +1,12 @@
+#include <poll.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <unistd.h>
 
+#include "term/term.h"
+#include "term/input.h"
 #include "adapters/adapters.h"
 #include "vt/vt.h"
 #include "base/text.h"
@@ -26,6 +30,68 @@ int run_client(bool allow_spawn);
 int kill_daemon();
 int run_mcp_server();
 }  // namespace mico
+
+namespace {
+
+// `mico --keys`: what this terminal sends for each key, and what mico makes
+// of it. For a terminal (a phone's) whose Ctrl, Alt or function keys may not
+// arrive as anything mico can tell apart.
+int show_keys() {
+  if (!mico::tty::enter_raw()) {
+    fprintf(stderr, "mico --keys needs a terminal\n");
+    return 1;
+  }
+  static const char* const kNames[] = {"none", "char", "Enter", "Esc", "Tab", "Shift+Tab", "Backspace", "Delete",
+                                       "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown",
+                                       "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"};
+  printf("Press keys to see what this terminal sends. q quits.\r\n");
+  fflush(stdout);
+  mico::InputDecoder dec;
+  bool quit = false;
+  while (!quit) {
+    pollfd p{STDIN_FILENO, POLLIN, 0};
+    const int r = ::poll(&p, 1, dec.pending_escape() ? 50 : -1);
+    std::string bytes;
+    if (r > 0) {
+      char buf[256];
+      const ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
+      if (n <= 0) break;
+      bytes.assign(buf, size_t(n));
+      dec.feed(bytes);
+      std::string shown;
+      for (unsigned char c : bytes) {
+        char b[8];
+        if (c == 0x1b) shown += "ESC ";
+        else if (c < 0x20 || c == 0x7f) { snprintf(b, sizeof b, "0x%02x ", c); shown += b; }
+        else { shown += char(c); shown += ' '; }
+      }
+      printf("bytes: %s\r\n", shown.c_str());
+    }
+    auto ev = r > 0 ? dec.next() : dec.flush();
+    for (; ev; ev = dec.next()) {
+      if (ev->type != mico::InputEvent::Type::Key) {
+        printf("   -> %s\r\n", ev->type == mico::InputEvent::Type::Mouse ? "mouse" : ev->type == mico::InputEvent::Type::Paste ? "paste" : "other");
+        continue;
+      }
+      const mico::KeyEvent& k = ev->key;
+      std::string name = std::string(k.ctrl ? "Ctrl+" : "") + (k.alt ? "Alt+" : "") + (k.shift ? "Shift+" : "");
+      if (k.key == mico::Key::Char) {
+        std::string ch;
+        mico::text::encode(k.ch, ch);
+        name += k.ch == ' ' ? std::string("Space") : ch;
+      } else {
+        name += kNames[int(k.key)];
+      }
+      printf("   -> %s\r\n", name.c_str());
+      if (k.is('q')) quit = true;
+    }
+    fflush(stdout);
+  }
+  mico::tty::leave_raw();
+  return 0;
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   // The MCP server agents start: nothing else of mico, and only JSON on stdout.
@@ -136,6 +202,32 @@ int main(int argc, char** argv) {
       return mico::run_api_test();
     } else if (!strcmp(argv[i], "--spawn-agent") && i + 1 < argc) {
       spawn_agent = argv[++i];
+    } else if (!strcmp(argv[i], "--keys")) {
+      return show_keys();
+    } else if (!strcmp(argv[i], "--background") && i + 1 < argc) {
+      // Replays a Claude transcript's background work: every start, event
+      // and end, and what was still running at its last line.
+      const char* file = argv[++i];
+      std::ifstream f(file, std::ios::binary);
+      std::string line;
+      mico::BackgroundTasks t;
+      uint64_t at = 0;
+      std::vector<std::string> seen;
+      while (std::getline(f, line)) {
+        const auto before = t.running;
+        mico::claude_adapter().read_background(line, at, t);
+        for (const auto& r : t.running)
+          if (std::none_of(before.begin(), before.end(), [&](const auto& b) { return b.id == r.id; }))
+            printf("byte %llu: started %s %s: %s\n", (unsigned long long)at, r.kind.c_str(), r.id.c_str(), r.what.c_str());
+        for (const auto& b : before)
+          if (std::none_of(t.running.begin(), t.running.end(), [&](const auto& r) { return r.id == b.id; }))
+            printf("byte %llu: ended %s %s\n", (unsigned long long)at, b.kind.c_str(), b.id.c_str());
+        at += line.size() + 1;
+      }
+      printf("running at the end: %zu\n", t.running.size());
+      for (const auto& r : t.running)
+        printf("  %s %s: %s (%d events)\n", r.kind.c_str(), r.id.c_str(), r.what.c_str(), r.events);
+      return 0;
     } else if (!strcmp(argv[i], "--vt") && i + 1 < argc) {
       vt_file = argv[++i];
     } else if (!strcmp(argv[i], "--project") && i + 1 < argc) {

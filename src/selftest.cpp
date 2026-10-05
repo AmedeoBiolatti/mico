@@ -48,7 +48,7 @@
 #include "views/chat_render.h"
 #include "views/code.h"
 #include "views/diagram.h"
-#include "views/progress.h"
+#include "base/progress.h"
 #include "views/json_view.h"
 #include "views/notebook.h"
 #include "core/settings.h"
@@ -3486,6 +3486,18 @@ int run_selftest() {
               "Ctrl+Backspace reaches the agent as BS");
   }
 
+  // Ctrl+digit has no byte of its own: it arrives only as kitty's CSI u or
+  // xterm's modifyOtherKeys, and both must read as the same key.
+  {
+    InputDecoder d;
+    d.feed("\x1b[49;5u\x1b[27;5;50~\x1b[51;3u");
+    auto one = d.next(), two = d.next(), three = d.next();
+    check(one && one->key.key == Key::Char && one->key.ch == '1' && one->key.ctrl && !one->key.alt,
+          "CSI 49;5u is Ctrl+1");
+    check(two && two->key.ch == '2' && two->key.ctrl, "CSI 27;5;50~ (modifyOtherKeys) is Ctrl+2");
+    check(three && three->key.ch == '3' && three->key.alt && !three->key.ctrl, "CSI 51;3u is Alt+3");
+  }
+
   // Enter is CR in a raw terminal and Ctrl+J is LF. Collapsing them into a
   // single Enter made the multi-line prompt unreachable.
   {
@@ -3634,6 +3646,76 @@ int run_selftest() {
     check(App::announce(shown, true, false), "an unfocused terminal is told even of the chat it shows");
     check(App::announce(hidden, false, true) && !App::announce(shown, false, true),
           "without focus reports, only a chat not shown is announced");
+  }
+
+  // Claude's background work, from the lines it writes: what is running now.
+  {
+    BackgroundTasks t;
+    const auto feed = [&](const std::string& line, uint64_t at = 0) { claude_adapter().read_background(line, at, t); };
+    const std::string ts = "\"timestamp\":\"2026-10-01T09:34:00.000Z\"";
+    feed("{\"type\":\"assistant\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"m1\",\"name\":\"Monitor\","
+         "\"input\":{\"description\":\"perf sweep\",\"timeout_ms\":300000,\"command\":\"tail -f x\"}}]}}", 100);
+    check(t.running.empty(), "a monitor call alone starts nothing");
+    feed("{\"type\":\"user\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"m1\","
+         "\"content\":\"Monitor started (task b4zoqx6hu)\"}]},\"toolUseResult\":{\"taskId\":\"b4zoqx6hu\",\"timeoutMs\":300000}}");
+    check(t.running.size() == 1 && t.running[0].id == "b4zoqx6hu" && t.running[0].kind == "monitor" &&
+              t.running[0].what == "perf sweep" && t.running[0].offset == 100 && t.running[0].expires_ms > 0,
+          "a monitor runs once its result names the task");
+    feed("{\"type\":\"assistant\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"b1\",\"name\":\"Bash\","
+         "\"input\":{\"command\":\"make -j8\"}},{\"type\":\"tool_use\",\"id\":\"b2\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}");
+    feed("{\"type\":\"user\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"b1\","
+         "\"content\":\"moved to the background (ID: blfsbvne0). Output is being written to: /tmp/claude-1000/-w/s/tasks/blfsbvne0.output. "
+         "You will be notified\"}]},\"toolUseResult\":{\"stdout\":\"\",\"backgroundTaskId\":\"blfsbvne0\"}}");
+    check(t.running.size() == 2 && t.running[1].output == "/tmp/claude-1000/-w/s/tasks/blfsbvne0.output",
+          "a background command's output file, from its result");
+    feed("{\"type\":\"user\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"b2\","
+         "\"content\":\"a.txt\"}]},\"toolUseResult\":{\"stdout\":\"a.txt\"}}");
+    check(t.running.size() == 2 && t.running[1].kind == "shell" && t.running[1].what == "make -j8" && t.calls.empty(),
+          "a command moved to the background runs; one that finished does not");
+    check(t.running[0].output.empty(), "a monitor's result names no output file");
+    const std::string event = "<task-notification>\\n<task-id>b4zoqx6hu</task-id>\\n<summary>Monitor event: &quot;perf sweep&quot;"
+                              "</summary>\\n<event>skip_terrain: 5.66 ms</event>\\n</task-notification>";
+    feed("{\"type\":\"queue-operation\",\"operation\":\"enqueue\"," + ts + ",\"content\":\"" + event + "\"}");
+    feed("{\"type\":\"attachment\"," + ts + ",\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"" + event + "\"}}");
+    check(t.running[0].events == 1 && t.running[0].last_event == "skip_terrain: 5.66 ms",
+          "a monitor's event, counted once though recorded twice");
+    feed("{\"type\":\"user\"," + ts + ",\"message\":{\"role\":\"user\",\"content\":\"<task-notification>\\n<task-id>blfsbvne0</task-id>"
+         "\\n<status>completed</status>\\n<summary>Background command done</summary>\\n</task-notification>\"}}");
+    check(t.running.size() == 1 && t.running[0].id == "b4zoqx6hu", "a completed command is no longer running");
+    feed("{\"type\":\"assistant\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"s1\",\"name\":\"TaskStop\","
+         "\"input\":{\"task_id\":\"b4zoqx6hu\"}}]}}");
+    feed("{\"type\":\"user\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"s1\",\"content\":\"stopped\"}]}}");
+    check(t.running.empty(), "a monitor TaskStop stopped is no longer running");
+    // Another monitor, ended by its expiry notice; a third by the clock.
+    feed("{\"type\":\"assistant\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"m2\",\"name\":\"Monitor\",\"input\":{}}]}}");
+    feed("{\"type\":\"user\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"m2\"}]},\"toolUseResult\":{\"taskId\":\"x2\"}}");
+    feed("{\"type\":\"user\"," + ts + ",\"message\":{\"content\":\"<task-notification>\\n<task-id>x2</task-id>\\n<event>[Monitor expired "
+         "after 5m with 0 events delivered.]</event>\\n</task-notification>\"}}");
+    check(t.running.empty(), "a monitor's expiry ends it");
+    feed("{\"type\":\"assistant\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"m3\",\"name\":\"Monitor\",\"input\":{}}]}}");
+    feed("{\"type\":\"user\"," + ts + ",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"m3\"}]},\"toolUseResult\":{\"taskId\":\"x3\"}}");
+    check(t.running.size() == 1 && t.running[0].expires_ms == t.running[0].started_ms + 300000,
+          "a monitor that names no timeout gets Claude's five minutes");
+    t.expire(t.running[0].expires_ms + 61000);
+    check(t.running.empty(), "a monitor long past its time is let go");
+    BackgroundTask pt;
+    pt.fraction = 0.45;
+    pt.done = 450;
+    pt.total = 1000;
+    pt.eta_s = 125;
+    check(background_progress(pt, 0) == "45% \xC2\xB7 450/1000 \xC2\xB7 2m 05s left", "a task's progress, in words");
+    check(background_progress(pt, 4).starts_with("\xE2\x96\x95") && background_percent({pt}) == " 45%",
+          "with a bar, and as a percentage");
+    pt.fraction = -1;
+    check(background_progress(pt, 4).empty() && background_percent({pt}).empty(), "no progress printed, none shown");
+    const auto task = [](const char* kind) {
+      BackgroundTask b;
+      b.kind = kind;
+      return b;
+    };
+    check(background_summary({task("monitor"), task("monitor"), task("shell")}) ==
+              "2 monitors \xC2\xB7 1 command",
+          "what runs in the background, in words");
   }
 
   // Memory by process tree, from /proc: what names the agent behind a kill.

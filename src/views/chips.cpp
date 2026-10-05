@@ -1,9 +1,12 @@
+#include <algorithm>
+#include <ctime>
 #include <string>
 #include <vector>
 
 #include "adapters/adapters.h"
 #include "core/models.h"
 #include "model/state.h"
+#include "base/progress.h"
 #include "base/text.h"
 #include "ui/app.h"
 #include "views/views.h"
@@ -40,6 +43,65 @@ ChipSpec spec_for(const std::string& agent, const ChipControl& c) {
 }
 
 }  // namespace
+
+std::string background_summary(const std::vector<BackgroundTask>& tasks) {
+  int monitors = 0, commands = 0;
+  for (const auto& t : tasks) (t.kind == "monitor" ? monitors : commands)++;
+  std::string s;
+  if (monitors) s = std::to_string(monitors) + (monitors == 1 ? " monitor" : " monitors");
+  if (commands)
+    s += (s.empty() ? "" : " \xC2\xB7 ") + std::to_string(commands) + (commands == 1 ? " command" : " commands");
+  return s;
+}
+
+std::string background_progress(const BackgroundTask& t, int cols) {
+  if (t.fraction < 0) return {};
+  const double f = std::clamp(t.fraction, 0.0, 1.0);
+  std::string s;
+  if (cols > 0) s = "\xE2\x96\x95" + progress::bar(f, cols) + "\xE2\x96\x8F ";
+  s += std::to_string(int(f * 100 + 0.5)) + "%";
+  if (t.done >= 0 && t.total > 0) s += " \xC2\xB7 " + std::to_string(t.done) + "/" + std::to_string(t.total);
+  int left = t.eta_s;
+  if (left < 0 && t.since_ms > 0 && f > t.since_fraction && f < 1) {
+    const double secs = double(int64_t(time(nullptr)) * 1000 - t.since_ms) / 1000.0;
+    if (secs >= 3) left = int((1 - f) * secs / (f - t.since_fraction));
+  }
+  if (left >= 0 && f < 1) s += " \xC2\xB7 " + progress::duration(left) + " left";
+  return s;
+}
+
+std::string background_percent(const std::vector<BackgroundTask>& tasks) {
+  for (const auto& t : tasks)
+    if (t.fraction >= 0) return " " + std::to_string(int(std::clamp(t.fraction, 0.0, 1.0) * 100 + 0.5)) + "%";
+  return {};
+}
+
+std::vector<PickItem> background_items(const std::vector<BackgroundTask>& tasks, const Theme& th) {
+  const int64_t now = int64_t(time(nullptr)) * 1000;
+  const auto span = [](int64_t ms) {
+    const int64_t s = std::max<int64_t>(0, ms / 1000);
+    return s < 60 ? std::to_string(s) + "s" : s < 3600 ? std::to_string(s / 60) + "m" : std::to_string(s / 3600) + "h";
+  };
+  std::vector<PickItem> items;
+  for (const auto& t : tasks) {
+    PickItem it;
+    it.label = t.what.empty() ? t.id : t.what;
+    it.lead = t.kind == "monitor" ? "\xE2\x97\x89" : "\xE2\x96\xB6";  // ◉ a monitor, ▶ a command
+    it.lead_color = th.working;
+    it.group = t.kind == "monitor" ? "Monitors" : "Commands";
+    std::string d = background_progress(t, 10);
+    d += (d.empty() ? "" : " \xC2\xB7 ") + (t.started_ms ? "running " + span(now - t.started_ms) : std::string("running"));
+    if (t.expires_ms) d += ", ends in " + span(t.expires_ms - now);
+    if (t.events)
+      d += " \xC2\xB7 " + std::to_string(t.events) + (t.events == 1 ? " event" : " events") +
+           (t.last_event.empty() ? "" : ", last " + span(now - t.last_event_ms) + " ago: " + t.last_event);
+    it.detail = d;
+    it.hint = t.id;
+    it.id = "bg:" + std::to_string(t.offset);
+    items.push_back(std::move(it));
+  }
+  return items;
+}
 
 std::string chip_command(const std::string& key) {
   // Kept for the tests / callers that only ask "is this chip actionable".

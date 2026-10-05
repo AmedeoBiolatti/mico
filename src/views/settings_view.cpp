@@ -80,6 +80,15 @@ std::vector<Section> sections() {
   };
   s.push_back({"Appearance", "the colours everything is drawn in; applies at once", {}});
   s.back().rows.push_back(std::move(theme));
+  Row layout;
+  layout.label = "Layout";
+  layout.names = {"auto", "wide", "compact"};
+  layout.details = {"compact below 80 columns, as on a phone; wide above",
+                    "the sidebar and the chat side by side, whatever the width",
+                    "one pane at a time, with a bar to go back and a menu (\xE2\x89\xA1)"};
+  layout.get = [] { return int(layout_mode()); };
+  layout.set = [](int i) { set_layout_mode(LayoutMode(i)); };
+  s.back().rows.push_back(std::move(layout));
 
   s.push_back({"Rendering", "how the chat draws what agents write; applies at once", {}});
   for (size_t part = 0; part < render_choices().size(); part++) s.back().rows.push_back(render_row(part));
@@ -126,9 +135,16 @@ class SettingsView final : public Pane {
     rows_.clear();
     sections_ = sections();
     const int W = p.width();
-    int y = -scroll_, index = 0, label_w = 0;
+    int y = -scroll_, index = 0, label_w = 0, ways_w = 0;
     for (const auto& sec : sections_)
-      for (const auto& r : sec.rows) label_w = std::max(label_w, text::str_width(r.label));
+      for (const auto& r : sec.rows) {
+        label_w = std::max(label_w, text::str_width(r.label));
+        int w = 0;
+        for (const auto& n : r.names) w += text::str_width(n) + 3;
+        ways_w = std::max(ways_w, w);
+      }
+    // What each way does is set in one column, to the right of the widest row of ways.
+    const int detail_x = 3 + label_w + 3 + ways_w + 1;
     const auto line = [&](auto&& draw) {
       if (y >= 0 && y < p.height()) draw(y);
       y++;
@@ -165,8 +181,8 @@ class SettingsView final : public Pane {
             hits_.push_back({r, x, x + w, me, int(i)});
             x += w + 1;
           }
-          if (x + 3 < W - 2)
-            p.text_clipped(x + 2, r, row.details[size_t(cur)], Style{th.dim, bg}, W - x - 3);
+          if (detail_x + 3 < W - 2)
+            p.text_clipped(detail_x, r, row.details[size_t(cur)], Style{th.code_comment, bg}, W - detail_x - 1);
         });
       }
     }

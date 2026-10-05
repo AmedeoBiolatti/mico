@@ -18,7 +18,8 @@
 #include "views/chat_render.h"
 #include "views/completion.h"
 #include "views/outline.h"
-#include "views/progress.h"
+#include "base/progress.h"
+#include "core/answers.h"
 #include "views/find_bar.h"
 #include "views/prompt_editor.h"
 #include "core/clipboard.h"
@@ -243,6 +244,7 @@ class SessionPane final : public Pane {
     if (chips) {
       Painter strip = p.sub(Rect{0, chip_row_, p.width(), 1});
       chat_.render_chips(strip, th, chips_);
+      draw_background(strip, th);
     }
     if (find_h)
       find_.render(p.sub(Rect{0, p.height() - prompt_h - 1, p.width(), 1}), th, chat_);
@@ -406,46 +408,24 @@ class SessionPane final : public Pane {
       p.text_clipped(4, y, "Esc close \xC2\xB7 not saved in the chat", Style{th.dim, th.panel, attr::kItalic}, w);
   }
 
-  // Where claude offers "Tab to amend", the first choice ("Yes") and a last
-  // "No" take a line for claude: an instruction, or the reason for refusing.
-  bool permission_takes_note(int i) const {
-    if (!perm_.amend) return false;
-    if (i == 0) return true;
-    return i == int(perm_.options.size()) - 1 && perm_.options[size_t(i)].starts_with("No");
-  }
+  bool permission_takes_note(int i) const { return mico::permission_takes_note(perm_, i); }
 
   // Walks the agent's cursor to the choice and confirms it, typing a note into
-  // the choice first when it takes one. Paced like a question's answer. Codex
-  // skips a disabled choice on the way, so it takes no key of its own.
+  // the choice first when it takes one. Paced like a question's answer.
   void answer_permission(int i) {
     if (!perm_live_ || i < 0 || i >= int(perm_.options.size())) return;
-    const auto off = [&](int k) { return k < int(perm_.disabled.size()) && perm_.disabled[size_t(k)]; };
-    if (off(i)) return;
     if (s_->answer_sending()) {
       app_->set_status("still answering — F2 to finish in the terminal");
       return;
     }
-    std::vector<std::string> steps;
-    for (int cur = perm_.cursor; cur != i;) {
-      cur += cur < i ? 1 : -1;
-      if (!off(cur)) steps.emplace_back(cur > perm_.cursor ? "\x1b[B" : "\x1b[A");
-    }
-    std::string note = text::oneline(perm_note_, 2000);
-    const bool inline_note = !note.empty() && permission_takes_note(i);
-    if (inline_note) {
-      steps.emplace_back("\t");
-      steps.push_back(note);
-    }
-    steps.emplace_back("\r");
-    if (!s_->send_answer(steps)) {
+    PermissionAnswer answer;
+    if (!permission_answer(perm_, i, perm_note_, answer)) return;  // a choice shown as off
+    if (!s_->send_answer(answer.steps)) {
       app_->set_status("could not answer — F2 to finish in the terminal");
       return;
     }
     answering_question_ = false;
-    // A choice with no room for a note ("always allow …") still gets it, as a
-    // message right after.
-    if (!note.empty() && !inline_note)
-      s_->send_after_answer("Note on my answer to \"" + perm_.question + "\": " + note);
+    if (!answer.after.empty()) s_->send_after_answer(std::move(answer.after));
     perm_note_.clear();
     app_->set_status("answering: " + text::oneline(perm_.options[size_t(i)], 60));
   }
@@ -1120,6 +1100,22 @@ class SessionPane final : public Pane {
 
   std::string take_url() override { return chat_.take_url(); }
 
+  // At the strip's right end, what the agent runs in the background, as its
+  // own footer says it ("2 monitors still running"): a chip that lists them.
+  void draw_background(Painter& p, const Theme& th) {
+    if (s_->background().empty()) return;
+    const std::string text = background_summary(s_->background()) + " running" + background_percent(s_->background()) + " ";
+    const int w = text::str_width(text) + 3;
+    int used = 0;
+    for (const auto& c : chips_) used = std::max(used, c.rect.x + c.rect.w);
+    const int x = p.width() - w - 1;
+    if (x < used + 2) return;
+    p.put(x, 0, U'\u25C9', Style{th.working, th.strip_bg, attr::kBold});  // ◉
+    p.text(x + 2, 0, text, Style{th.working, th.strip_bg});
+    p.text(x + 2 + text::str_width(text), 0, "\xE2\x96\xBE", Style{th.accent, th.strip_bg});
+    chips_.push_back(ChatRenderer::Chip{Rect{x, 0, w, 1}, "background"});
+  }
+
   bool on_mouse(const MouseEvent& m, Point local) override {
     if (!showing_raw() && comp_rect_.w > 0 && comp_rect_.contains(local)) {
       const Picker::Result r =
@@ -1132,6 +1128,11 @@ class SessionPane final : public Pane {
       for (const auto& c : chips_)
         if (local.x >= c.rect.x && local.x < c.rect.x + c.rect.w) {
           const Point chip{m.pos.x - local.x + c.rect.x, m.pos.y};
+          if (c.key == "background") {
+            app_->open_picker_above(this, chip, "Running in the background \xC2\xB7 enter shows where it started",
+                                    background_items(s_->background(), app_->theme()));
+            return true;
+          }
           open_chip_picker(app_, this, chip, chat_.state(), c.key, !s_->exited(), s_->agent());
           return true;
         }
@@ -1177,8 +1178,18 @@ class SessionPane final : public Pane {
     // left-click does.
     if (!showing_raw() && chip_row_ >= 0 && local.y == chip_row_) {
       for (const auto& c : chips_)
-        if (local.x >= c.rect.x && local.x < c.rect.x + c.rect.w)
+        if (local.x >= c.rect.x && local.x < c.rect.x + c.rect.w) {
+          if (c.key == "background") {
+            std::vector<MenuItem> items;
+            for (const PickItem& it : background_items(s_->background(), app_->theme())) {
+              MenuItem mi{it.label, it.id};
+              mi.detail = it.detail;
+              items.push_back(std::move(mi));
+            }
+            return items;
+          }
           return chip_menu(chat_.state(), c.key, !s_->exited(), s_->agent());
+        }
     }
 
     std::vector<MenuItem> items;
@@ -1207,6 +1218,12 @@ class SessionPane final : public Pane {
 
   void on_action(const std::string& a) override {
     if (a == "toggle_view") { toggle_view(); return; }
+    if (a.starts_with("bg:")) {
+      // Where the task was started: the call, in this chat.
+      if (showing_raw()) toggle_view();
+      chat_.reveal(std::strtoull(a.c_str() + 3, nullptr, 10), {});
+      return;
+    }
     if (a == "outline") {
       if (!showing_raw()) open_outline(app_, this, chat_);
       return;

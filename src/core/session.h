@@ -165,6 +165,10 @@ class LiveSession {
   bool unseen() const { return unseen_; }
   void mark_seen() { unseen_ = false; }
   std::string label() const;
+  // What the agent is running in the background now — monitors, commands it
+  // moved off its turn — from the lines it writes while this process runs:
+  // what an earlier process left running went with it.
+  const std::vector<BackgroundTask>& background() const { return bg_.running; }
   // Who this is, for a crash report: "claude <id> in <folder>". Kept, so the
   // pointer outlives the call (see logs::doing()).
   const char* crumb();
@@ -174,6 +178,9 @@ class LiveSession {
  private:
   void discover_transcript();
   void follow_turns();
+  bool follow_background();
+  bool read_background_progress();
+  std::string find_task_output(const std::string& id);
 
   Pty pty_;
   Vt vt_;
@@ -248,6 +255,14 @@ class LiveSession {
   bool msg_feedback_ = false;
   int last_w_ = 0, last_h_ = 0;
   std::string crumb_, crumb_id_;
+  BackgroundTasks bg_;
+  std::string bg_file_;   // the transcript being followed
+  uint64_t bg_read_ = 0;  // how far
+  std::string bg_line_;   // a line not yet ended
+  bool bg_skip_ = false;  // the rest of a line too long to hold
+  int64_t bg_poll_ms_ = 0;
+  int64_t bg_progress_ms_ = 0;
+  std::string bg_tasks_dir_;  // where Claude writes this session's task output
 };
 
 

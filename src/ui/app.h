@@ -13,6 +13,13 @@
 
 namespace mico {
 
+// The layout, as Settings → Appearance chooses it: compact below
+// kCompactWidth columns, or always one or the other. Kept in
+// ~/.config/mico/layout.
+enum class LayoutMode : uint8_t { Auto, Wide, Compact };
+LayoutMode layout_mode();
+void set_layout_mode(LayoutMode m);
+
 // What a keystroke asks the surrounding process to do. The App never decides
 // this itself: detaching means something different to a client attached over a
 // socket than it does to a single local process.
@@ -102,6 +109,17 @@ class App {
   // The unified chat list selects either a running session or a stored
   // transcript; exactly one is active at a time.
   void select_live(LiveSession* s);
+  // Compact: on a narrow terminal (a phone) one pane fills the screen at a
+  // time — the folders, a folder's chats, or the chat (or another tab) — and
+  // the tab strip becomes a bar with a way back and a menu that does what
+  // the function keys do. Choosing a folder goes on to its chats, opening a
+  // chat to the chat.
+  enum class Screen { Folders, Chats, Main };
+  static constexpr int kCompactWidth = 80;
+  bool compact() const { return compact_; }
+  void compact_show(Screen s);
+  void compact_back();
+
   // Selects a running chat and shows it, from another tab.
   void open_live(LiveSession* s) {
     select_live(s);
@@ -389,6 +407,13 @@ class App {
   void render_prompt(Surface& s);
   void render_command(Surface& s);
   void render_tabs(Surface& s);
+  void render_compact_bar(Surface& s);
+  void open_compact_menu();
+  // Where a placed pane draws: inside its border, or all of it in compact.
+  Rect inner_of(const Node::Placed& p) const { return compact_ ? p.rect : p.rect.inset(1, 1); }
+  bool compact_ = false;
+  Screen screen_ = Screen::Main;
+  Rect back_hit_{}, menu_hit_{};
   bool command_key(const KeyEvent& k);
   bool prompt_key(const KeyEvent& k);
   void prompt_submit();

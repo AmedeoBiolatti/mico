@@ -1,5 +1,6 @@
 #pragma once
 #include "adapters/adapters.h"
+#include "model/background.h"
 #include "ui/pane.h"
 #include "ui/picker.h"
 #include "ui/theme.h"
@@ -50,6 +51,18 @@ std::vector<MenuItem> chip_menu(const SessionState& st, const std::string& key, 
                                 const std::string& agent);
 // Command an agent understands for changing `key`, or empty if none is known.
 std::string chip_command(const std::string& key);
+// What an agent runs in the background, in words: "2 monitors · 1 command".
+std::string background_summary(const std::vector<BackgroundTask>& tasks);
+// How far a task has got, when it prints progress: "▕████▌    ▏ 45% ·
+// 450/1000 · 2m left", the bar `cols` cells wide (0 for none). The time left
+// is the task's own estimate, else worked out from its pace. Empty when it
+// prints none.
+std::string background_progress(const BackgroundTask& t, int cols);
+// The percentage of the first running task that shows one: " 45%", or "".
+std::string background_percent(const std::vector<BackgroundTask>& tasks);
+// Each task as a picker row: what it is, how long it has run, its last event.
+// Choosing one gives "bg:<offset>", the line of the call that started it.
+std::vector<PickItem> background_items(const std::vector<BackgroundTask>& tasks, const Theme& th);
 }  // namespace mico
 
 namespace mico {

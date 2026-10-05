@@ -161,6 +161,22 @@ with tempfile.TemporaryDirectory(prefix='mico-web-') as directory:
         check(any(m['type'] == 'chat' and m['where'] == 'newer' and
                   any(e.get('text') == 'and live updates' for e in m['events']) for m in got),
               'a line written to the transcript reaches the browser')
+        # Behind `tailscale serve`: one more host, over https, and no other.
+        tail = 'box.tail1234.ts.net'
+        check(http(port, '/', {'Host': tail})[1] == 421, 'a tailnet name is refused until it is configured')
+        (root / 'mico/web-host').write_text(tail + '\n')
+        _, status, head, body = http(port, '/', {'Host': tail})
+        check(status == 200 and b'<title>mico</title>' in body, 'the page is served to the configured host')
+        check(f'wss://{tail}' in head, 'whose CSP lets the page open its wss socket')
+        check(http(port, '/', {'Host': 'other.ts.net'})[1] == 421, 'and still to no other')
+        check(http(port, '/', own)[1] == 200, 'the local address still works')
+        remote = WebSocket(port, token, origin=f'https://{tail}', host=tail)
+        check(remote.status == 101, 'a socket from the https page of that host opens')
+        check(WebSocket(port, token, origin='https://evil.example', host=tail).status == 403,
+              'nor from another site')
+        check(WebSocket(port, 'f' * 64, origin=f'https://{tail}', host=tail).status == 403, 'and the token is still wanted')
+        (root / 'mico/web-host').write_text('Not A Host!\n')
+        check(http(port, '/', {'Host': tail})[1] == 421, 'a malformed host setting opens nothing')
         if not failures:
             print('web view: page, checks and protocol passed')
     finally:

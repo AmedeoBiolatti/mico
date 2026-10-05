@@ -20,6 +20,7 @@ class ClaudeAdapter final : public Adapter {
 
   // tools.cpp
   void read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const override;
+  void read_background(std::string_view raw, uint64_t offset, BackgroundTasks& t) const override;
 
   // usage.cpp
   void read_usage(LineReader& j, UsageEntry& e, UsageResume& r) const override;
