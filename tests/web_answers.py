@@ -93,7 +93,8 @@ class WebSocket:
         host = f'127.0.0.1:{port}'
         self.sock = socket.create_connection(('127.0.0.1', port), timeout=5)
         key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((f'GET /ws?token={token} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n'
+        self.sock.sendall((f'GET /ws HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n'
+                           f'Sec-WebSocket-Protocol: mico, mico-token.{token}\r\n'
                            f'Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n'
                            f'Sec-WebSocket-Version: 13\r\n\r\n').encode())
         self.buf = bytearray()

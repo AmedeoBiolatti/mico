@@ -273,7 +273,7 @@ class GitView final : public Pane {
     }
     if (wst)
       for (const auto& e : wst->entries) files_.push_back(FileRow{e, {}, false, nullptr, nullptr});
-    if (const auto* q = git().query(wt_, {"diff", "--numstat", "-z", "HEAD"}); q && q->ok)
+    if (const auto* q = git().query(wt_, {"diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z", "HEAD"}); q && q->ok)
       for (const auto& [path, n] : parse_numstat(q->out))
         for (FileRow& f : files_)
           if (f.e.path == path) {
@@ -604,8 +604,8 @@ class GitView final : public Pane {
         if (f.chat) note("last changed by " + chat_label(*f.chat) + " \xC2\xB7 enter opens the chat there");
         else note("no chat mico knows changed it since the last commit");
         const GitIndex::Query* q =
-            f.e.x == '?' ? git().query(wt_, {"diff", "--no-color", "--no-index", "--", "/dev/null", f.e.path}, 30000, true)
-                         : git().query(wt_, {"diff", "--no-color", "--find-renames", "HEAD", "--", f.e.path});
+            f.e.x == '?' ? git().query(wt_, {"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-index", "--", "/dev/null", f.e.path}, 30000, true)
+                         : git().query(wt_, {"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "HEAD", "--", f.e.path});
         if (!q) note("reading the diff\xE2\x80\xA6");
         else {
           parse_patch(q->out, root, one);

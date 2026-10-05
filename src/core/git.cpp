@@ -52,7 +52,11 @@ bool run_git(const std::string& dir, const std::vector<std::string>& args, std::
   out.clear();
   const std::string& git = git_path();
   if (git.empty()) return false;
-  std::vector<std::string> all = {"git", "--no-optional-locks", "-c", "core.quotepath=off", "-C", dir};
+  // A repository's own config can name programs for git to run: an fsmonitor
+  // hook on every status. mico asks about every tracked folder unbidden, so
+  // that one is off; diffs are asked for with --no-ext-diff --no-textconv.
+  std::vector<std::string> all = {"git", "--no-optional-locks", "-c", "core.quotepath=off",
+                                  "-c", "core.fsmonitor=false", "-C", dir};
   all.insert(all.end(), args.begin(), args.end());
   std::vector<char*> argv;
   for (auto& a : all) argv.push_back(a.data());
@@ -192,7 +196,7 @@ bool parse_status(std::string_view s, GitStatus& out) {
 
 // %H, %an, %at and %s, each ended by a NUL, then the patch.
 static const std::vector<std::string> kShowArgs = {
-    "show", "--no-color", "--no-ext-diff", "--find-renames", "--format=%H%x00%an%x00%at%x00%s%x00"};
+    "show", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--format=%H%x00%an%x00%at%x00%s%x00"};
 
 void parse_patch(std::string_view diff, const std::string& root, std::vector<FileChange>& out) {
   const auto absolute = [&](std::string_view rel) { return root.empty() ? std::string(rel) : root + "/" + std::string(rel); };

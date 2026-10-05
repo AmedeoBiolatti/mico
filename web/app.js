@@ -60,13 +60,14 @@ const STATUS = { working: "working", waiting: "needs you", idle: "ready", exited
 // ------------------------------------------------------------------ connection
 
 function connect() {
-  if (!token) {
-    $("empty-text").textContent = "No token. Open the address mico gave you: type :web in mico, which copies it.";
+  if (!/^[0-9a-f]{64}$/.test(token)) {
+    $("empty-text").textContent = "No token, or not a whole one. Open the address mico gave you: type :web in mico, which copies it.";
     return;
   }
   // Over https (tailscale serve) the socket is wss, from the same host.
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${scheme}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  // The token goes as a subprotocol, a header, so it is in no address a proxy logs.
+  const ws = new WebSocket(`${scheme}://${location.host}/ws`, ["mico", `mico-token.${token}`]);
   st.ws = ws;
   ws.onopen = () => {
     st.backoff = 500;

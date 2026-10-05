@@ -38,6 +38,9 @@ bool on_path(const char* tool) {
 // owner can take its time answering, or never answer at all.
 bool run(const std::vector<const char*>& argv, int timeout_ms, std::string& out) {
   constexpr size_t kMaxBytes = 64u << 20;  // a screenshot is a few MB
+  // Made before the fork: the child only execs.
+  std::vector<const char*> args = argv;
+  args.push_back(nullptr);
   int fds[2];
   if (pipe2(fds, O_CLOEXEC) != 0) return false;
   const pid_t pid = fork();
@@ -48,8 +51,6 @@ bool run(const std::vector<const char*>& argv, int timeout_ms, std::string& out)
     dup2(null, STDERR_FILENO);
     dup2(fds[1], STDOUT_FILENO);
     if (null > 2) close(null);
-    std::vector<const char*> args = argv;
-    args.push_back(nullptr);
     execvp(args[0], const_cast<char* const*>(args.data()));
     _exit(127);
   }

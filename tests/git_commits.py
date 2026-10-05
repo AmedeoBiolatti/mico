@@ -47,6 +47,12 @@ with tempfile.TemporaryDirectory(prefix='mico-git-') as directory:
     (repo / 'new.txt').write_text('hello\n')          # the chat wrote this one, below
     # A second work tree, on a branch of its own.
     git(repo, 'worktree', 'add', '-q', str(root / 'proj-wt'), '-b', 'feature')
+    # A repository whose config names a program for git to run on every status:
+    # mico asks git about the folder unbidden, and must never run it.
+    hook = root / 'fsmonitor-hook'
+    hook.write_text(f'#!/bin/sh\ntouch {root / "fsmonitor-ran"}\n')
+    hook.chmod(0o755)
+    git(repo, 'config', 'core.fsmonitor', str(hook))
 
     # A Claude chat in that folder that made the commit, and announced one
     # git has never had.
@@ -188,6 +194,7 @@ with tempfile.TemporaryDirectory(prefix='mico-git-') as directory:
         start_line = start_line[start_line.index(f' {start_hash} ') - 2:]
         assert '\u25c6' not in start_line, 'a commit by a person is marked as an agent\'s'
         assert 'Test' in start_line, 'a commit by a person is not shown by its author'
+        assert not (root / 'fsmonitor-ran').exists(), "a repository's core.fsmonitor program was run"
         print('git commits: status, commits by chat, :commit, :blame and the Git tab passed')
     finally:
         client.close()

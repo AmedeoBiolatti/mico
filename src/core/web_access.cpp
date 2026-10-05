@@ -50,8 +50,45 @@ void set_web(bool on, int port) {
   }
 }
 
-std::string web_token() {
+namespace {
+
+std::string& cached_token() {
   static std::string token;
+  return token;
+}
+
+// 32 random bytes as hex, written to `path` for the user alone; empty when
+// there is no randomness to be had, and then the web view stays shut.
+std::string make_token(const std::string& path) {
+  unsigned char b[32];
+  const int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+  const bool got = fd >= 0 && read(fd, b, sizeof b) == ssize_t(sizeof b);
+  if (fd >= 0) ::close(fd);
+  if (!got) return {};
+  static const char kHex[] = "0123456789abcdef";
+  std::string token;
+  for (unsigned char x : b) {
+    token += kHex[x >> 4];
+    token += kHex[x & 15];
+  }
+  // Written beside it and renamed over it: the old token stands until the new
+  // one is whole.
+  mkdir(config_dir().c_str(), 0700);
+  const std::string tmp = path + ".new";
+  unlink(tmp.c_str());
+  const int out = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (out < 0) return {};  // a token that could not be kept would not survive a restart
+  bool ok = write(out, (token + "\n").data(), token.size() + 1) == ssize_t(token.size() + 1);
+  ok = ::close(out) == 0 && ok;
+  if (ok && rename(tmp.c_str(), path.c_str()) == 0) return token;
+  unlink(tmp.c_str());
+  return {};
+}
+
+}  // namespace
+
+std::string web_token() {
+  std::string& token = cached_token();
   if (!token.empty()) return token;
   const std::string path = config_dir() + "/web-token";
   std::string buf;
@@ -63,24 +100,15 @@ std::string web_token() {
     token = std::string(v);
     return token;
   }
-  unsigned char b[32];
-  const int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-  const bool got = fd >= 0 && read(fd, b, sizeof b) == ssize_t(sizeof b);
-  if (fd >= 0) ::close(fd);
-  if (!got) return {};  // no randomness, no token: the web view stays shut
-  static const char kHex[] = "0123456789abcdef";
-  for (unsigned char x : b) {
-    token += kHex[x >> 4];
-    token += kHex[x & 15];
-  }
-  mkdir(config_dir().c_str(), 0700);
-  unlink(path.c_str());
-  const int out = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-  if (out >= 0) {
-    if (write(out, (token + "\n").data(), token.size() + 1) < 0) {}
-    ::close(out);
-  }
+  token = make_token(path);
   return token;
+}
+
+bool new_web_token() {
+  std::string t = make_token(config_dir() + "/web-token");
+  if (t.empty()) return false;
+  cached_token() = std::move(t);
+  return true;
 }
 
 std::string web_url() {

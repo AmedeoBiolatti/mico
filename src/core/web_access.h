@@ -15,6 +15,10 @@ void set_web(bool on, int port = 0);
 // The token, made on first use: 32 random bytes as hex. Anyone holding it can
 // do whatever mico can, so it lives in a file only the user can read.
 std::string web_token();
+// Replaces the token with a new one, for when an address with the old one went
+// somewhere it should not have. Browsers holding the old one are let go.
+// False when no new token could be made; the old one then stands.
+bool new_web_token();
 // Where to point a browser: the token rides in the fragment, which a browser
 // never sends to a server or puts in a Referer.
 std::string web_url();

@@ -518,6 +518,33 @@ int run_regression_tests() {
   }
 
   {
+    // An agent's environment: no session identity of whatever launched mico,
+    // the terminal it is drawn for, and everything else as it was.
+    setenv("CLAUDECODE", "1", 1);
+    setenv("MICO_TEST_LEAK", "1", 1);
+    setenv("LINES", "5", 1);
+    setenv("MICO_KEEP_NOT", "1", 1);
+    setenv("PLAIN_TEST_VAR", "kept", 1);
+    const std::string got = project + "/agent-env";
+    Pty p;
+    check(p.spawn({"/bin/sh", "-c", "env > '" + got + "'"}, project, 80, 24), "env: an agent starts");
+    std::string env;
+    for (int i = 0; i < 200; i++) {
+      std::ifstream f(got);
+      env.assign(std::istreambuf_iterator<char>(f), {});
+      if (env.find("PLAIN_TEST_VAR") != std::string::npos) break;
+      usleep(5000);
+    }
+    const auto has = [&](std::string_view line) { return ("\n" + env).find("\n" + std::string(line)) != std::string::npos; };
+    check(has("PLAIN_TEST_VAR=kept") && has("TERM=xterm-256color\n") && has("COLORTERM=truecolor\n"),
+          "env: an agent gets mico's environment and the terminal it is drawn for");
+    check(!has("CLAUDECODE=") && !has("MICO_TEST_LEAK=") && !has("MICO_KEEP_NOT=") && !has("LINES="),
+          "env: an agent gets no session identity of what launched mico, and no stale size");
+    for (const char* k : {"CLAUDECODE", "MICO_TEST_LEAK", "LINES", "MICO_KEEP_NOT", "PLAIN_TEST_VAR"}) unsetenv(k);
+    p.terminate();
+  }
+
+  {
     Pty pty;
     check(pty.spawn({"/bin/sh", "-c", "stty raw -echo; printf READY; exec cat"}, project, 80, 24),
           "start the paste backpressure fixture");

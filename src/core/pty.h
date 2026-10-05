@@ -7,9 +7,14 @@
 
 namespace mico {
 
-// Removes the variables that would make a spawned agent think it is a nested
-// session of whatever launched mico. Call in the child, before exec.
-void scrub_agent_env();
+// The environment a spawned agent gets: mico's, without the variables that
+// would make it think it is a nested session of whatever launched mico, then
+// `set` applied in order ("NAME=value" sets, a bare "NAME" removes). Built
+// before the fork: the daemon has threads, and a child of a process with
+// threads must not allocate or touch the environment before it execs.
+std::vector<std::string> agent_env(const std::vector<std::string>& set = {});
+// The NUL-terminated array execve wants, pointing into `env`.
+std::vector<char*> env_pointers(std::vector<std::string>& env);
 
 // A child process on a pseudo-terminal. mico spawns agents; it never tries to
 // attach to one already running, which would need ptrace and would break the

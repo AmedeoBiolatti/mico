@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -34,6 +35,29 @@ namespace {
 constexpr size_t kMaxRequest = 16u << 10;   // request line and headers
 constexpr size_t kMaxMessage = 1u << 20;    // one WebSocket message
 constexpr size_t kMaxQueued = 64u << 20;    // unsent output before a client is dropped
+constexpr size_t kMaxConns = 32;            // connections at once; more are turned away
+constexpr int64_t kHttpTimeoutMs = 10'000;  // for a request to arrive whole
+
+int64_t now_ms() {
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return int64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+// The token a browser offers: the subprotocol "mico-token.<hex>" among those
+// it lists. A header, not the address, so no proxy in front writes it to a log.
+std::string offered_token(std::string_view protocols) {
+  while (!protocols.empty()) {
+    const size_t comma = protocols.find(',');
+    std::string_view p = protocols.substr(0, comma);
+    while (!p.empty() && (p.front() == ' ' || p.front() == '\t')) p.remove_prefix(1);
+    while (!p.empty() && (p.back() == ' ' || p.back() == '\t')) p.remove_suffix(1);
+    if (p.starts_with("mico-token.")) return std::string(p.substr(11));
+    if (comma == std::string_view::npos) break;
+    protocols.remove_prefix(comma + 1);
+  }
+  return {};
+}
 
 std::string_view asset(const unsigned char* a, const unsigned char* b) {
   return {reinterpret_cast<const char*>(a), size_t(b - a)};
@@ -126,6 +150,8 @@ struct WebServer::Conn {
   bool ws = false;
   bool dead = false;
   bool closing = false;  // close once `out` drains
+  int64_t opened_ms = 0;
+  std::string token;     // the one it was let in with; another made since lets it go
   std::string message;   // a fragmented message, so far
   std::unique_ptr<api::Client> api;
 };
@@ -214,7 +240,19 @@ void WebServer::handle(const std::vector<pollfd>& fds) {
 
 void WebServer::pump() {
   std::vector<std::string> msgs;
+  const int64_t now = now_ms();
+  const std::string token = web_token();
   for (auto& c : conns_) {
+    // A request that never comes whole holds a connection for nothing.
+    if (!c->ws && !c->dead && now - c->opened_ms > kHttpTimeoutMs) c->dead = true;
+    // The token changed (:web new-token): whoever came in with the old one goes.
+    if (c->ws && !c->dead && !same_secret(c->token, token)) {
+      MLOG("web: a browser let go: the token changed");
+      send_frame(*c, 8, "\x03\xf0");  // 1008: policy
+      c->closing = true;
+      flush(*c);
+      continue;
+    }
     if (!c->ws || !c->api || c->dead) continue;
     msgs.clear();
     c->api->poll(msgs);
@@ -227,8 +265,13 @@ void WebServer::accept_all() {
   for (;;) {
     const int fd = accept4(lfd_, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
     if (fd < 0) return;
+    if (conns_.size() >= kMaxConns) {
+      close(fd);
+      continue;
+    }
     auto c = std::make_unique<Conn>();
     c->fd = fd;
+    c->opened_ms = now_ms();
     conns_.push_back(std::move(c));
   }
 }
@@ -258,7 +301,7 @@ void WebServer::read_http(Conn& c) {
     method = std::string(line.substr(0, a));
     target = std::string(line.substr(a + 1, b - a - 1));
   }
-  std::string host, origin, upgrade, connection, key, version;
+  std::string host, origin, upgrade, connection, key, version, protocols;
   for (size_t at = eol == std::string_view::npos ? req.size() : eol + 2; at < req.size();) {
     size_t e = req.find("\r\n", at);
     if (e == std::string_view::npos) e = req.size();
@@ -274,6 +317,7 @@ void WebServer::read_http(Conn& c) {
     else if (name == "connection") connection = lower(value);
     else if (name == "sec-websocket-key") key = value;
     else if (name == "sec-websocket-version") version = value;
+    else if (name == "sec-websocket-protocol") protocols += std::string(protocols.empty() ? "" : ",") + std::string(value);
   }
   c.in.erase(0, end + 4);
 
@@ -281,11 +325,8 @@ void WebServer::read_http(Conn& c) {
   // sends that name as the host.
   if (!allowed_host(host)) return respond(c, 421, "text/plain", "wrong host\n");
   if (method != "GET") return respond(c, 405, "text/plain", "GET only\n");
-  std::string path = target, query;
-  if (const size_t q = target.find('?'); q != std::string::npos) {
-    path = target.substr(0, q);
-    query = target.substr(q + 1);
-  }
+  std::string path = target;
+  if (const size_t q = target.find('?'); q != std::string::npos) path = target.substr(0, q);
 
   if (path == "/ws") {
     // The page came over http from 127.0.0.1, or over https from the name
@@ -293,22 +334,18 @@ void WebServer::read_http(Conn& c) {
     const std::string own = "http://" + host;
     const std::string remote = web_host();
     const bool forwarded = !remote.empty() && lower(host) == remote;
-    std::string token;
-    for (size_t at = 0; at <= query.size();) {
-      size_t e = query.find('&', at);
-      if (e == std::string::npos) e = query.size();
-      const std::string_view kv = std::string_view(query).substr(at, e - at);
-      if (kv.starts_with("token=")) token = std::string(kv.substr(6));
-      at = e + 1;
-    }
+    const std::string token = offered_token(protocols);
     if (upgrade != "websocket" || connection.find("upgrade") == std::string::npos || key.empty() || version != "13")
       return respond(c, 400, "text/plain", "a WebSocket is expected here\n");
     if (origin != own && !(forwarded && lower(origin) == "https://" + remote))
       return respond(c, 403, "text/plain", "wrong origin\n");
     if (!same_secret(token, web_token())) return respond(c, 403, "text/plain", "wrong token\n");
+    // The browser wants one of its subprotocols named back; "mico" is the one
+    // that says nothing secret.
     c.out += "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-             "Sec-WebSocket-Accept: " + websocket_accept(key) + "\r\n\r\n";
+             "Sec-WebSocket-Protocol: mico\r\nSec-WebSocket-Accept: " + websocket_accept(key) + "\r\n\r\n";
     c.ws = true;
+    c.token = token;
     c.api = std::make_unique<api::Client>(ws_);
     MLOG("web: a browser connected");
     flush(c);

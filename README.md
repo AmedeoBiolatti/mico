@@ -250,13 +250,17 @@ can be another client. It is for this machine only:
 
 - the daemon listens on 127.0.0.1, never on a network address;
 - the WebSocket needs the token, kept in `$XDG_CONFIG_HOME/mico/web-token`,
-  readable by you alone, and it never travels in a request: it rides in the
-  page address's fragment;
+  readable by you alone. It rides in the page address's fragment, which a
+  browser never sends, and reaches the daemon as a WebSocket subprotocol: a
+  header, never in an address a proxy would log. `:web new-token` makes a new
+  one, should an address have gone where it should not, and lets go every
+  browser that came in with the old;
 - a request naming any other host is refused, so a web page that points its own
   name at 127.0.0.1 gets nowhere, and so is a WebSocket opened from any other
   origin;
 - a client can open only chats mico lists, and start only agents mico has an
   adapter for, in folders you track.
+- at most 32 connections at once, and a request has ten seconds to arrive.
 
 **From a phone, over Tailscale.** The daemon still listens on 127.0.0.1 only;
 `tailscale serve` puts HTTPS in front of it, inside your tailnet:

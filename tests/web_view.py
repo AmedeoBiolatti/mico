@@ -40,12 +40,15 @@ def http(port, path, headers):
 
 
 class WebSocket:
-    def __init__(self, port, token, origin=None, host=None):
+    def __init__(self, port, token, origin=None, host=None, in_query=False):
         host = host or f'127.0.0.1:{port}'
         self.key = base64.b64encode(os.urandom(16)).decode()
-        self.sock, self.status, self.head, rest = http(port, f'/ws?token={token}', {
-            'Host': host, 'Origin': origin or f'http://{host}', 'Upgrade': 'websocket',
-            'Connection': 'Upgrade', 'Sec-WebSocket-Key': self.key, 'Sec-WebSocket-Version': '13'})
+        headers = {'Host': host, 'Origin': origin or f'http://{host}', 'Upgrade': 'websocket',
+                   'Connection': 'Upgrade', 'Sec-WebSocket-Key': self.key, 'Sec-WebSocket-Version': '13'}
+        if not in_query:
+            headers['Sec-WebSocket-Protocol'] = f'mico, mico-token.{token}'
+        path = f'/ws?token={token}' if in_query else '/ws'
+        self.sock, self.status, self.head, rest = http(port, path, headers)
         self.buf = bytearray(rest)
 
     def accept_ok(self):
@@ -177,6 +180,54 @@ with tempfile.TemporaryDirectory(prefix='mico-web-') as directory:
         check(WebSocket(port, 'f' * 64, origin=f'https://{tail}', host=tail).status == 403, 'and the token is still wanted')
         (root / 'mico/web-host').write_text('Not A Host!\n')
         check(http(port, '/', {'Host': tail})[1] == 421, 'a malformed host setting opens nothing')
+        # The token rides in a header, never in the address a proxy logs.
+        check(WebSocket(port, token, in_query=True).status == 403, 'a token in the query string is refused')
+        check('Sec-WebSocket-Protocol: mico\r\n' in remote.head and token not in remote.head,
+              'the socket names back the plain subprotocol, not the token')
+
+        # More connections than the cap: the extra ones are closed at once.
+        crowd = [socket.create_connection(('127.0.0.1', port), timeout=2) for _ in range(40)]
+        time.sleep(0.3)
+        closed = 0
+        for c in crowd:
+            c.settimeout(0.05)
+            try:
+                closed += c.recv(1) == b''
+            except (socket.timeout, ConnectionResetError):
+                pass
+        check(closed >= 8, f'connections past the cap are turned away ({closed} of 40 closed)')
+        for c in crowd:
+            c.close()
+        time.sleep(0.3)
+
+        # :web new-token: the old token stops working, and its browsers go.
+        tui = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        tui.connect(str(root / 'mico/default.sock'))
+        send = lambda kind, payload: tui.sendall(bytes([kind]) + struct.pack('<I', len(payload)) + payload)
+        send(1, struct.pack('<HH', 120, 40))
+        time.sleep(0.5)
+        send(2, b':web new-token\r')
+        for _ in range(100):
+            fresh = (root / 'mico/web-token').read_text().strip()
+            if fresh != token:
+                break
+            time.sleep(0.05)
+        check(len(fresh) == 64 and fresh != token and (os.stat(root / 'mico/web-token').st_mode & 0o077) == 0,
+              ':web new-token writes a new token, for the user alone')
+        ws.sock.settimeout(3)
+        got = b''
+        try:
+            while True:
+                chunk = ws.sock.recv(65536)
+                if not chunk:
+                    break
+                got += chunk
+        except (socket.timeout, ConnectionResetError):
+            pass
+        check(b'\x88\x02\x03\xf0' in got, 'a browser let in with the old token is closed (1008)')
+        check(WebSocket(port, token).status == 403, 'the old token opens nothing')
+        check(WebSocket(port, fresh).status == 101, 'the new one does')
+        tui.close()
         if not failures:
             print('web view: page, checks and protocol passed')
     finally:

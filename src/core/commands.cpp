@@ -6,6 +6,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+extern char** environ;
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -95,6 +97,11 @@ void CommandCatalog::start_probe(Entry& e, const Adapter& agent, const std::stri
   // Built before the fork: the child only execs.
   const std::vector<std::string> probe_argv = agent.command_probe_argv();
   const std::string ask = agent.command_probe_request();
+  std::vector<std::string> env = agent_env();
+  std::vector<char*> envp = env_pointers(env);
+  std::vector<char*> argv;
+  for (const std::string& a : probe_argv) argv.push_back(const_cast<char*>(a.c_str()));
+  argv.push_back(nullptr);
   int in[2], out[2];
   if (pipe2(in, O_CLOEXEC) != 0) return;
   if (pipe2(out, O_CLOEXEC) != 0) {
@@ -115,10 +122,7 @@ void CommandCatalog::start_probe(Entry& e, const Adapter& agent, const std::stri
     if (null > 2) close(null);
     if (chdir(cwd.c_str()) != 0) _exit(127);
     setsid();
-    scrub_agent_env();
-    std::vector<char*> argv;
-    for (const std::string& a : probe_argv) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
+    environ = envp.data();
     execvp(argv[0], argv.data());
     _exit(127);
   }

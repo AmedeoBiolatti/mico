@@ -41,6 +41,7 @@ const std::string& systemd_run() {
       MLOG("scopes: no systemd-run; agents share the daemon's cgroup");
       return std::string();
     }
+    const std::string unit = "--unit=mico-trial-" + std::to_string(getpid());
     const pid_t pid = fork();
     if (pid < 0) return std::string();
     if (pid == 0) {
@@ -50,7 +51,6 @@ const std::string& systemd_run() {
         dup2(null, 1);
         dup2(null, 2);
       }
-      const std::string unit = "--unit=mico-trial-" + std::to_string(getpid());
       execl(bin.c_str(), bin.c_str(), "--user", "--scope", "--quiet", "--collect", unit.c_str(), "--", "true",
             static_cast<char*>(nullptr));
       _exit(127);

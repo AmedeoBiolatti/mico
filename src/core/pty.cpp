@@ -24,23 +24,32 @@ namespace mico {
 // people use a tool like this — these variables make the child believe it is a
 // nested sub-session of its parent, and Claude Code then stops writing a
 // transcript at all, which silently breaks the chat view.
-void scrub_agent_env() {
-  static constexpr const char* kPrefixes[] = {"CLAUDE_", "CLAUDECODE", "CODEX_",
-                                              "ANTHROPIC_CLI_", "MICO_"};
-  std::vector<std::string> doomed;
+std::vector<std::string> agent_env(const std::vector<std::string>& set) {
+  static constexpr std::string_view kPrefixes[] = {"CLAUDE_", "CLAUDECODE", "CODEX_", "ANTHROPIC_CLI_", "MICO_"};
+  const auto name_of = [](std::string_view kv) { return kv.substr(0, kv.find('=')); };
+  std::vector<std::string> env;
   for (char** e = environ; e && *e; e++) {
-    std::string_view kv(*e);
-    size_t eq = kv.find('=');
-    if (eq == std::string_view::npos) continue;
-    std::string_view key = kv.substr(0, eq);
-    for (const char* pfx : kPrefixes) {
-      if (key.size() >= strlen(pfx) && key.compare(0, strlen(pfx), pfx) == 0) {
-        doomed.emplace_back(key);
-        break;
-      }
-    }
+    const std::string_view kv(*e);
+    if (kv.find('=') == std::string_view::npos) continue;
+    const std::string_view key = name_of(kv);
+    bool doomed = false;
+    for (const std::string_view pfx : kPrefixes) doomed |= key.starts_with(pfx);
+    if (!doomed) env.emplace_back(kv);
   }
-  for (const auto& k : doomed) unsetenv(k.c_str());
+  for (const std::string& s : set) {
+    const std::string_view key = name_of(s);
+    std::erase_if(env, [&](const std::string& kv) { return name_of(kv) == key; });
+    if (s.find('=') != std::string::npos) env.push_back(s);
+  }
+  return env;
+}
+
+std::vector<char*> env_pointers(std::vector<std::string>& env) {
+  std::vector<char*> out;
+  out.reserve(env.size() + 1);
+  for (auto& kv : env) out.push_back(kv.data());
+  out.push_back(nullptr);
+  return out;
 }
 
 Pty::~Pty() {
@@ -108,19 +117,21 @@ bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, in
   ws.ws_col = (unsigned short)(w > 0 ? w : 80);
   ws.ws_row = (unsigned short)(h > 0 ? h : 24);
 
+  // Agents key their rendering off TERM and COLORTERM; without them Claude Code
+  // drops to a degraded mode and the raw view stops looking like the real thing.
+  std::vector<std::string> env = agent_env({"TERM=xterm-256color", "COLORTERM=truecolor", "LINES", "COLUMNS"});
+  std::vector<char*> envp = env_pointers(env);
+  std::vector<char*> args;
+  args.reserve(run.size() + 1);
+  for (const auto& a : run) args.push_back(const_cast<char*>(a.c_str()));
+  args.push_back(nullptr);
+
   int master = -1;
   pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
   if (pid < 0) return false;
 
   if (pid == 0) {
     if (!cwd.empty()) { if (chdir(cwd.c_str()) != 0) _exit(127); }
-    // Agents key their rendering off these; without them Claude Code drops to a
-    // degraded mode and the raw view stops looking like the real thing.
-    scrub_agent_env();
-    setenv("TERM", "xterm-256color", 1);
-    setenv("COLORTERM", "truecolor", 1);
-    unsetenv("LINES");
-    unsetenv("COLUMNS");
     // Only its terminal goes with it. Inherited, the daemon's sockets and the
     // other agents' terminals would outlive mico in every agent and in what
     // they start (MCP servers, shells): closing a pane would not hang its
@@ -128,10 +139,7 @@ bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, in
     if (close_range(3, ~0u, 0) != 0)
       for (int fd = 3; fd < 4096; fd++) close(fd);
 
-    std::vector<char*> args;
-    args.reserve(run.size() + 1);
-    for (const auto& a : run) args.push_back(const_cast<char*>(a.c_str()));
-    args.push_back(nullptr);
+    environ = envp.data();  // execvp searches PATH with it, and passes it on
     execvp(args[0], args.data());
     _exit(127);
   }

@@ -1237,7 +1237,7 @@ constexpr Command kCommands[] = {
     {"blame", "go to the chat that last changed a line: blame <file>:<line>"},
     {"charts", "tell agents they can draw charts: charts on|off"},
     {"mcp", "give agents mico's tools (plot) over MCP: mcp on|off"},
-    {"web", "the web view, served by the daemon: web on [port] | off | tailscale | host <name>, or web to copy its address"},
+    {"web", "the web view, served by the daemon: web on [port] | off | tailscale | host <name> | new-token, or web to copy its address"},
     {"sessions", "show the sessions tab"},
     {"redraw", "repaint everything"},
     {"log", "show where the log file is"},
@@ -1420,6 +1420,16 @@ void App::run_command(std::string line) {
       copy_to_clipboard(web_remote_url());
       set_status("tailnet address copied. Now run: tailscale serve --bg " + std::to_string(web_port()) +
                  "  (never funnel)");
+      return;
+    }
+    if (arg == "new-token") {
+      if (!new_web_token()) {
+        set_status("web view: no new token could be made; the old one stands");
+        return;
+      }
+      if (web_enabled()) copy_to_clipboard(web_remote_url().empty() ? web_url() : web_remote_url());
+      set_status("web view: a new token; browsers with the old one are let go" +
+                 std::string(web_enabled() ? ", and the new address is on the clipboard" : ""));
       return;
     }
     if (arg == "host off" || arg == "host") {
