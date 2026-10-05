@@ -22,6 +22,9 @@ class CodexAdapter final : public Adapter {
   // tools.cpp
   void read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const override;
 
+  // background.cpp
+  void read_background(std::string_view raw, uint64_t offset, BackgroundTasks& t) const override;
+
   // usage.cpp
   void read_usage(LineReader& j, UsageEntry& e, UsageResume& r) const override;
   bool resumes_usage() const override { return true; }
@@ -37,7 +40,8 @@ class CodexAdapter final : public Adapter {
   // session.cpp
   void prepare(Launch& l, const LaunchExtras& x) const override;
   bool continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const override;
-  void snapshot_transcripts(std::vector<std::string>& out) const override;
+  void snapshot_transcripts(const std::vector<std::string>& argv, const std::string& cwd,
+                            std::vector<std::string>& out) const override;
   bool find_transcript(const TranscriptQuery& q, FoundTranscript& out) const override;
   bool busy(const Liveness& l) const override;
   bool awaits_input(const Vt& vt) const override;
@@ -45,6 +49,10 @@ class CodexAdapter final : public Adapter {
   int turn_marker(std::string_view head) const override;
 
   // screen.cpp
+  // Its "Trust this folder?" dialog, answered for a tracked folder as
+  // claude's is.
+  bool startup_prompt(const Vt& vt) const override;
+  std::string startup_answer(const Vt& vt, bool* confirms) const override;
   bool permission_prompt(const Vt& vt, PermissionPrompt& out) const override;
   std::string screen_reply(const Vt& vt) const override;
   // The envelope naming each question by its call (async_reply_envelope).
@@ -53,6 +61,9 @@ class CodexAdapter final : public Adapter {
   // commands.cpp
   std::vector<SlashCommand> builtin_commands() const override;
   ChipControl chip_control(std::string_view key) const override;
+  // `codex debug models`: the catalog its /model picker lists.
+  std::vector<std::string> command_probe_argv() const override { return {"codex", "debug", "models"}; }
+  bool read_command_probe(std::string_view output, bool ended, CommandProbeAnswer& out) const override;
 };
 
 // The type of a rollout record's payload, read from the record's head, where

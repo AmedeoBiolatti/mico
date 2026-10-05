@@ -24,8 +24,14 @@ struct Launch {
 // line that already sets one of these keeps its own.
 struct LaunchExtras {
   std::string hints;     // what mico can draw, for the agent's instructions; empty: none
+  // The sentence that tells an agent given mico's MCP server about its plot
+  // tool, for the end of `hints`; empty without the server or the hints.
+  std::string mcp_hint;
   std::string mcp_exe;   // mico itself, to run as an MCP server (`mico --mcp`); empty: none
   std::string status_exe;  // mico itself, as the agent's status line, for its usage limits; empty: none
+  // mico's tools as an extension file, for an agent that loads those rather
+  // than MCP servers (pi, omp): set with mcp_exe, empty without it.
+  std::string tool_extension;
 };
 
 }  // namespace mico

@@ -77,7 +77,8 @@ void PiFamilyAdapter::read_changes(std::string_view raw, std::string_view cwd, b
       else if (k == "content") body = str(v);
       return true;
     });
-    if (path.empty()) return true;
+    // omp's extension tools are called as writes to "xd://<tool>": no file.
+    if (path.empty() || path.starts_with("xd://")) return true;
     LineChanges lc;
     lc.call_id = id;
     FileChange fc;

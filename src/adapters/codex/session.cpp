@@ -90,7 +90,7 @@ void CodexAdapter::prepare(Launch& l, const LaunchExtras& x) const {
   // Set only when neither the command line nor the user's config sets
   // developer_instructions: theirs is kept, and mico's hints go without.
   if (!x.hints.empty() && !cmdline::mentions(argv, "developer_instructions") && !config_has_instructions())
-    argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + cmdline::toml_string(x.hints)});
+    argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + cmdline::toml_string(x.hints + x.mcp_hint)});
 }
 
 bool CodexAdapter::continue_session(Launch& l, std::string_view id, bool fork, std::string*) const {
@@ -99,7 +99,8 @@ bool CodexAdapter::continue_session(Launch& l, std::string_view id, bool fork, s
   return true;
 }
 
-void CodexAdapter::snapshot_transcripts(std::vector<std::string>& out) const {
+void CodexAdapter::snapshot_transcripts(const std::vector<std::string>&, const std::string&,
+                                        std::vector<std::string>& out) const {
   // An *already running* session in the same directory has a fresh mtime and
   // a matching cwd, so "newest matching file" would happily attach to someone
   // else's conversation. Whatever exists now is not ours.

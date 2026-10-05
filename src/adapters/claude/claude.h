@@ -59,7 +59,7 @@ class ClaudeAdapter final : public Adapter {
   std::vector<SlashCommand> builtin_commands() const override;
   std::vector<std::string> command_probe_argv() const override;
   std::string command_probe_request() const override;
-  bool read_command_probe(std::string_view output, CommandProbeAnswer& out) const override;
+  bool read_command_probe(std::string_view output, bool ended, CommandProbeAnswer& out) const override;
   std::string model_picker_command() const override;
   std::vector<ModelOption> read_model_picker(const Vt& vt) const override;
   ChipControl chip_control(std::string_view key) const override;

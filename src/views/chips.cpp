@@ -5,6 +5,7 @@
 
 #include "adapters/adapters.h"
 #include "core/models.h"
+#include "core/session.h"
 #include "model/state.h"
 #include "base/progress.h"
 #include "base/text.h"
@@ -42,15 +43,51 @@ ChipSpec spec_for(const std::string& agent, const ChipControl& c) {
   return spec;
 }
 
+// The known model the state names, by its value, its concrete id or its
+// name: each agent writes the model its own way.
+const ModelOption* current_model(const std::string& agent, const SessionState& st) {
+  const std::string* model = st.find("model");
+  if (!model || model->empty()) return nullptr;
+  for (const auto& m : known_models(agent))
+    if (m.value == *model || m.resolved == *model || m.label == *model) return &m;
+  return nullptr;
+}
+
+// `tmpl` with each "{name}" filled by `lookup`; false when one names nothing.
+template <class F>
+bool fill(std::string_view tmpl, F&& lookup, std::string& out) {
+  out.clear();
+  for (size_t i = 0; i < tmpl.size();) {
+    const size_t open = tmpl.find('{', i);
+    if (open == std::string_view::npos) {
+      out += tmpl.substr(i);
+      break;
+    }
+    const size_t close = tmpl.find('}', open);
+    if (close == std::string_view::npos) {
+      out += tmpl.substr(i);
+      break;
+    }
+    out += tmpl.substr(i, open - i);
+    std::string got;
+    if (!lookup(tmpl.substr(open + 1, close - open - 1), got) || got.empty()) return false;
+    out += got;
+    i = close + 1;
+  }
+  return true;
+}
+
 }  // namespace
 
 std::string background_summary(const std::vector<BackgroundTask>& tasks) {
-  int monitors = 0, commands = 0;
-  for (const auto& t : tasks) (t.kind == "monitor" ? monitors : commands)++;
+  int monitors = 0, commands = 0, agents = 0;
+  for (const auto& t : tasks) (t.kind == "monitor" ? monitors : t.kind == "agent" ? agents : commands)++;
   std::string s;
   if (monitors) s = std::to_string(monitors) + (monitors == 1 ? " monitor" : " monitors");
   if (commands)
     s += (s.empty() ? "" : " \xC2\xB7 ") + std::to_string(commands) + (commands == 1 ? " command" : " commands");
+  if (agents)
+    s += (s.empty() ? "" : " \xC2\xB7 ") + std::to_string(agents) + (agents == 1 ? " agent" : " agents");
   return s;
 }
 
@@ -86,9 +123,10 @@ std::vector<PickItem> background_items(const std::vector<BackgroundTask>& tasks,
   for (const auto& t : tasks) {
     PickItem it;
     it.label = t.what.empty() ? t.id : t.what;
-    it.lead = t.kind == "monitor" ? "\xE2\x97\x89" : "\xE2\x96\xB6";  // ◉ a monitor, ▶ a command
+    // ◉ a monitor, ◆ an agent, ▶ a command
+    it.lead = t.kind == "monitor" ? "\xE2\x97\x89" : t.kind == "agent" ? "\xE2\x97\x86" : "\xE2\x96\xB6";
     it.lead_color = th.working;
-    it.group = t.kind == "monitor" ? "Monitors" : "Commands";
+    it.group = t.kind == "monitor" ? "Monitors" : t.kind == "agent" ? "Agents" : "Commands";
     std::string d = background_progress(t, 10);
     d += (d.empty() ? "" : " \xC2\xB7 ") + (t.started_ms ? "running " + span(now - t.started_ms) : std::string("running"));
     if (t.expires_ms) d += ", ends in " + span(t.expires_ms - now);
@@ -128,7 +166,40 @@ std::vector<PickItem> chip_pick_items(const SessionState& st, const std::string&
 
   std::vector<PickItem> items;
   const ChipControl control = adapter_of(agent).chip_control(key);
-  const ChipSpec spec = spec_for(agent, control);
+  ChipSpec spec = spec_for(agent, control);
+  const ModelOption* model = current_model(agent, st);
+  // The levels the model in use takes, where the agent says per model.
+  if (control.source == ChipControl::Source::Efforts && model && !model->efforts.empty())
+    spec.values = model->efforts;
+  const auto label_of = [&](const std::string& v) {
+    for (const auto& [val, name] : control.labels)
+      if (val == v) return name;
+    return v;
+  };
+  // "{value}" and "{label}" are the choice; any other name a state field,
+  // "_label" after it for the agent's name for its value.
+  std::string chosen, chosen_label;
+  const auto lookup = [&](std::string_view name, std::string& got) {
+    if (name == "value") got = chosen;
+    else if (name == "label") got = chosen_label;
+    else if (name == "model_label") got = model ? model->label : st.find("model") ? *st.find("model") : "";
+    else if (name.ends_with("_label")) {
+      const std::string* f = st.find(name.substr(0, name.size() - 6));
+      got = f ? label_of(*f) : "";
+    } else {
+      const std::string* f = st.find(name);
+      got = f ? *f : "";
+    }
+    return !got.empty();
+  };
+  // Steps needing a field the state lacks cannot be sent: the agent's own
+  // picker is offered instead.
+  for (const auto& s : control.steps)
+    if (std::string probe; !s.starts_with(kPickStep) &&
+                           !fill(s, [&](std::string_view n, std::string& g) {
+                             return n == "value" || n == "label" ? (g = "x", true) : lookup(n, g);
+                           }, probe))
+      spec.values.clear();
   if (!spec.values.empty() && live) {
     for (const auto& v : spec.values) {
       // Show the readable form; the action still carries the exact value. A
@@ -142,11 +213,25 @@ std::vector<PickItem> chip_pick_items(const SessionState& st, const std::string&
         for (std::string_view pfx : {"claude-", "anthropic/", "openai/"})
           if (shown.size() > pfx.size() && shown.compare(0, pfx.size(), pfx) == 0)
             shown = shown.substr(pfx.size());
+      if (!opt && shown == v) shown = label_of(v);
       PickItem it;
       it.label = shown;
       if (opt && !opt->detail.empty()) it.detail = opt->detail;
       if (shown != v) it.hint = v;
-      it.id = "chipset:" + spec.cmd_prefix + v;
+      chosen = v;
+      chosen_label = shown;
+      if (!control.steps.empty()) {
+        // Keys through the agent's own menus, a step a field cannot fill
+        // taken as Enter: the menu's own default.
+        std::string steps, step;
+        for (const auto& s : control.steps) {
+          if (!fill(s, lookup, step)) step = "\r";
+          steps += (steps.empty() ? "" : "\x1f") + step;
+        }
+        it.id = "chipsteps:" + key + "|" + v + "|" + steps;
+      } else {
+        it.id = "chipset:" + spec.cmd_prefix + v;
+      }
       // The transcript writes the model in its own way — the alias, the
       // shown name, or the concrete id, "claude-" sometimes shed.
       const std::string_view res = opt ? std::string_view(opt->resolved) : std::string_view();

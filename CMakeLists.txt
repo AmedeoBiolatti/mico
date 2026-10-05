@@ -94,6 +94,7 @@ add_library(mico_adapters STATIC
   src/adapters/codex/tools.cpp
   src/adapters/codex/usage.cpp
   src/adapters/codex/commands.cpp
+  src/adapters/codex/background.cpp
   src/adapters/pi/transcript.cpp
   src/adapters/pi/session.cpp
   src/adapters/pi/list.cpp
@@ -101,6 +102,8 @@ add_library(mico_adapters STATIC
   src/adapters/pi/tools.cpp
   src/adapters/pi/usage.cpp
   src/adapters/pi/commands.cpp
+  src/adapters/pi/screen.cpp
+  src/adapters/pi/background.cpp
 )
 target_link_libraries(mico_adapters PUBLIC mico_model mico_vt)
 

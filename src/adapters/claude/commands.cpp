@@ -109,7 +109,7 @@ std::string ClaudeAdapter::command_probe_request() const {
   return "{\"type\":\"control_request\",\"request_id\":\"mico-commands\",\"request\":{\"subtype\":\"initialize\"}}\n";
 }
 
-bool ClaudeAdapter::read_command_probe(std::string_view output, CommandProbeAnswer& out) const {
+bool ClaudeAdapter::read_command_probe(std::string_view output, bool, CommandProbeAnswer& out) const {
   // The answer is one line; everything before it (hook notices) is skipped.
   for (size_t at = output.find("\"control_response\""); at != std::string_view::npos;
        at = output.find("\"control_response\"", at + 1)) {

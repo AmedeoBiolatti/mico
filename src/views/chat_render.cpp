@@ -490,7 +490,9 @@ const code::Lang* ChatRenderer::result_lang(size_t index) const {
     const std::string_view name = conv_.arena().view(c.name);
     std::string_view arg = conv_.arena().view(c.summary);
     std::string_view path;
-    if (name == "Read" || name == "read" || name == "view" || name == "read_file") {
+    // omp's edit result is a diff of the file its summary names.
+    if (name == "Read" || name == "read" || name == "view" || name == "read_file" ||
+        (name == "edit" && !r.detail.empty())) {
       path = arg;
     } else {
       // A shell command that only prints one file.
@@ -646,9 +648,11 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
 
     case EventKind::ToolResult: {
       const bool open = expanded(e.tool_id);
+      // A result that carries what its edit did (omp's) shows that diff.
+      const bool diff = !e.detail.empty();
       output_lang_ = result_lang(index);
-      emit_text(e.text, e.ok ? RowStyle::Result : RowStyle::ResultErr, 4, w,
-                open ? kMaxRowsPerEvent : kCollapsedResultRows, e.tool_id, false, false);
+      emit_text(diff ? e.detail : e.text, e.ok ? RowStyle::Result : RowStyle::ResultErr, 4, w,
+                open ? kMaxRowsPerEvent : kCollapsedResultRows, e.tool_id, false, diff);
       output_lang_ = nullptr;
       break;
     }

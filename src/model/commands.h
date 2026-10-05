@@ -19,6 +19,9 @@ struct ModelOption {
   std::string detail;   // the agent's one-line description, often empty
   std::string resolved; // the concrete model id behind an alias, often empty
   bool current = false;
+  // The effort levels this model takes, in the agent's order; empty when the
+  // agent does not say per model.
+  std::vector<std::string> efforts;
 };
 
 // What an agent says when asked what it offers (Adapter::command_probe_argv).
@@ -47,6 +50,20 @@ struct ChipControl {
   // The command that opens the agent's own picker, when mico offers no values;
   // empty when there is no way to set it from mico.
   std::string picker;
+  // Keys that set a value, in place of `set_prefix`, for an agent whose
+  // command needs more than a line and Enter: a completion menu to get past
+  // (pi, omp), or menus to walk because it takes no value (codex's /model).
+  // Sent one step at a time, each once the screen has settled. A step
+  // "\x01pick:<label>" presses the number of the menu row so labelled, read
+  // off the screen when it is sent. A step may name "{value}" and "{label}"
+  // (the choice, and the agent's name for it) and state fields ("{model}",
+  // "{effort_label}"); a pick step naming a field the state lacks is sent as
+  // Enter, the menu's default, and any other such step leaves the values
+  // unoffered.
+  std::vector<std::string> steps;
+  // How the agent's menus name values that are not models ("xhigh" is
+  // "Extra high"), for "{label}" and "{<field>_label}" in the steps.
+  std::vector<std::pair<std::string, std::string>> labels;
 };
 
 }  // namespace mico

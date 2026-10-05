@@ -23,6 +23,19 @@ void set_agent_hints(bool on);
 bool mcp_tools_enabled();
 void set_mcp_tools(bool on);
 
+// mico's tools as an extension pi and omp load (-e), running `exe --mcp` for
+// each call; see LaunchExtras::tool_extension.
+std::string tool_extension_source(const std::string& exe);
+
+// An answer step that names a menu row rather than a key: "\x01pick:<label>",
+// or "\x01pick:<label>|<submenu>" for a row that may sit behind another one
+// ("Max" behind "More reasoning…"). See ChipControl::steps.
+inline constexpr std::string_view kPickStep = "\x01pick:";
+// The key that picks that row off `vt`: its number. When only the submenu's
+// row is there, its number, with `again` set: the step is to be taken again
+// once the submenu shows. Empty when neither is on the screen.
+std::string pick_key(const Vt& vt, std::string_view step, bool* again);
+
 // Whether agents report their usage limits to mico (claude, through its
 // status line). On unless turned off.
 bool plan_limits_enabled();

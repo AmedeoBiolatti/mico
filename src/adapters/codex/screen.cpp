@@ -118,6 +118,68 @@ bool CodexAdapter::permission_prompt(const Vt& vt, PermissionPrompt& out) const 
   return parse_codex_permission_prompt(vt, out);
 }
 
+// Codex's folder trust dialog, as 0.160 draws it in place of the input box:
+//   Folder access / Trust this folder? … / › 1. Trust and continue /
+//   2. Back to Agent Command Center / enter continue · esc back
+// (older releases: "Do you trust the contents of this directory?", "1. Yes,
+// continue"). Its key line is the screen's last, so a conversation quoting
+// the dialog is not taken for it.
+namespace {
+
+constexpr std::string_view kTrustQuestions[] = {"Trust this folder?", "Do you trust the contents of this directory"};
+constexpr std::string_view kTrustYes[] = {"Trust and continue", "Yes, continue"};
+
+bool codex_trust_dialog(const Vt& vt) {
+  int bottom = vt.total_rows() - 1;
+  while (bottom >= 0 && row_is_blank(vt.row(bottom))) bottom--;
+  if (bottom < 0) return false;
+  const std::string last = row_text(vt.row(bottom));
+  if (last.find("enter continue") == std::string::npos && last.find("Press enter") == std::string::npos)
+    return false;
+  for (int y = bottom; y >= std::max(0, bottom - 16); y--) {
+    const std::string t = row_text(vt.row(y));
+    for (std::string_view q : kTrustQuestions)
+      if (t.find(q) != std::string::npos) return true;
+  }
+  return false;
+}
+
+// How far the cursor is from the "trust" choice, in rows; kNoMove when either
+// is not on screen.
+constexpr int kNoMove = -1000;
+int codex_trust_moves(const Vt& vt) {
+  // The dialog fills the screen from its top: every visible row.
+  const int bottom = vt.total_rows() - 1;
+  int cursor = -1, yes = -1, choice = 0;
+  for (int y = std::max(0, bottom - vt.height() + 1); y <= bottom; y++) {
+    const std::string t = row_text(vt.row(y));
+    std::string_view v = trim_left(t);
+    const bool focused = v.starts_with("\xE2\x80\xBA");  // ›
+    if (focused) v = trim_left(v.substr(3));
+    if (!is_numbered_choice(v)) continue;
+    if (focused) cursor = choice;
+    for (std::string_view y_label : kTrustYes)
+      if (v.find(y_label) != std::string_view::npos) yes = choice;
+    choice++;
+  }
+  if (cursor < 0 || yes < 0) return kNoMove;
+  return yes - cursor;
+}
+
+}  // namespace
+
+bool CodexAdapter::startup_prompt(const Vt& vt) const { return codex_trust_dialog(vt); }
+
+// One step at a time, each judged from the screen, as claude's: an arrow
+// while the cursor is elsewhere, Enter once it is on the trusting choice.
+std::string CodexAdapter::startup_answer(const Vt& vt, bool* confirms) const {
+  if (!codex_trust_dialog(vt)) return {};
+  const int moves = codex_trust_moves(vt);
+  if (moves == kNoMove) return {};
+  *confirms = moves == 0;
+  return moves > 0 ? "\x1b[B" : moves < 0 ? "\x1b[A" : "\r";
+}
+
 std::string CodexAdapter::screen_reply(const Vt& vt) const {
   return mico::screen_reply(vt, ReplyLayout::Codex);
 }

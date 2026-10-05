@@ -19,6 +19,7 @@
 #include "base/fs.h"
 #include "adapters/claude/claude.h"
 #include "adapters/codex/codex.h"
+#include "adapters/pi/pi.h"
 #include "adapters/screen.h"
 #include "base/json.h"
 #include "adapters/adapter.h"
@@ -41,6 +42,8 @@
 #include "views/latex.h"
 #include "views/prompt_editor.h"
 #include "views/views.h"
+#include "core/session.h"
+#include "model/background.h"
 #include "ui/app.h"
 #include "ui/picker.h"
 #include "views/completion.h"
@@ -1208,6 +1211,407 @@ int run_selftest() {
       check(st.find("model") && *st.find("model") == "gpt-6-astra", "omp model observed");
       check(st.find("effort") && *st.find("effort") == "high", "omp thinking level observed");
     }
+
+    // omp's modes and service tier are chips; leaving one is "default".
+    {
+      SessionState st;
+      omp_adapter().observe(R"({"type":"mode_change","id":"a","mode":"vibe"})", st);
+      check(st.find("mode") && *st.find("mode") == "vibe", "omp mode observed");
+      omp_adapter().observe(R"({"type":"mode_change","id":"b","mode":"none"})", st);
+      check(st.find("mode") && *st.find("mode") == "default", "omp leaving a mode");
+      omp_adapter().observe(R"({"type":"service_tier_change","serviceTier":{"openai":"priority"}})", st);
+      check(st.find("tier") && *st.find("tier") == "priority", "omp service tier observed");
+      omp_adapter().observe(R"({"type":"service_tier_change","serviceTier":null})", st);
+      check(st.find("tier") && *st.find("tier") == "default", "omp service tier cleared");
+    }
+
+    // omp states an intent ("i") on every call; eval's argument is its code.
+    {
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"message","message":{"role":"assistant","content":[)"
+          R"({"type":"toolCall","id":"e1","name":"eval","arguments":{"language":"py","code":"print 1"}},)"
+          R"({"type":"toolCall","id":"h1","name":"hub","arguments":{"i":"Awaiting workers","op":"wait"}}]}})",
+          a, ev);
+      check(ev.size() == 2, "omp eval + hub calls");
+      if (ev.size() == 2) {
+        check_str(a.view(ev[0].summary), "print 1", "omp eval shows its code");
+        check_str(a.view(ev[1].summary), "Awaiting workers", "omp call without a ranked key shows its intent");
+      }
+    }
+
+    // omp's own edit language: the summary names the files; the result's
+    // numbered diff is what the result shows.
+    {
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"message","message":{"role":"assistant","content":[)"
+          R"({"type":"toolCall","id":"ed1","name":"edit","arguments":{"input":)"
+          R"("*** Begin Patch\n[src/a.py#B766]\nINS.POST 40:\n+x\n[src/b.cpp#00FE]\nDEL 3\n[src/a.py#C001]\nCUT 1.=2\n*** End Patch\n"}}]}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::ToolCall, "omp hashline edit call");
+      if (ev.size() == 1) {
+        check_str(a.view(ev[0].summary), "src/a.py, src/b.cpp", "omp edit summary names its files");
+        check(a.view(ev[0].detail).starts_with("*** Begin Patch\n[src/a.py#B766]"), "omp edit script kept as detail");
+      }
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"message","message":{"role":"toolResult","toolCallId":"ed1","toolName":"edit",)"
+          R"("content":[{"type":"text","text":"[src/a.py#AE82]\n40:x"}],)"
+          R"("details":{"diff":" 39|a\n+40|x","op":"update","path":"src/a.py"},"isError":false}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::ToolResult, "omp edit result");
+      if (ev.size() == 1) {
+        check_str(a.view(ev[0].detail), " 39|a\n+40|x", "omp edit result carries its diff");
+        check_str(a.view(ev[0].text), "[src/a.py#AE82]\n40:x", "omp edit result keeps its text");
+      }
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"message","message":{"role":"toolResult","toolCallId":"b1","toolName":"bash",)"
+          R"("content":[{"type":"text","text":"ok"}],"details":{"diff":"+x"},"isError":false}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].detail.empty(), "only an edit result's diff is shown");
+      check_str(edit_script_paths("*** Begin Patch\n*** Update File: x.c\n@@\n-a\n+b\n*** End Patch"), "x.c",
+                "apply_patch headers name the files too");
+    }
+
+    // What omp shows of its own messages: a compaction, finished background
+    // jobs, other agents' messages, a collab guest's prompt — not reminders.
+    {
+      ev.clear();
+      omp_adapter().parse(R"({"type":"compaction","id":"c","summary":"long summary"})", a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Notice, "omp compaction is a notice");
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":"async-result","content":"<system-notice>\nBackground job )"
+          R"(Review has completed. Resume your work using the result below.\n<task-result id=\"Review\">)",
+          a, ev);
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":"async-result","content":"<system-notice>\nBackground job )"
+          R"(Review has completed. Resume your work using the result below.\n<task-result id=\"Review\">",)"
+          R"("display":true,"attribution":"agent"})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::TaskStatus && ev[0].ok, "omp background job finished");
+      if (ev.size() == 1) check_str(a.view(ev[0].text), "Background job Review has completed.", "omp job notice text");
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":"irc:incoming","content":"<irc>\n…</irc>","display":true,)"
+          R"("details":{"id":"1","from":"Fixer","message":"Done.\nNo tests run."},"attribution":"agent"})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::TaskStatus, "omp agent message");
+      if (ev.size() == 1) check_str(a.view(ev[0].text), "Fixer: Done.\nNo tests run.", "omp agent message text");
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":"collab-prompt","content":"How is training going?",)"
+          R"("display":true,"details":{"from":"guest"},"attribution":"user"})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::User, "omp collab guest prompt is a user turn");
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":"mid-run-todo-nudge","content":"<system-reminder>x</system-reminder>",)"
+          R"("display":false,"attribution":"agent"})",
+          a, ev);
+      check(ev.empty(), "omp hidden reminders stay hidden");
+    }
+
+    // Where pi and omp keep things, as their environments say, and omp's
+    // subagent runs listed as chats of their own.
+    {
+      const char* vars[] = {"HOME", "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "OMP_PROFILE",
+                            "PI_PROFILE", "PI_CONFIG_DIR", "XDG_DATA_HOME"};
+      std::vector<std::pair<std::string, std::string>> saved;
+      for (const char* v : vars) {
+        const char* had = getenv(v);
+        saved.push_back({v, had ? std::string("=") + had : std::string()});
+        if (std::string_view(v) != "HOME") unsetenv(v);
+      }
+      const std::string root = "/tmp/mico-selftest-omp-" + std::to_string(getpid());
+      setenv("HOME", root.c_str(), 1);
+      const auto& pi = static_cast<const PiFamilyAdapter&>(pi_adapter());
+      const auto& omp = static_cast<const PiFamilyAdapter&>(omp_adapter());
+      check_str(omp.agent_dir(root), root + "/.omp/agent", "omp agent dir by default");
+      check_str(omp.sessions_dir(), root + "/.omp/agent/sessions", "omp sessions by default");
+      setenv("PI_CODING_AGENT_DIR", "~/elsewhere", 1);
+      check_str(pi.agent_dir(root), root + "/elsewhere", "pi honours PI_CODING_AGENT_DIR");
+      check_str(omp.agent_dir(root), root + "/elsewhere", "omp honours PI_CODING_AGENT_DIR");
+      setenv("PI_PROFILE", "work", 1);
+      check_str(omp.agent_dir(root), root + "/.omp/profiles/work/agent", "an omp profile wins");
+      setenv("OMP_PROFILE", "default", 1);
+      check_str(omp.agent_dir(root), root + "/elsewhere", "OMP_PROFILE=default is no profile, over PI_PROFILE");
+      unsetenv("OMP_PROFILE");
+      unsetenv("PI_PROFILE");
+      unsetenv("PI_CODING_AGENT_DIR");
+      fs::make_dirs(root + "/xdg/omp");
+      setenv("XDG_DATA_HOME", (root + "/xdg").c_str(), 1);
+      check_str(omp.sessions_dir(), root + "/xdg/omp/sessions", "omp sessions under an existing XDG data dir");
+      unsetenv("XDG_DATA_HOME");
+
+      const std::string slug = root + "/.omp/agent/sessions/-work";
+      const std::string parent = slug + "/2026-09-30T17-21-31-812Z_p1.jsonl";
+      fs::make_dirs(slug + "/2026-09-30T17-21-31-812Z_p1");
+      put_file(parent, R"({"type":"title","v":1,"title":"Review the strategy"})" "\n"
+                       R"({"type":"session","version":3,"id":"p1","cwd":"/work"})" "\n");
+      put_file(slug + "/2026-09-30T17-21-31-812Z_p1/MarketReview.jsonl",
+               R"({"type":"title","v":1,"title":""})" "\n"
+               R"({"type":"session","version":3,"id":"s1","cwd":"/work","parentSession":")" + parent + "\"}\n" +
+               R"({"type":"message","message":{"role":"user","content":[{"type":"text","text":"Complete assignment"}]}})" "\n");
+      std::map<std::string, std::string> titles;
+      omp.list_sessions([&](SessionRef&& r) { titles[r.id] = r.title; });
+      check(titles.size() == 2, "omp lists a session and its subagent run");
+      check_str(titles["p1"], "Review the strategy", "omp session title");
+      check_str(titles["s1"], "↳ MarketReview · Review the strategy", "omp subagent run named for its agent and parent");
+      Launch l;
+      omp.continue_session(l, "s1", false, nullptr);
+      check(l.argv.size() == 3 && l.argv[2] == slug + "/2026-09-30T17-21-31-812Z_p1/MarketReview.jsonl",
+            "a subagent run resumes by its path");
+      omp.continue_session(l, "p1", false, nullptr);
+      check(l.argv.size() == 3 && l.argv[2] == "p1", "a session resumes by its id");
+
+      // A flat session-dir override, from the command line.
+      fs::make_dirs(root + "/flat");
+      put_file(root + "/flat/x_f1.jsonl", R"({"type":"session","version":3,"id":"f1","cwd":"/work"})" "\n");
+      std::vector<std::string> seen;
+      omp_adapter().snapshot_transcripts({"omp", "--session-dir", "flat"}, root, seen);
+      check(std::find(seen.begin(), seen.end(), root + "/flat/x_f1.jsonl") != seen.end() &&
+                std::find(seen.begin(), seen.end(), parent) != seen.end() && seen.size() == 2,
+            "omp --session-dir is looked in, subagent runs are not new sessions");
+
+      if (system(("rm -rf '" + root + "'").c_str()) != 0) {}
+      for (auto& [k, v] : saved) {
+        if (v.empty()) unsetenv(k.c_str());
+        else setenv(k.c_str(), v.c_str() + 1, 1);
+      }
+    }
+  }
+
+  // pi and omp: mico's plot tool through its extension, and what each agent
+  // starts in the background, read from its transcript.
+  {
+    Arena a;
+    std::vector<Event> ev;
+    pi_adapter().parse(
+        R"({"type":"message","message":{"role":"assistant","content":[)"
+        R"({"type":"toolCall","id":"p1","name":"mico_plot","arguments":{"type":"line","x":[0,1],"y":[1,2]}}]}})",
+        a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Chart &&
+              a.view(ev[0].text) == "```chart\n{\"type\":\"line\",\"x\":[0,1],\"y\":[1,2]}\n```",
+          "pi: mico_plot is a chart");
+    ev.clear();
+    omp_adapter().parse(
+        R"({"type":"message","message":{"role":"assistant","content":[)"
+        R"({"type":"toolCall","id":"p2","name":"write","arguments":{"path":"xd://mico_plot",)"
+        R"("content":"{\"type\":\"bar\",\"labels\":[\"a\"],\"series\":[{\"y\":[1]}]}"}}]}})",
+        a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Chart &&
+              a.view(ev[0].text) == "```chart\n{\"type\":\"bar\",\"labels\":[\"a\"],\"series\":[{\"y\":[1]}]}\n```",
+          "omp: a write to xd://mico_plot is a chart");
+    std::vector<LineChanges> lc;
+    omp_adapter().read_changes(
+        R"({"type":"message","message":{"role":"assistant","content":[)"
+        R"({"type":"toolCall","id":"p2","name":"write","arguments":{"path":"xd://mico_plot","content":"{}"}}]}})",
+        "/w", true, lc);
+    check(lc.empty(), "omp: a write to xd:// changes no file");
+
+    BackgroundTasks t;
+    const auto run = [&](std::string_view line) { omp_adapter().read_background(line, 0, t); };
+    const auto ids = [&] {
+      std::string s;
+      for (const auto& r : t.running) s += (s.empty() ? "" : ",") + r.id + ":" + r.kind;
+      return s;
+    };
+    run(R"({"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash",)"
+        R"("arguments":{"i":"Building the probes","command":"make","async":true}}]}})");
+    run(R"({"type":"message","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash",)"
+        R"("content":[{"type":"text","text":"Backgrounded as job bg_1"}],)"
+        R"("details":{"async":{"state":"running","jobId":"bg_1","type":"bash"}}}})");
+    check(ids() == "bg_1:shell" && t.running[0].what == "Building the probes", "omp: an async bash job runs");
+    run(R"({"type":"message","message":{"role":"toolResult","toolCallId":"c2","toolName":"task","content":[],)"
+        R"("details":{"async":{"state":"running","jobId":"Review","type":"task"},)"
+        R"("progress":[{"id":"Review","agent":"reviewer"},{"id":"Audit","agent":"task"}]}}})");
+    check(ids() == "bg_1:shell,Review:agent,Audit:agent", "omp: each of a task's subagents runs");
+    run(R"({"type":"custom_message","customType":"async-result","content":"…","display":true,)"
+        R"("details":{"jobs":[{"jobId":"bg_1","type":"bash"}]}})");
+    run(R"({"type":"message","message":{"role":"toolResult","toolCallId":"c3","toolName":"wait","content":[],)"
+        R"("details":{"op":"wait","jobs":[{"id":"Review","status":"completed"},{"id":"Audit","status":"running"}]}}})");
+    check(ids() == "Audit:agent", "omp: a delivery and a jobs snapshot end what finished");
+    run(R"({"type":"custom","customType":"vibe-session-lifecycle","data":{"id":"v1","action":"turn-started"}})");
+    run(R"({"type":"message","message":{"role":"toolResult","toolCallId":"c4","toolName":"hub","content":[],)"
+        R"("details":{"op":"start","daemon":{"name":"server","state":"running"}}}})");
+    check(ids() == "Audit:agent,v1:agent,server:shell", "omp: vibe turns and hub services run");
+    run(R"({"type":"custom","customType":"vibe-session-lifecycle","data":{"id":"v1","action":"turn-settled"}})");
+    run(R"({"type":"message","message":{"role":"toolResult","toolCallId":"c5","toolName":"hub","content":[],)"
+        R"("details":{"op":"stop","daemon":{"name":"server","state":"stopped"}}}})");
+    check(ids() == "Audit:agent", "omp: a settled turn and a stopped service end");
+  }
+
+  // Codex: a yielded code cell until a wait sees it finish, and a command
+  // still running when its call returned until its item completes, even when
+  // codex writes the completion first.
+  {
+    BackgroundTasks t;
+    const auto run = [&](std::string_view line) { codex_adapter().read_background(line, 0, t); };
+    const auto ids = [&] {
+      std::string s;
+      for (const auto& r : t.running) s += (s.empty() ? "" : ",") + r.id;
+      return s;
+    };
+    run(R"({"timestamp":"2026-10-01T10:00:00Z","type":"response_item","payload":{"type":"custom_tool_call",)"
+        R"j("call_id":"x1","name":"exec","input":"text(await tools.exec_command({cmd:\"make test\"}))"}})j");
+    run(R"({"timestamp":"2026-10-01T10:00:31Z","type":"response_item","payload":{"type":"custom_tool_call_output",)"
+        R"("call_id":"x1","output":"Script running with cell ID 3\nWall time 31.0 seconds\nOutput:\n"}})");
+    check(ids() == "cell 3" && t.running[0].what == "make test", "codex: a yielded cell runs, named by its command");
+    run(R"({"type":"response_item","payload":{"type":"function_call","call_id":"w1","name":"wait",)"
+        R"("arguments":"{\"cell_id\":\"3\",\"yield_time_ms\":1000}"}})");
+    run(R"({"type":"response_item","payload":{"type":"function_call_output","call_id":"w1",)"
+        R"("output":"Script completed\nWall time 0.0 seconds\nOutput:\n"}})");
+    check(ids().empty(), "codex: a wait that sees the cell complete ends it");
+    run(R"({"type":"response_item","payload":{"type":"custom_tool_call","call_id":"x2","name":"exec",)"
+        R"j("input":"text(await tools.exec_command({cmd:\"npm run dev\"}))"}})j");
+    run(R"({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"x2","output":[)"
+        R"({"type":"input_text","text":"Script completed\nOutput:\n"},)"
+        R"({"type":"input_text","text":"{\"chunk_id\":\"a\",\"session_id\":4242,\"output\":\"\"}"}]}})");
+    check(ids() == "process 4242", "codex: a command still running after its call");
+    run(R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution",)"
+        R"("process_id":"4242","status":"completed"}}})");
+    check(ids().empty(), "codex: its completed item ends it");
+    run(R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution",)"
+        R"("process_id":"77","status":"completed"}}})");
+    run(R"({"type":"response_item","payload":{"type":"custom_tool_call","call_id":"x3","name":"exec","input":"x"}})");
+    run(R"({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"x3","output":[)"
+        R"({"type":"input_text","text":"{\"chunk_id\":\"b\",\"session_id\":77,\"output\":\"\"}"}]}})");
+    check(ids().empty(), "codex: a completion written before the output still ends it");
+  }
+
+  // Codex's folder trust dialog, answered as claude's is; and walking its
+  // numbered menus by name.
+  {
+    Vt vt;
+    vt.resize(80, 14);
+    vt.write("  Folder access\r\n  /work\r\n\r\n  Trust this folder? Codex can read, edit, and run files here.\r\n\r\n"
+             "  1. Trust and continue\r\n\xE2\x80\xBA 2. Back to Agent Command Center\r\n\r\n  enter continue \xC2\xB7 esc back");
+    bool confirms = true;
+    check(codex_adapter().startup_prompt(vt), "codex: its trust dialog is a startup prompt");
+    check(codex_adapter().startup_answer(vt, &confirms) == "\x1b[A" && !confirms,
+          "codex: the cursor is moved to Trust first");
+    Vt on;
+    on.resize(80, 14);
+    on.write("  Trust this folder?\r\n\xE2\x80\xBA 1. Trust and continue\r\n  2. Back\r\n\r\n  enter continue \xC2\xB7 esc back");
+    check(codex_adapter().startup_answer(on, &confirms) == "\r" && confirms, "codex: Enter on Trust and continue");
+    Vt quoted;
+    quoted.resize(80, 8);
+    quoted.write("\xE2\x80\xA2 It asked: Trust this folder?\r\n\r\n\xE2\x80\xBA Ask Codex to do anything");
+    check(!codex_adapter().startup_prompt(quoted), "codex: a reply quoting the dialog is not it");
+
+    Vt menu;
+    menu.resize(100, 12);
+    menu.write("  Select Model and Effort\r\n\r\n  1. GPT-6.1-Sol (default)  Latest workhorse.\r\n"
+               "\xE2\x80\xBA 4. GPT-6-Luna (current)   Fast and affordable.\r\n  5. More reasoning\xE2\x80\xA6   Max and Ultra.\r\n");
+    bool again = false;
+    check(pick_key(menu, "GPT-6-Luna", &again) == "4" && !again, "pick: a row by its name, marks aside");
+    check(pick_key(menu, "GPT-6", &again).empty(), "pick: a name is whole, not a prefix");
+    check(pick_key(menu, "Max|More reasoning", &again) == "5" && again, "pick: a submenu first, then again");
+    check(pick_key(menu, "Ultra", &again).empty(), "pick: nothing to press when the row is not there");
+  }
+
+  // The reply pi and omp are writing, read off their screens: plain text one
+  // column in, under a message in its own background or grey italic thinking.
+  {
+    const std::string rule = [] {
+      std::string r;
+      for (int i = 0; i < 30; i++) r += "\xE2\x94\x80";
+      return r;
+    }();
+    const std::string user = "\x1b[48;2;52;53;65m Say hi                       \x1b[49m\r\n";
+    const std::string think = "\x1b[3;38;2;128;128;128m Thinking about it\x1b[0m\r\n";
+    const std::string reply = " Hello \x1b[1mthere\x1b[22m, this is a reply\r\n that wraps.\r\n";
+    Vt pi;
+    pi.resize(30, 14);
+    pi.write(user + "\r\n" + think + "\r\n" + reply + "\r\n\xE2\x94\x80\xE2\x94\x80 \xE2\xA0\xB9 Working " + rule.substr(0, 45) +
+             "\r\n\r\n" + rule + "\r\n~/work");
+    check_str(pi_adapter().screen_reply(pi), "Hello **there**, this is a reply that wraps.", "pi: the reply off its screen");
+    Vt thinking;
+    thinking.resize(30, 10);
+    thinking.write(user + "\r\n" + think + "\r\n" + rule + "\r\n\r\n" + rule + "\r\n~/work");
+    check(pi_adapter().screen_reply(thinking).empty(), "pi: thinking is not a reply");
+    Vt omp;
+    omp.resize(30, 14);
+    omp.write(user + "\r\n" + reply + "\r\n  \xE2\x8E\x8B Working\xE2\x80\xA6\r\n\x1b[48;2;15;18;22m \xE2\xA0\xB4 4s > model          \x1b[49m\r\n"
+              "\xE2\x95\xB0\xE2\x94\x80");
+    check_str(omp_adapter().screen_reply(omp), "Hello **there**, this is a reply that wraps.", "omp: the reply off its screen");
+  }
+
+  // The models each agent lists on the command line, and the chips that set
+  // them: through a completion menu for pi and omp, through codex's menus.
+  {
+    CommandProbeAnswer got;
+    check(!pi_adapter().read_command_probe("provider  model\n", false, got), "probe: read only once it has ended");
+    check(pi_adapter().read_command_probe(
+              "provider      model                context  max-out  thinking  images\n"
+              "deepseek      deepseek-flash       1M       384K     yes       yes\n"
+              "openai-codex  gpt-5.5              272K     128K     yes       yes\n",
+              true, got) &&
+              got.models.size() == 2 && got.models[1].value == "openai-codex/gpt-5.5" && got.models[1].resolved == "gpt-5.5",
+          "pi: --list-models, as provider/model");
+    check(omp_adapter().read_command_probe(
+              R"({"models":[{"provider":"deepseek","kind":"chat","id":"deepseek-flash","selector":"deepseek/deepseek-flash",)"
+              R"("name":"DeepSeek Flash","thinking":["low","high","max"]},{"provider":"x","kind":"embedding","id":"e","selector":"x/e"}]})",
+              true, got) &&
+              got.models.size() == 1 && got.models[0].label == "DeepSeek Flash" &&
+              got.models[0].efforts == std::vector<std::string>({"off", "low", "high", "max"}),
+          "omp: models --json, chat models with their levels");
+    check(codex_adapter().read_command_probe(
+              R"({"models":[{"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Workhorse","visibility":"list",)"
+              R"("supported_reasoning_levels":[{"effort":"low"},{"effort":"max"}]},{"slug":"hidden","visibility":"hide"}]})",
+              true, got) &&
+              got.models.size() == 1 && got.models[0].label == "GPT-6-Sol" &&
+              got.models[0].efforts == std::vector<std::string>({"low", "max"}),
+          "codex: debug models, those its picker lists");
+    set_known_models("codex", got.models);
+
+    SessionState st;
+    st.set("model", "model", "gpt-6-sol");
+    st.set("effort", "effort", "max");
+    int cursor = -1;
+    std::string title;
+    auto picks = chip_pick_items(st, "effort", true, "codex", &cursor, &title);
+    std::string max_steps;
+    for (const auto& it : picks)
+      if (it.id.starts_with("chipsteps:effort|max|")) max_steps = it.id.substr(21);
+    check(picks.size() >= 2 && picks[0].id.starts_with("chipsteps:effort|low|") && picks[0].label == "Low",
+          "codex: the effort chip offers the model's own levels, by codex's names");
+    check(max_steps == "/model\x1f\r\x1f\x01pick:GPT-6-Sol\x1f\x01pick:Max|More reasoning",
+          "codex: an effort is set through /model's menus, never as a message");
+    picks = chip_pick_items(st, "model", true, "codex", &cursor, &title);
+    check(!picks.empty() && picks[0].id == "chipsteps:model|gpt-6-sol|/model\x1f\r\x1f\x01pick:GPT-6-Sol\x1f\x01pick:Max|More reasoning",
+          "codex: a model keeps the effort in use");
+
+    SessionState os;
+    os.set("model", "model", "deepseek-flash");
+    picks = chip_pick_items(os, "effort", true, "omp", &cursor, &title);
+    check(picks.size() == 1 && !picks[0].enabled, "omp: no thinking level without the provider to /switch with");
+    os.set("provider", "provider", "deepseek");
+    picks = chip_pick_items(os, "effort", true, "omp", &cursor, &title);
+    check(!picks.empty() && picks[0].id == "chipsteps:effort|off|/switch deepseek/deepseek-flash:off\x1f\r\x1f\r",
+          "omp: a thinking level through /switch, past its completion menu");
+    picks = chip_pick_items(os, "effort", true, "pi", &cursor, &title);
+    check(!picks.empty() && picks[0].id == "chipsteps:effort|off|/thinking off\x1f\r\x1f\r", "pi: /thinking with its level");
+
+    // What mico gives pi and omp at launch: its extension and its hints.
+    Launch l;
+    LaunchExtras x;
+    x.hints = "HINTS.";
+    x.tool_extension = "/state/mico-tools.js";
+    omp_adapter().prepare(l, x);
+    check(l.argv.size() == 5 && l.argv[0] == "omp" && l.argv[1] == "--append-system-prompt" &&
+              l.argv[2].starts_with("HINTS. You also have mico's `mico_plot` tool") && l.argv[3] == "-e" &&
+              l.argv[4] == "/state/mico-tools.js",
+          "omp: launched with mico's extension and hints");
+    Launch own;
+    own.argv = {"omp", "--append-system-prompt", "mine"};
+    omp_adapter().prepare(own, x);
+    check(own.argv.size() == 5 && own.argv[4] == "mine", "omp: a system prompt of the user's own is left alone");
+    check(tool_extension_source("/bin/mico").find("const MICO = \"/bin/mico\";") != std::string::npos,
+          "the extension runs this mico");
   }
 
   // The bulk-ASCII path in the emulator must produce exactly what the

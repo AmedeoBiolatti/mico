@@ -19,9 +19,10 @@
 namespace mico {
 
 // mico's own plot tool, as each agent names an MCP server's tool: claude
-// "mcp__mico__plot", codex "mico.plot" or "mcp__mico__plot".
+// "mcp__mico__plot", codex "mico.plot" or "mcp__mico__plot"; pi and omp
+// "mico_plot", from mico's extension (see LaunchExtras::tool_extension).
 inline bool is_mico_plot(std::string_view name) {
-  return name == "mcp__mico__plot" || name == "mico__plot" || name == "mico.plot";
+  return name == "mcp__mico__plot" || name == "mico__plot" || name == "mico.plot" || name == "mico_plot";
 }
 // Its call as an event: the arguments, as a ```chart block to draw.
 inline void make_chart_event(Event& e, Arena& arena, std::string_view args_json) {
@@ -59,6 +60,7 @@ struct TranscriptQuery {
   bool forked = false;
   int64_t started_at = 0;  // unix seconds
   int pid = -1;            // the agent's pty session leader
+  const std::vector<std::string>* argv = nullptr;  // what the agent was started with
   // What snapshot_transcripts() saw before the launch, sorted.
   const std::vector<std::string>* preexisting = nullptr;
   // True for a transcript another running session has already claimed.
@@ -197,8 +199,11 @@ class Adapter {
   // --- Finding a running session's transcript ------------------------------
 
   // The transcripts that exist before a launch, for an agent whose new one can
-  // only be told apart from them by being new. Sorted by the caller.
-  virtual void snapshot_transcripts(std::vector<std::string>& out) const {}
+  // only be told apart from them by being new. `argv` and `cwd` are the
+  // launch's, for an agent that can be told where to keep them. Sorted by the
+  // caller.
+  virtual void snapshot_transcripts(const std::vector<std::string>& argv, const std::string& cwd,
+                                    std::vector<std::string>& out) const {}
 
   // Looks once for the transcript of the session `q` describes. Called every
   // half second until it succeeds; false while there is none yet.
@@ -259,9 +264,11 @@ class Adapter {
   // Empty when the agent cannot be asked.
   virtual std::vector<std::string> command_probe_argv() const { return {}; }
   virtual std::string command_probe_request() const { return {}; }
-  // Reads the probe's answer out of what it has written so far. False until
-  // a complete one is there.
-  virtual bool read_command_probe(std::string_view output, CommandProbeAnswer& out) const { return false; }
+  // Reads the probe's answer out of what it has written so far, `ended` once
+  // it has closed its output. False until a complete one is there.
+  virtual bool read_command_probe(std::string_view output, bool ended, CommandProbeAnswer& out) const {
+    return false;
+  }
 
   // Keys that open the agent's model picker in a fresh session, for an agent
   // that has no other way to say which models it offers; empty for none.

@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "adapters/command_table.h"
+#include "base/json.h"
 
 namespace mico {
 namespace {
@@ -184,7 +185,7 @@ void PiFamilyAdapter::file_commands(const std::string& cwd, const std::string& h
                                     std::vector<SlashCommand>& out) const {
   // pi: prompt templates are "/name", skills "/skill:name"; the project's
   // copy wins over the user's.
-  const std::string user = home + "/" + std::string(dot_dir()) + "/agent";
+  const std::string user = agent_dir(home);
   const std::string project = cwd + "/" + std::string(dot_dir());
   for (const std::string& base : {project, user}) {
     each_markdown(base + "/prompts", [&](std::string name, const std::string& path) {
@@ -196,13 +197,104 @@ void PiFamilyAdapter::file_commands(const std::string& cwd, const std::string& h
   }
 }
 
+// Both take a value after the command, and both open a completion menu as
+// it is typed: the first Enter takes the completion, the second sends the
+// line (with nothing to complete, an empty Enter, which neither minds).
 ChipControl PiFamilyAdapter::chip_control(std::string_view key) const {
-  // Both open a fuzzy-search picker rather than taking a value inline, so
-  // mico cannot offer a one-shot set the way it does for claude and codex.
   ChipControl c;
-  if (key == "model") c.picker = "/model";
-  else if (key == "effort") c.picker = "/thinking";
+  if (key == "model") {
+    c.source = ChipControl::Source::Models;
+    c.steps = {"/model {value}", "\r", "\r"};
+    c.picker = "/model";
+  } else if (key == "effort") {
+    c.values = {"off", "minimal", "low", "medium", "high", "xhigh", "max"};
+    c.steps = {"/thinking {value}", "\r", "\r"};
+  }
   return c;
+}
+
+// omp's /model only opens a picker, and it has no command for the thinking
+// level alone: /switch takes "provider/id" and ":level", for this session.
+ChipControl OmpAdapter::chip_control(std::string_view key) const {
+  ChipControl c;
+  if (key == "model") {
+    c.source = ChipControl::Source::Models;
+    c.steps = {"/switch {value}", "\r", "\r"};
+    c.picker = "/model";
+  } else if (key == "effort") {
+    c.source = ChipControl::Source::Efforts;
+    c.values = {"off", "minimal", "low", "medium", "high", "xhigh", "max"};
+    c.steps = {"/switch {provider}/{model}:{value}", "\r", "\r"};
+  }
+  return c;
+}
+
+std::vector<std::string> PiFamilyAdapter::command_probe_argv() const {
+  if (id() == "omp") return {"omp", "models", "--json"};
+  return {"pi", "--list-models"};
+}
+
+// pi prints a table — "provider  model  context  max-out  thinking  images" —
+// and omp the same list as JSON, each model with the levels it thinks at.
+// Both are read once the probe has finished writing.
+bool PiFamilyAdapter::read_command_probe(std::string_view output, bool ended, CommandProbeAnswer& out) const {
+  if (!ended) return false;
+  out = CommandProbeAnswer{};
+  if (id() == "omp") {
+    js::scan_object(output, [&](std::string_view k, const js::Value& v) {
+      if (k != "models" || !v.is_array()) return true;
+      js::scan_array(v.raw, [&](const js::Value& m) {
+        ModelOption o;
+        std::string kind, provider;
+        js::scan_object(m.raw, [&](std::string_view mk, const js::Value& mv) {
+          if (mk == "selector") js::unescape_append(mv.body(), o.value);
+          else if (mk == "name") js::unescape_append(mv.body(), o.label);
+          else if (mk == "id") js::unescape_append(mv.body(), o.resolved);
+          else if (mk == "provider") js::unescape_append(mv.body(), provider);
+          else if (mk == "kind") js::unescape_append(mv.body(), kind);
+          else if (mk == "thinking" && mv.is_array())
+            js::scan_array(mv.raw, [&](const js::Value& t) {
+              if (t.is_string()) o.efforts.emplace_back(t.body());
+              return true;
+            });
+          return true;
+        });
+        if (!o.efforts.empty()) o.efforts.insert(o.efforts.begin(), "off");
+        o.detail = provider;
+        if (!o.value.empty() && (kind.empty() || kind == "chat")) out.models.push_back(std::move(o));
+        return true;
+      });
+      return false;
+    });
+  } else {
+    bool header = false;
+    size_t pos = 0;
+    while (pos < output.size()) {
+      size_t nl = output.find('\n', pos);
+      if (nl == std::string_view::npos) nl = output.size();
+      std::string_view line = output.substr(pos, nl - pos);
+      pos = nl + 1;
+      std::vector<std::string_view> cols;
+      for (size_t i = 0; i < line.size();) {
+        while (i < line.size() && line[i] == ' ') i++;
+        const size_t j = line.find(' ', i);
+        if (i < line.size()) cols.push_back(line.substr(i, (j == std::string_view::npos ? line.size() : j) - i));
+        i = j == std::string_view::npos ? line.size() : j;
+      }
+      if (cols.size() < 2) continue;
+      if (!header) {
+        header = cols[0] == "provider" && cols[1] == "model";
+        continue;
+      }
+      ModelOption o;
+      o.value = std::string(cols[0]) + "/" + std::string(cols[1]);
+      o.label = std::string(cols[1]);
+      o.resolved = o.label;
+      o.detail = std::string(cols[0]);
+      out.models.push_back(std::move(o));
+    }
+  }
+  return !out.models.empty();
 }
 
 }  // namespace mico

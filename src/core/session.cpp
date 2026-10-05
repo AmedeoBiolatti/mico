@@ -1,6 +1,8 @@
 #include "adapters/adapters.h"
+#include "adapters/screen.h"
 #include "base/fs.h"
 #include "base/log.h"
+#include "base/path.h"
 #include "base/progress.h"
 #include "core/scope.h"
 #include "core/session.h"
@@ -15,6 +17,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <set>
 #include <map>
@@ -56,6 +59,129 @@ const std::string& self_exe() {
 }
 
 bool mcp_tools_enabled() { return setting_on("mcp", false); }
+
+// mico's tools for pi and omp, which load extensions rather than MCP servers.
+// It asks `mico --mcp` for the plot tool as an MCP client would, and hands
+// each call to it, so the description, the schema and the check of every
+// chart stay in one place. Kept in mico's own state folder, never the agent's.
+std::string tool_extension_source(const std::string& exe) {
+  return R"js(// Written by mico: its plot tool, for pi and omp. Each call is checked by
+// `mico --mcp`, as an MCP agent's is; the chat draws the chart from the call.
+import { spawnSync } from "node:child_process";
+
+const MICO = )js" + js::quote(exe) + R"js(;
+
+function ask(method, params, cwd) {
+  const req = JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) + "\n";
+  const r = spawnSync(MICO, ["--mcp"], { input: req, cwd, encoding: "utf8", timeout: 15000 });
+  const line = (r.stdout || "").split("\n").find((l) => l.trim());
+  try {
+    return line ? JSON.parse(line).result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export default function (pi) {
+  const tool = ask("tools/list", {})?.tools?.find((t) => t.name === "plot");
+  if (!tool) return;
+  pi.registerTool({
+    name: "mico_plot",
+    label: "Plot",
+    description: tool.description,
+    parameters: tool.inputSchema,
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const r = ask("tools/call", { name: "plot", arguments: params }, ctx?.cwd ?? process.cwd());
+      const text = r?.content?.map((c) => c.text).join("\n") || "mico did not answer";
+      if (!r || r.isError) throw new Error(text);
+      return { content: [{ type: "text", text }], details: {} };
+    },
+  });
+}
+)js";
+}
+
+namespace {
+
+
+// A numbered menu row's label, read the way an agent lays one out:
+// "› 4. GPT-6-Luna (current)   Fast and affordable…" is "GPT-6-Luna", with
+// its number. False for any other row.
+bool menu_row(const std::string& text, int* number, std::string* label) {
+  std::string_view t = text;
+  for (bool trimmed = true; trimmed;) {
+    trimmed = false;
+    while (!t.empty() && t.front() == ' ') t.remove_prefix(1), trimmed = true;
+    for (std::string_view cursor : {"\xE2\x80\xBA", "\xE2\x9D\xAF", "\xE2\x96\xB6", ">"})
+      if (t.starts_with(cursor)) t.remove_prefix(cursor.size()), trimmed = true;
+  }
+  size_t i = 0;
+  while (i < t.size() && i < 3 && t[i] >= '0' && t[i] <= '9') i++;
+  if (i == 0 || i + 1 >= t.size() || t[i] != '.' || t[i + 1] != ' ') return false;
+  *number = std::atoi(std::string(t.substr(0, i)).c_str());
+  t.remove_prefix(i + 2);
+  const size_t gap = t.find("  ");
+  if (gap != std::string_view::npos) t = t.substr(0, gap);
+  // "(current)", "(default)": what the agent marks, not part of the name.
+  while (!t.empty() && t.back() == ')') {
+    const size_t open = t.rfind(" (");
+    if (open == std::string_view::npos) break;
+    t = t.substr(0, open);
+  }
+  while (!t.empty() && t.back() == ' ') t.remove_suffix(1);
+  *label = std::string(t);
+  return true;
+}
+
+bool same_label(std::string_view row, std::string_view want) {
+  if (row.size() < want.size()) return false;
+  for (size_t i = 0; i < want.size(); i++)
+    if (std::tolower(uint8_t(row[i])) != std::tolower(uint8_t(want[i]))) return false;
+  // "More reasoning…" is "More reasoning"; "GPT-6" is not "GPT-6-Luna".
+  const std::string_view rest = row.substr(want.size());
+  return rest.empty() || rest == "\xE2\x80\xA6" || rest == "...";
+}
+
+}  // namespace
+
+std::string pick_key(const Vt& vt, std::string_view step, bool* again) {
+  *again = false;
+  const size_t bar = step.find('|');
+  const std::string_view want = step.substr(0, bar);
+  const std::string_view via = bar == std::string_view::npos ? std::string_view() : step.substr(bar + 1);
+  const int total = vt.total_rows();
+  int found = -1, opener = -1;
+  // The menu is the screen's latest: its lowest rows win.
+  for (int y = total - 1; y >= std::max(0, total - vt.height()) && found < 0; y--) {
+    int n = 0;
+    std::string label;
+    if (!menu_row(row_text(vt.row(y)), &n, &label)) continue;
+    if (same_label(label, want)) found = n;
+    else if (!via.empty() && opener < 0 && same_label(label, via)) opener = n;
+  }
+  if (found > 0) return std::to_string(found);
+  if (opener > 0) {
+    *again = true;
+    return std::to_string(opener);
+  }
+  return {};
+}
+
+namespace {
+
+// The extension's path, written when it is missing or names another mico.
+std::string tool_extension() {
+  const std::string& exe = self_exe();
+  if (exe.empty()) return {};
+  const std::string dir = state_dir(), path = dir + "/mico-tools.js";
+  const std::string want = tool_extension_source(exe);
+  std::string buf;
+  if (fs::read_prefix(path, 1u << 16, buf) == want) return path;
+  fs::make_dirs(dir);
+  return write_file_atomic(path, want) ? path : std::string();
+}
+
+}  // namespace
 
 void set_mcp_tools(bool on) { set_setting_on("mcp", on); }
 
@@ -114,13 +240,19 @@ bool LiveSession::start(const Launch& l) {
   Launch launch = l;
   LaunchExtras extras;
   const bool mcp = mcp_tools_enabled() && !self_exe().empty();
-  if (mcp) extras.mcp_exe = self_exe();
+  if (mcp) {
+    extras.mcp_exe = self_exe();
+    extras.tool_extension = tool_extension();
+  }
   if (plan_limits_enabled() && !self_exe().empty()) extras.status_exe = self_exe();
-  if (agent_hints_enabled()) extras.hints = std::string(kAgentHints) + (mcp ? kMcpHint : "");
+  if (agent_hints_enabled()) {
+    extras.hints = kAgentHints;
+    if (mcp) extras.mcp_hint = kMcpHint;
+  }
   driver().prepare(launch, extras);
   session_id_ = launch.session_id;
 
-  driver().snapshot_transcripts(preexisting_);
+  driver().snapshot_transcripts(launch.argv, cwd_, preexisting_);
   std::sort(preexisting_.begin(), preexisting_.end());
 
   argv_ = std::move(launch.argv);
@@ -205,6 +337,7 @@ void LiveSession::discover_transcript() {
   q.forked = forked_;
   q.started_at = started_at_;
   q.pid = pty_.pid();
+  q.argv = &argv_;
   q.preexisting = &preexisting_;
   q.claimed = [](const std::string& path) { return claimed_transcripts().count(path) > 0; };
   FoundTranscript found;
@@ -582,9 +715,21 @@ bool LiveSession::pump() {
         // The form is gone; give the agent's prompt a moment to come back.
         after_answer_ms_ = now + 250;
       } else {
-        pty_.write(answer_steps_[answer_step_++]);
-        answer_key_ms_ = now;
-        answer_feedback_ = false;
+        std::string key = answer_steps_[answer_step_];
+        bool again = false;
+        if (key.starts_with(kPickStep)) key = pick_key(vt_, std::string_view(key).substr(kPickStep.size()), &again);
+        if (key.empty()) {
+          // The menu is not what the steps expected: leave it to the user
+          // rather than press keys into whatever is there.
+          MLOG("answer: no menu row for %s on %s's screen", answer_steps_[answer_step_].c_str(), agent_.c_str());
+          cancel_answer();
+          answer_failed_ = true;
+        } else {
+          if (!again) answer_step_++;
+          pty_.write(key);
+          answer_key_ms_ = now;
+          answer_feedback_ = false;
+        }
       }
       answer_changed = true;
     }

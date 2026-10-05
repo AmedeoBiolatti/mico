@@ -168,7 +168,7 @@ bool CommandCatalog::pump() {
     const Adapter* adapter = adapter_for(agent);
     CommandProbeAnswer got;
     bool answered = false;
-    if (adapter && adapter->read_command_probe(p.buf, got)) {
+    if (adapter && adapter->read_command_probe(p.buf, eof, got)) {
       logs::line("commands: " + agent + " listed " + std::to_string(got.commands.size()));
       // The same answer may name the models and their effort levels: the chip
       // pickers' list, with descriptions a screen scrape never has.

@@ -79,7 +79,8 @@ struct BtwPanel {
 // text block after the user's latest prompt, with the lines it wrapped joined
 // again and its bold and italic marked. Transcripts get a block only once it
 // is complete, seconds after the screen shows it being written, so this is
-// what a chat can draw meanwhile. Claude and Codex only; empty when there is
+// what a chat can draw meanwhile. Claude and Codex (pi and omp read their own
+// layout, PiFamilyAdapter::screen_reply); empty when there is
 // none.
 enum class ReplyLayout {
   Claude,  // input box under a rule, a reply led by a bullet

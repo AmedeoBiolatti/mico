@@ -11,6 +11,28 @@ namespace mico {
 
 using namespace tools;
 
+namespace {
+
+// What a call was about, for the index: the shared pick, else the files an
+// omp edit script names, else its eval code, else the intent ("i") omp states
+// on every call.
+std::string call_subject(const js::Value& args) {
+  std::string s = subject(args);
+  if (!s.empty() || !args.is_object()) return s;
+  std::string intent;
+  js::scan_object(args.raw, [&](std::string_view k, const js::Value& v) {
+    if (k == "input" && v.is_string()) s = edit_script_paths(text_of(v));
+    else if (k == "code" && v.is_string()) s = text_of(v);
+    else if (k == "i" && v.is_string()) intent = text_of(v);
+    return s.empty();
+  });
+  if (s.empty()) s = std::move(intent);
+  if (s.size() > 4096) s.resize(4096);
+  return s;
+}
+
+}  // namespace
+
 // toolCall blocks in assistant messages, and toolResult
 // messages that name the call.
 void PiFamilyAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const {
@@ -51,7 +73,7 @@ void PiFamilyAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink
       else if (k == "arguments") arguments = v;
       return true;
     });
-    if (type == "toolCall" && !id.empty()) sink.call(id, at, offset, name, subject(arguments));
+    if (type == "toolCall" && !id.empty()) sink.call(id, at, offset, name, call_subject(arguments));
     return true;
   });
 }

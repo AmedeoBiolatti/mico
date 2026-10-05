@@ -75,7 +75,7 @@ void ClaudeAdapter::prepare(Launch& l, const LaunchExtras& x) const {
   // Appended: claude's own system prompt stays.
   if (!x.hints.empty() && !cmdline::mentions(argv, "system-prompt")) {
     argv.push_back("--append-system-prompt");
-    argv.push_back(x.hints);
+    argv.push_back(x.hints + x.mcp_hint);
   }
 }
 

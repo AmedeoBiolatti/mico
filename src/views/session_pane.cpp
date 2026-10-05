@@ -1295,6 +1295,29 @@ class SessionPane final : public Pane {
                                             : "mode: default");
       return;
     }
+    if (a.rfind("chipsteps:", 0) == 0) {
+      // "chipsteps:<key>|<value>|<steps>": keys that set it, steps apart by
+      // \x1f, taken one at a time as the screen settles (ChipControl::steps).
+      const std::string rest = a.substr(10);
+      const size_t b1 = rest.find('|'), b2 = rest.find('|', b1 + 1);
+      if (b1 == std::string::npos || b2 == std::string::npos) return;
+      const std::string key = rest.substr(0, b1), val = rest.substr(b1 + 1, b2 - b1 - 1);
+      const std::string body = rest.substr(b2 + 1);
+      std::vector<std::string> keys;
+      for (size_t at = 0; at <= body.size();) {
+        size_t end = body.find('\x1f', at);
+        if (end == std::string::npos) end = body.size();
+        keys.push_back(body.substr(at, end - at));
+        at = end + 1;
+      }
+      if (!s_->send_answer(std::move(keys))) {
+        app_->set_status("busy; try again in a moment");
+        return;
+      }
+      chat_.set_state(key, val);
+      app_->set_status("set " + key + " " + val);
+      return;
+    }
     if (a.rfind("chipset:", 0) == 0) {
       // A concrete value chosen from the chip menu: send it as the agent's own
       // set command, stay in the chat, and update the chip now — the agent

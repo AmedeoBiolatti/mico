@@ -9,6 +9,13 @@ agents keep running. Supported agents: **Claude Code**, **Codex**, **pi**
 share one adapter, since omp is built on pi's engine and writes the same
 session format.
 
+Each agent's sessions are looked for where the agent itself keeps them:
+`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME`, `$PI_CODING_AGENT_DIR` (pi and omp), an
+omp profile (`$OMP_PROFILE`, `~/.omp/profiles/<name>/agent`) or omp's
+`$XDG_DATA_HOME/omp`, and the flat folder `$PI_CODING_AGENT_SESSION_DIR` or a
+`--session-dir` on the command line names — the home-directory defaults
+otherwise.
+
 ## Status: M3 — daemon, live agents, raw + chat views
 
 Agents run in a background daemon and survive the client exiting, an ssh drop,
@@ -420,6 +427,10 @@ one small file rather than scraping two hundred rollouts, so the chat list shows
 `ai-title` record inside its transcript; omp writes its own `title`/
 `title_change` records straight into the session. Where none of that exists
 (plain pi), the first real user turn is used, and a bare id is the last resort.
+omp's subagents each write a transcript of their own beside the session that
+spawned them (`<session>/<AgentName>.jsonl`); each is listed as a chat named
+`↳ <AgentName> · <the parent's title>`, and resuming one resumes it by its path,
+since omp looks ids up among top-level sessions only.
 
 ## Design constraints that shaped the code
 
@@ -479,7 +490,8 @@ the transcript rather than guessed:
 The fields are whatever that agent actually wrote, so they differ by agent —
 claude reports a mode and a permission mode, codex reports an approval policy,
 a sandbox, a personality and a summary setting, pi and omp report a model,
-provider and thinking level. Nothing is fabricated: a field absent from the
+provider and thinking level, and omp a mode (plan, vibe, goal) and service
+tier once one is set. Nothing is fabricated: a field absent from the
 transcript is absent from the strip.
 
 Each chip opens a picker sitting on top of the chip itself, with the cursor
@@ -490,14 +502,21 @@ chip lists the account's actual models — read from the same `initialize`
 answer as the "/" commands, so it carries claude's own names, descriptions
 and the exact `/model` values, with no screen-scraping — and the effort chip
 lists the levels those models report (`low` through `max`) rather than a
-hardcoded three. Codex lists its effort values inline; both send the agent's
-own set command. The **mode** chip walks Claude's
+hardcoded three. The other agents' models come from their own command
+lines, asked once per folder in a throwaway process: `codex debug models`,
+`pi --list-models`, `omp models --json`, each model with the levels it takes
+where the agent says. Codex's `/model` takes no value — typed with one, the
+line goes to the model as a message — so its chips walk codex's own menus:
+`/model`, then the model's row and the level's row, each found by its name on
+screen and picked by its number (Max and Ultra sit behind "More reasoning…").
+pi takes `/model provider/id` and `/thinking <level>`; omp, which has no
+command for the level alone, takes `/switch provider/id:level` for the
+session. Both open a completion menu as the line is typed, so the chip sends
+Enter twice: once to take the completion, once to send. The **mode** chip walks Claude's
 permission ring — `default`, `accept edits`, `plan mode` — sending exactly the
 number of Shift+Tab presses needed to reach the entry you pick, so plan mode
-is one click away. pi and omp switch both model and thinking level through a
-fuzzy-search picker rather than a one-shot command, so their chips open that
-picker (`/model`, `/thinking`) instead of listing values mico would have to
-guess at. Chips with no known command show their value and can be copied — "copy
+is one click away. Until a model list has come in, the model chip opens the
+agent's own picker instead. Chips with no known command show their value and can be copied — "copy
 value" stays in the picker whatever is typed. A
 stored transcript is read-only: there is nothing running to command.
 
@@ -519,6 +538,18 @@ what an earlier Claude process left running went with it — and nothing
 shows once the agent has exited. `mico --background FILE` replays a
 transcript's starts and ends.
 
+omp and codex leave work running too, and the same list follows it. omp's
+come from its tool results: a `bash` call run with `async` and a `task`'s
+subagents (each one a row, under **Agents**) start when their result says
+`"async": {"state": "running"}`, hub services while `details.daemon` runs,
+and vibe sessions between their `turn-started` and `turn-settled` records;
+they end when the finished jobs are delivered, or a `wait` or `hub` snapshot
+no longer lists them as running. Codex's: a code cell its `exec` tool yields
+("Script running with cell ID 3"), until a `wait` on it completes, and a
+command still running when its call returned (its output names a
+`session_id` and no exit code) until its `CommandExecution` item completes —
+what codex's own `/ps` lists.
+
 Each task's progress shows too, read the way the activity row reads a
 foreground command's: from the end of what it prints, its last line that is
 a tqdm bar, a `[n/m]` or `[ NN%]` counter, or a bar with a count. Claude
@@ -539,6 +570,11 @@ trust flag into `~/.claude.json` when you add it — the same effect as clicking
 has no project store yet, mico falls back to answering the dialog once.) Any
 *later* prompt is yours to answer; use F2 to open the agent's terminal when
 its prompt cannot be answered through a question card.
+
+Codex asks too, in a git repository it has not seen ("Trust this folder?").
+mico writes nothing into codex's config for it: it answers the dialog when a
+session starts, one key at a time, Enter only once the cursor is on "Trust
+and continue", and codex saves the decision itself.
 
 ## While you are away
 
@@ -748,7 +784,11 @@ line; a file from when each part was `on` or `off` still reads as it meant.
   pictures; elsewhere they are drawn in text.
 - **Agents:** the agent hints (the note on what mico draws, added to their
   system prompt) and the plot tool (mico's MCP server), off or on. These apply
-  to agents started from then on.
+  to agents started from then on. pi and omp load extensions rather than MCP
+  servers, so they get the tool as one: `$XDG_STATE_HOME/mico/mico-tools.js`,
+  passed with `-e`, which asks `mico --mcp` for the tool and hands it each
+  call, so the check is the same. omp calls an extension's tool through its
+  `write` tool, at `xd://mico_plot`; either way the call is drawn as a chart.
 - **Away:** notifications (off · bell · desktop) and whether a daemon resumes
   the agents its predecessor was running; see **While you are away**.
 
@@ -788,7 +828,10 @@ change's heading, opens the chat at the call that made it. `t` cycles today,
 The diffs are the agents' own records, so nothing is compared or guessed:
 Claude's `structuredPatch`, Codex's `FileChange` items (or, in older rollouts,
 the `apply_patch` call once its result says it applied), pi's and omp's edit
-results and their `write` calls. A change that failed is left out. Only the
+results and their `write` calls. omp's `edit` argument is a script in its own
+language (`[path#hash]` headers, `SWAP`/`INS.POST`/`DEL` commands), not a
+diff, so its chat row is summarised by the files it names and its result shows
+the numbered diff omp recorded for it. A change that failed is left out. Only the
 counts are kept in memory — the index behind `Tools` gathers them in the same
 pass — and a change's lines are read again from its transcript line when it
 scrolls into view. The index's first pass runs as soon as the daemon starts,
@@ -1220,6 +1263,11 @@ their output, and injected reminders as *user* messages; on this machine that
 was 8 of 28 apparent user rows. Command output and bare reminders are demoted to
 machinery, a slash-command collapses to the one line it was (`/model`), and a
 reminder injected into a real turn is stripped out of it.
+omp keeps its own notices in `custom_message` records and marks the ones it
+displays: a background job finishing and a message from another agent each
+become a one-line notice, a collab guest's prompt is a user turn, and the
+reminders it hides stay hidden. Its `compaction` records are a divider, as
+claude's and codex's are.
 
 **Answers and the work before them.** What an agent writes between its tool
 calls ("Let me check the tests first") and what it answers at the end look
@@ -1345,7 +1393,11 @@ continuations of a completed message are the subtle leak. pi and omp render a
 chat of their own into the terminal, so their views are transcript-only: no
 tail is spliced at all, because any row of their screen is their rendering of
 a turn mico renders itself — the streaming reply, the thinking, the tool
-output. Claude and Codex keep the strip. `Esc` in the chat prompt still
+output. Claude and Codex keep the strip. The reply being written is read off
+every agent's screen all the same, as markdown, until the transcript has it:
+for pi and omp, the plain text one column in above their input box (pi's two
+rules) or status bar (omp's), under the user's message or a tool's box, each
+in a background of its own, or the grey italic of thinking. `Esc` in the chat prompt still
 reaches the agent, because interrupting has to keep working when the agent's
 own "esc to interrupt" hint is not the thing on screen. This is why both planes are always running even though only one
 is painted.
