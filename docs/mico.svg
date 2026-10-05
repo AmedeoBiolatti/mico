@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="mico">
+  <rect width="120" height="120" rx="26" fill="#6fcfb8"/>
+  <path d="M14 62 C14 33 35 15 60 15 C85 15 106 33 106 62 Q106 66 102 66 H18 Q14 66 14 62 Z" fill="#141a20"/>
+  <circle cx="42" cy="36" r="8" fill="#6fcfb8"/>
+  <circle cx="80" cy="48" r="5.5" fill="#6fcfb8"/>
+  <rect x="35" y="74" width="50" height="33" rx="11" fill="#141a20"/>
+  <rect x="48" y="81" width="7" height="13" rx="3.5" fill="#6fcfb8"/>
+  <rect x="65" y="81" width="7" height="13" rx="3.5" fill="#6fcfb8"/>
+</svg>
