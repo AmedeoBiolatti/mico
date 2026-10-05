@@ -143,3 +143,7 @@ python3 tests/render_preview.py out/         # render the UI to PNGs (needs Pill
 
 None of the tests start a real coding agent. CI builds with GCC 13 and
 Clang 18 on pushes to `main` and on pull requests.
+
+## License
+
+[MIT](LICENSE).
