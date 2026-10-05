@@ -6,54 +6,108 @@ namespace mico {
 namespace {
 
 Theme light() {
+  // A mid-tone paper, not white: surfaces step darker so panels, code and
+  // selections stay distinct, and inks are deep enough to hold contrast on it.
   Theme t;
-  t.bg = 0xFAFAF8;
-  t.panel = 0xF4F3F0;
-  t.panel_alt = 0xEBEAE5;
-  t.border = 0xD3D0CA;
-  t.border_focus = 0x2A8C7C;
-  t.text = 0x24292F;
-  t.dim = 0x6A737D;
-  t.accent = 0x1F7A6C;
-  t.user = 0x1B6B5F;
-  t.assistant = 0x24292F;
-  t.thinking = 0x7457B5;
-  t.tool = 0x9C5F10;
-  t.ok = 0x2C8440;
-  t.err = 0xC0363A;
-  t.warn = 0x9C5F10;
-  t.code = 0x955A0C;
-  t.link = 0x0B62C4;
-  t.heading = 0x2958AE;
-  t.quote = 0x6A737D;
-  t.added = 0x2C8440;
-  t.removed = 0xC0363A;
-  t.added_bg = 0xE4F3E8;
-  t.added_strong = 0xC2E6CB;
-  t.removed_bg = 0xFBE8E8;
-  t.removed_strong = 0xF3C4C4;
-  t.hunk = 0x7457B5;
-  t.math = 0x177C89;
-  t.code_bg = 0xEBE9E4;
-  t.code_text = 0x24292F;
-  t.code_keyword = 0x8A3DB2;
-  t.code_string = 0x2B7A30;
-  t.code_comment = 0x78808B;
-  t.code_number = 0xB0530B;
-  t.code_type = 0x955A0C;
-  t.code_func = 0x1D5DAE;
-  t.code_mark = 0xA9AEB5;
-  const Color ansi[16] = {0x24292F, 0xC0363A, 0x2C8440, 0x946400, 0x0B62C4, 0x8A3DB2, 0x177C89, 0x6A737D,
-                          0x57606A, 0xD64F4B, 0x38A158, 0xB17E00, 0x2D7FE9, 0xA25BD0, 0x1F9FAD, 0x24292F};
+  t.bg = 0xE6E4DE;
+  t.panel = 0xDCDAD3;
+  t.panel_alt = 0xD2D0C8;
+  t.border = 0xA9A69C;
+  t.border_focus = 0x1F7A6C;
+  t.text = 0x1B1F24;
+  t.dim = 0x525A64;
+  t.accent = 0x15695C;
+  t.user = 0x135A4F;
+  t.assistant = 0x1B1F24;
+  t.thinking = 0x5E41A0;
+  t.tool = 0x84500A;
+  t.ok = 0x1F6F32;
+  t.err = 0xB02A2E;
+  t.warn = 0x84500A;
+  t.code = 0x7E4A08;
+  t.link = 0x0A55AB;
+  t.heading = 0x1F4A96;
+  t.quote = 0x545C66;
+  t.added = 0x1F6F32;
+  t.removed = 0xB02A2E;
+  t.added_bg = 0xCCE4D2;
+  t.added_strong = 0xA5D1B0;
+  t.removed_bg = 0xEBD0D0;
+  t.removed_strong = 0xDDA9A9;
+  t.hunk = 0x5E41A0;
+  t.math = 0x0F6874;
+  t.code_bg = 0xD3D1C9;
+  t.code_text = 0x1B1F24;
+  t.code_keyword = 0x7A2FA3;
+  t.code_string = 0x1F6A25;
+  t.code_comment = 0x626A75;
+  t.code_number = 0x9A4604;
+  t.code_type = 0x7E4A08;
+  t.code_func = 0x154F9A;
+  t.code_mark = 0x8E8B82;
+  const Color ansi[16] = {0x1B1F24, 0xB02A2E, 0x1F6F32, 0x7E5800, 0x0A55AB, 0x7A2FA3, 0x0F6874, 0x5A626C,
+                          0x424A54, 0xC8433F, 0x2E8A48, 0x956A00, 0x2370D4, 0x9449BE, 0x1A8896, 0x1B1F24};
   for (int i = 0; i < 16; i++) t.ansi[i] = ansi[i];
-  t.working = 0x0B62C4;
-  t.idle = 0x8C949E;
-  t.attention = 0x9C6400;
-  t.user_bg = 0xE2EEEB;
-  t.sel_bg = 0xCCE1F2;
-  t.sel_inactive = 0xE3E8ED;
-  t.menu_bg = 0xFFFFFF;
-  t.strip_bg = 0xEBE9E4;
+  t.working = 0x0A55AB;
+  t.idle = 0x7A828C;
+  t.attention = 0x84580A;
+  t.user_bg = 0xCADBD6;
+  t.sel_bg = 0xB3CCE0;
+  t.sel_inactive = 0xCDD4DA;
+  t.menu_bg = 0xEEEDE9;
+  t.strip_bg = 0xD0CEC6;
+  return t;
+}
+
+Theme dracula() {
+  Theme t;
+  t.bg = 0x282A36;
+  t.panel = 0x2D2F3D;
+  t.panel_alt = 0x343746;
+  t.border = 0x44475A;
+  t.border_focus = 0xBD93F9;
+  t.text = 0xF8F8F2;
+  t.dim = 0x9AA3CC;
+  t.accent = 0xBD93F9;
+  t.user = 0x8BE9FD;
+  t.assistant = 0xF8F8F2;
+  t.thinking = 0x9AA3CC;
+  t.tool = 0xFFB86C;
+  t.ok = 0x50FA7B;
+  t.err = 0xFF5555;
+  t.warn = 0xFFB86C;
+  t.code = 0xF1FA8C;
+  t.link = 0x8BE9FD;
+  t.heading = 0xBD93F9;
+  t.quote = 0x8A93BD;
+  t.added = 0x50FA7B;
+  t.removed = 0xFF5555;
+  t.added_bg = 0x1F3A2D;
+  t.added_strong = 0x2C6340;
+  t.removed_bg = 0x3E2631;
+  t.removed_strong = 0x70303D;
+  t.hunk = 0xFF79C6;
+  t.math = 0x8BE9FD;
+  t.code_bg = 0x21222C;
+  t.code_text = 0xF8F8F2;
+  t.code_keyword = 0xFF79C6;
+  t.code_string = 0xF1FA8C;
+  t.code_comment = 0x6272A4;
+  t.code_number = 0xBD93F9;
+  t.code_type = 0x8BE9FD;
+  t.code_func = 0x50FA7B;
+  t.code_mark = 0x565A72;
+  const Color ansi[16] = {0x6272A4, 0xFF5555, 0x50FA7B, 0xF1FA8C, 0xBD93F9, 0xFF79C6, 0x8BE9FD, 0xF8F8F2,
+                          0x7B86B3, 0xFF6E6E, 0x69FF94, 0xFFFFA5, 0xD6ACFF, 0xFF92DF, 0xA4FFFF, 0xFFFFFF};
+  for (int i = 0; i < 16; i++) t.ansi[i] = ansi[i];
+  t.working = 0x8BE9FD;
+  t.idle = 0x6272A4;
+  t.attention = 0xF1FA8C;
+  t.user_bg = 0x343A52;
+  t.sel_bg = 0x44475A;
+  t.sel_inactive = 0x3A3D4E;
+  t.menu_bg = 0x343746;
+  t.strip_bg = 0x303241;
   return t;
 }
 
@@ -166,9 +220,10 @@ Theme warm() {
 const std::vector<NamedTheme>& themes() {
   static const std::vector<NamedTheme> all = {
       {"dark", "mico's own: deep blue-grey, teal accents", Theme{}},
-      {"light", "a light surface, for a light terminal or a bright room", light()},
+      {"light", "a mid-tone paper with dark ink, for a light terminal or a bright room", light()},
       {"high contrast", "black and white, saturated accents", high_contrast()},
       {"warm", "browns and muted earth colours", warm()},
+      {"dracula", "purple, pink and cyan on a dark slate", dracula()},
   };
   return all;
 }
