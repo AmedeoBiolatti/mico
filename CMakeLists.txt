@@ -207,6 +207,15 @@ target_link_libraries(mico PRIVATE mico_net)
 # samples in a profile dominated by short-lived hot loops.
 target_link_options(mico PRIVATE -Wl,-z,now -static-libstdc++ -static-libgcc)
 
+# `cmake --install build` puts mico in ~/.local/bin: no root needed. Agents
+# start mico as their MCP server by the path it runs from, so once installed,
+# run that copy rather than build/mico.
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX "$ENV{HOME}/.local" CACHE PATH "Install prefix" FORCE)
+endif()
+include(GNUInstallDirs)
+install(TARGETS mico RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
 # `ctest` runs the self-test and the fixture-driven handoff checks. None of
 # them starts a real agent. Each gets its own HOME and XDG dirs, so a local run
 # never touches the real daemon or config.

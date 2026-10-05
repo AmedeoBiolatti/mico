@@ -55,8 +55,12 @@ Clang 18).
 
 ```sh
 cmake -S . -B build -G Ninja && cmake --build build
-./build/mico
+cmake --install build    # copies mico to ~/.local/bin; no root needed
+mico
 ```
+
+`--prefix DIR` installs somewhere else. After a rebuild, install again and run
+`mico kill`, so the next daemon runs the new copy.
 
 `mico` attaches to the daemon and starts one if none is running. Press `q` or
 close the terminal to detach: your agents keep running.
