@@ -317,9 +317,11 @@ adapter, or correlation not yet resolved, degrades to raw-only.
 
 ## Performance
 
-`mico --bench` measures the paths that matter against the largest transcript on
-this machine (a 205 MB codex rollout), `mico --selftest` checks the hand-written
-JSON reader and the wrapper.
+`mico --bench` measures the paths that matter against the largest transcript in
+the folder it runs in, or in `$MICO_BENCH_FOLDER` (here a 205 MB codex rollout).
+`mico --selftest` checks the hand-written JSON reader and the wrapper; with
+`$MICO_BENCH_FOLDER` set it also checks scrollbar seeking on that folder's
+largest transcript.
 
 |                                   | start | now |
 |-----------------------------------|------:|----:|

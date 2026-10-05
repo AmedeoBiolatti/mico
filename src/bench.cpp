@@ -57,6 +57,14 @@ void line(const char* label, double ms, const char* note = "") {
   printf("  %-38s %8.1f ms   %s\n", label, ms, note);
 }
 
+// The folder whose chats are measured: $MICO_BENCH_FOLDER, else the one the
+// bench runs in.
+std::string bench_folder() {
+  if (const char* dir = getenv("MICO_BENCH_FOLDER"); dir && *dir) return dir;
+  char cwd[4096];
+  return getcwd(cwd, sizeof cwd) ? cwd : "";
+}
+
 }  // namespace
 
 int run_bench() {
@@ -122,7 +130,7 @@ int run_bench() {
 
   auto t = Clock::now();
   Store store;
-  store.add_folder("/home/bamedeo/Desktop/kaggle/kaggriculture", false);
+  store.add_folder(bench_folder(), false);
   store.scan();
   double scan_ms = ms_since(t);
   char note[128];

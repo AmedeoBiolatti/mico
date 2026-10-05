@@ -1687,10 +1687,11 @@ int run_selftest() {
 
   // Dragging the scrollbar seeks by byte offset into a file the index has only
   // partly covered. Asking for a position and reading the thumb back has to
-  // agree, or the thumb walks away from the pointer.
-  {
+  // agree, or the thumb walks away from the pointer. It needs a big real
+  // transcript, so it runs only when $MICO_BENCH_FOLDER names a folder with one.
+  if (const char* dir = getenv("MICO_BENCH_FOLDER"); dir && *dir) {
     Store store;
-    store.add_folder("/home/bamedeo/Desktop/kaggle/kaggriculture", false);
+    store.add_folder(dir, false);
     store.scan();
     const SessionRef* big = nullptr;
     for (const auto& pr : store.projects())
