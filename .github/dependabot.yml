@@ -1,0 +1,8 @@
+# The workflows' actions are pinned to commit SHAs; Dependabot proposes each
+# new release as a pull request, so a moved tag never changes CI on its own.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
