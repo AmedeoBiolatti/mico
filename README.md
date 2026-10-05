@@ -75,6 +75,10 @@ gh attestation verify mico-*.tar.gz -R AmedeoBiolatti/mico
 tar -xzf mico-*.tar.gz && install -Dm755 mico-*/bin/mico ~/.local/bin/mico
 ```
 
+`gh attestation` needs gh 2.49 or newer. Ubuntu 24.04's own `gh` package is
+older; GitHub's apt repository at [cli.github.com](https://cli.github.com) has
+the current one.
+
 `mico` attaches to the daemon and starts one if none is running. Press `q` or
 close the terminal to detach: your agents keep running.
 
