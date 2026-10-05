@@ -580,6 +580,9 @@ void App::open_in_editor(const std::string& url) {
     line = std::atoi(path.c_str() + h + 2);
     path.resize(h);
   }
+  // Only an absolute path: the link may come from what an agent wrote, and a
+  // "path" like "+!cmd" or "-c..." would be read by the editor as an option.
+  if (!path.starts_with("/")) return;
   const char* ed = getenv("VISUAL");
   if (!ed || !*ed) ed = getenv("EDITOR");
   if (!ed || !*ed) ed = "vi";

@@ -52,6 +52,22 @@ std::set<std::string> open_transcripts(pid_t leader) {
   return paths;
 }
 
+// Whether the user's own config.toml sets developer_instructions: a -c
+// override would replace theirs, not add to it.
+bool config_has_instructions() {
+  const char* home = getenv("CODEX_HOME");
+  const std::string path = (home && *home ? std::string(home) : fs::home() + "/.codex") + "/config.toml";
+  std::string buf;
+  const std::string_view s = fs::read_prefix(path, 1u << 20, buf);
+  for (size_t at = s.find("developer_instructions"); at != std::string_view::npos;
+       at = s.find("developer_instructions", at + 1)) {
+    size_t b = at;
+    while (b > 0 && (s[b - 1] == ' ' || s[b - 1] == '\t')) b--;
+    if (b == 0 || s[b - 1] == '\n') return true;  // a key, not a mention in a value
+  }
+  return false;
+}
+
 }  // namespace
 
 void CodexAdapter::prepare(Launch& l, const LaunchExtras& x) const {
@@ -67,8 +83,9 @@ void CodexAdapter::prepare(Launch& l, const LaunchExtras& x) const {
                                    "mcp_servers.mico.args=[\"--mcp\"]", "-c",
                                    "mcp_servers.mico.tools.plot.approval_mode=\"approve\""});
   }
-  // Set only when the command line does not set developer_instructions itself.
-  if (!x.hints.empty() && !cmdline::mentions(argv, "developer_instructions"))
+  // Set only when neither the command line nor the user's config sets
+  // developer_instructions: theirs is kept, and mico's hints go without.
+  if (!x.hints.empty() && !cmdline::mentions(argv, "developer_instructions") && !config_has_instructions())
     argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + cmdline::toml_string(x.hints)});
 }
 

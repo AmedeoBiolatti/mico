@@ -1,3 +1,4 @@
+#include <sys/stat.h>
 #include <unistd.h>
 #include <algorithm>
 #include <chrono>
@@ -306,6 +307,26 @@ int run_regression_tests() {
       check(codex.argv().size() > 2 && codex.argv()[1] == "-c" &&
                 codex.argv()[2].starts_with("developer_instructions=\"") && codex.argv()[3] == "resume",
             "codex gets the charts note as developer_instructions, before its subcommand");
+      {
+        // The user's own developer_instructions in config.toml are not overridden.
+        const char* had = getenv("CODEX_HOME");
+        const std::string saved = had ? had : "";
+        const std::string home = project + "/codex-home";
+        mkdir(home.c_str(), 0700);
+        if (FILE* f = fopen((home + "/config.toml").c_str(), "w")) {
+          fputs("model = \"x\"\ndeveloper_instructions = \"mine\"\n", f);
+          fclose(f);
+        }
+        setenv("CODEX_HOME", home.c_str(), 1);
+        LiveSession own;
+        cl.argv = {"codex"};
+        own.start(cl);
+        check(std::none_of(own.argv().begin(), own.argv().end(),
+                           [](const std::string& x) { return x.starts_with("developer_instructions="); }),
+              "codex keeps developer_instructions set in the user's config.toml");
+        if (had) setenv("CODEX_HOME", saved.c_str(), 1);
+        else unsetenv("CODEX_HOME");
+      }
       cl.agent = "claude"; cl.session_id = "own-prompt";
       cl.argv = {"claude", "--append-system-prompt", "mine"};
       mine.start(cl);
@@ -1237,6 +1258,16 @@ int run_regression_tests() {
       app.store().set_archived("codex", "legacy", false);
     }
     std::filesystem::remove_all(base + "/.codex");
+  }
+
+  {
+    // A file link opens only an absolute path in the editor: one from an
+    // agent's text like file://+!cmd would be an editor option, not a file.
+    App app;
+    const size_t before = app.workspace().live().size();
+    app.open_in_editor("file://+!true");
+    app.open_in_editor("file://-c!true");
+    check(app.workspace().live().size() == before, "a file link that is not an absolute path opens no editor");
   }
 
   {
