@@ -3736,7 +3736,11 @@ int run_selftest() {
     if (pipe(ready) == 0) {
       const pid_t child = fork();
       if (child == 0) {
-        std::vector<char> hold(64u << 20, 1);
+        // Touched page by page through a volatile pointer: an optimiser may
+        // drop a buffer that is filled and never read.
+        std::vector<char> hold(64u << 20);
+        volatile char* touch = hold.data();
+        for (size_t i = 0; i < hold.size(); i += 4096) touch[i] = 1;
         if (write(ready[1], "x", 1) != 1) {}
         pause();
         _exit(0);

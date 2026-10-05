@@ -501,13 +501,14 @@ int run_regression_tests() {
     const auto fds_of = [](pid_t pid) {
       std::vector<std::string> out;
       const std::string dir = "/proc/" + std::to_string(pid) + "/fd";
+      // Once it is sleep, it has exec'd, and what it holds is what it keeps:
+      // listed after that, never before.
       for (int i = 0; i < 200; i++) {
-        out.clear();
-        for (const auto& e : std::filesystem::directory_iterator(dir)) out.push_back(e.path().filename());
         std::error_code ec;
         if (std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", ec).filename() == "sleep") break;
         usleep(5000);
       }
+      for (const auto& e : std::filesystem::directory_iterator(dir)) out.push_back(e.path().filename());
       return out.size();
     };
     check(fds_of(second.pid()) == 3, "fds: an agent holds only its terminal");
