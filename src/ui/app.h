@@ -359,6 +359,10 @@ class App {
   void open_tab(size_t i) { show_tab(i); }
 
  private:
+  // The commands too long to sit in run_command.
+  void open_command_palette();                 // :help
+  void web_command(const std::string& arg);    // :web
+  void blame_command(const std::string& arg);  // :blame
   std::unique_ptr<Workspace> own_ws_;  // when constructed without one
   Workspace& ws_;
 

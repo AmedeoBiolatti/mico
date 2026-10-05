@@ -226,6 +226,185 @@ void flush_client(Client& c) {
 
 }  // namespace
 
+namespace {
+
+// An agent finished, or needs you. Nobody is told while someone is looking
+// at mico; with no terminal attached, the desktop is.
+void deliver_notices(App& app, std::vector<std::unique_ptr<Client>>& clients) {
+  const auto notices = app.take_notices();
+  if (notices.empty()) return;
+  bool attached = false, watched = false;
+  for (const auto& c : clients) {
+    attached |= c->hello;
+    watched |= c->hello && c->focus_known && c->focused;
+  }
+  for (const auto& n : notices) {
+    if (!attached) {
+      if (notify_mode() == NotifyMode::Desktop) notify_desktop(n.title, n.body);
+      continue;
+    }
+    if (watched) continue;
+    for (auto& c : clients) {
+      if (!c->hello || !App::announce(n, c->focus_known, c->focused)) continue;
+      proto::encode(proto::Type::Frame, App::notice_seq(n, c->caps.notify), c->out);
+      flush_client(*c);
+    }
+  }
+}
+
+// Equations are drawn as images only when every attached terminal can
+// show them: the layout is shared, and a placeholder means nothing to a
+// terminal without the protocol. The first such terminal's cell size
+// decides the image size. True when that changed what is drawn.
+bool configure_images(const std::vector<std::unique_ptr<Client>>& clients) {
+  math::Config mc = math::config();
+  bool any = false, all = true;
+  int cw = 0, ch = 0;
+  for (const auto& c : clients) {
+    if (!c->hello) continue;
+    any = true;
+    if (!c->caps.any()) all = false;
+    else if (!cw && c->caps.cell_w > 0) { cw = c->caps.cell_w; ch = c->caps.cell_h; }
+  }
+  // kitty scales a picture to its cells; sixel paints exact pixels, so a
+  // sixel terminal with other-sized cells would get misfit pictures.
+  for (const auto& c : clients)
+    if (c->hello && c->caps.sixel && (c->caps.cell_w != cw || c->caps.cell_h != ch)) all = false;
+  mc.enabled = any && all;
+  mc.kitty = mc.enabled;
+  for (const auto& c : clients)
+    if (c->hello && !c->caps.kitty) mc.kitty = false;
+  if (cw > 0) { mc.cell_w = cw; mc.cell_h = ch; }
+  mc.fg = active_theme().math;
+  const uint64_t gen = math::generation();
+  math::configure(mc);
+  return math::generation() != gen;
+}
+
+// What one attached terminal is sent of a drawn frame: the mouse and
+// clipboard changes, the pictures, then the cells that changed for it.
+void send_frame(App& app, const Surface& back, Client& c, const std::string& clip,
+                const std::vector<uint32_t>& evicted, bool images, Color theme_bg) {
+  std::string frame;
+
+  // Hand the mouse back to the terminal, or take it again. Also switch
+  // to any-event tracking while a popup menu is open, so hovering a menu
+  // item with no button held still moves the highlight.
+  if (app.wants_mouse() != c.mouse_on || app.wants_motion() != c.mouse_any) {
+    c.mouse_on = app.wants_mouse();
+    c.mouse_any = app.wants_motion();
+    frame += mouse_mode_seq(c.mouse_on, c.mouse_any);
+    c.needs_full = true;  // repaint once, then hold still
+  }
+  if (!clip.empty()) frame += clipboard_seq(clip);
+  if (c.set_background) {
+    frame += tty::background_seq(theme_bg);
+    c.set_background = false;
+  }
+
+  // While selecting, the screen must not move: a repaint clears the
+  // terminal's own selection out from under the drag.
+  // Image data goes ahead of the cells that show it, in messages of its
+  // own: a screenful of equations can outgrow one frame's payload.
+  std::string pictures;
+  if (!evicted.empty()) math::free_images(evicted, c.images, pictures, c.caps.tmux);
+  if (!app.selection_mode() || c.needs_full) {
+    const ImageMode mode = !images ? ImageMode::None
+                           : c.caps.kitty ? ImageMode::Kitty
+                           : c.caps.sixel ? ImageMode::Sixel
+                                           : ImageMode::None;
+    if (mode == ImageMode::Kitty) math::send_images(back, c.images, pictures, c.caps.tmux);
+    encode_frame(back, c.front, frame, c.needs_full, mode);
+    if (mode == ImageMode::Sixel) math::sixel_pass(back, c.front, frame);
+  }
+  constexpr size_t kPart = 4u << 20;
+  for (size_t off = 0; off < pictures.size(); off += kPart)
+    proto::encode(proto::Type::Frame, std::string_view(pictures).substr(off, kPart), c.out);
+
+  if (!frame.empty()) proto::encode(proto::Type::Frame, frame, c.out);
+  c.needs_full = false;
+  flush_client(c);
+}
+
+// Reads what a client sent: its size and terminal, and input, fed to the App
+// as if typed here.
+void read_client(App& app, Client& c) {
+  char buf[16384];
+  for (;;) {
+    ssize_t n = read(c.fd, buf, sizeof buf);
+    if (n > 0) { c.in.append(buf, size_t(n)); continue; }
+    if (n == 0) c.dead = true;
+    else if (errno == EINTR) continue;
+    break;
+  }
+
+  proto::Type t;
+  std::string payload;
+  while (proto::decode(c.in, &t, &payload)) {
+    switch (t) {
+      case proto::Type::Hello:
+        if (proto::decode_size(payload, &c.w, &c.h)) {
+          c.hello = true;
+          c.needs_full = true;
+          proto::decode_caps(payload, &c.caps);
+        }
+        break;
+      case proto::Type::Resize:
+        if (proto::decode_size(payload, &c.w, &c.h)) {
+          c.needs_full = true;
+          proto::decode_caps(payload, &c.caps);
+        }
+        break;
+      case proto::Type::Input:
+        // The client never decodes; it forwards what its terminal
+        // produced and the daemon interprets it exactly as if local.
+        c.dec.feed(payload);
+        while (auto ev = c.dec.next()) {
+          // Focus is this terminal's alone, not something to act on.
+          if (ev->type == InputEvent::Type::Focus) {
+            c.focused = ev->focus_in;
+            c.focus_known = true;
+            continue;
+          }
+          switch (app.feed(*ev)) {
+            // Only this client leaves; its agents carry on for everyone
+            // else, and for whoever attaches next.
+            case AppAction::Detach: c.dead = true; break;
+            case AppAction::Shutdown: c.dead = true; g_stop = kStopQuit; break;
+            default: break;
+          }
+          // A link this client's user clicked opens on their machine,
+          // which is where the client runs, not necessarily the daemon.
+          if (std::string url = app.take_open_url(); !url.empty())
+            proto::encode(proto::Type::OpenUrl, url, c.out);
+        }
+        c.escape_since = std::chrono::steady_clock::now();
+        break;
+      case proto::Type::Bye: c.dead = true; break;
+      // Detaching leaves the agents running; only an explicit Kill ends them.
+      case proto::Type::Kill: c.dead = true; g_stop = kStopKill; break;
+      default: break;
+    }
+  }
+}
+
+// Readable input is processed before a lone ESC is resolved: flushing before
+// read() split a bracketed paste or arrow sequence at socket boundaries.
+// Elapsed time, so output from a busy agent cannot starve Escape.
+void flush_escapes(App& app, std::vector<std::unique_ptr<Client>>& clients) {
+  const auto now = std::chrono::steady_clock::now();
+  for (auto& c : clients) {
+    if (c->dead || !c->dec.pending_escape() || now - c->escape_since < std::chrono::milliseconds(25)) continue;
+    if (auto ev = c->dec.flush()) {
+      const auto action = app.feed(*ev);
+      if (action != AppAction::None) c->dead = true;
+      if (action == AppAction::Shutdown) g_stop = kStopQuit;
+    }
+  }
+}
+
+}  // namespace
+
 int run_daemon() {
   const std::string dir = proto::socket_dir();
   if (!proto::private_dir(dir, true)) {
@@ -289,58 +468,11 @@ int run_daemon() {
     }
     app.save_view_if_changed();
 
-    // An agent finished, or needs you. Nobody is told while someone is
-    // looking at mico; with no terminal attached, the desktop is.
-    if (auto notices = app.take_notices(); !notices.empty()) {
-      bool attached = false, watched = false;
-      for (const auto& c : clients) {
-        attached |= c->hello;
-        watched |= c->hello && c->focus_known && c->focused;
-      }
-      for (const auto& n : notices) {
-        if (!attached) {
-          if (notify_mode() == NotifyMode::Desktop) notify_desktop(n.title, n.body);
-          continue;
-        }
-        if (watched) continue;
-        for (auto& c : clients) {
-          if (!c->hello || !App::announce(n, c->focus_known, c->focused)) continue;
-          proto::encode(proto::Type::Frame, App::notice_seq(n, c->caps.notify), c->out);
-          flush_client(*c);
-        }
-      }
-    }
+    deliver_notices(app, clients);
     web.sync();
     web.pump();
 
-    // Equations are drawn as images only when every attached terminal can
-    // show them: the layout is shared, and a placeholder means nothing to a
-    // terminal without the protocol. The first such terminal's cell size
-    // decides the image size.
-    {
-      math::Config mc = math::config();
-      bool any = false, all = true;
-      int cw = 0, ch = 0;
-      for (const auto& c : clients) {
-        if (!c->hello) continue;
-        any = true;
-        if (!c->caps.any()) all = false;
-        else if (!cw && c->caps.cell_w > 0) { cw = c->caps.cell_w; ch = c->caps.cell_h; }
-      }
-      // kitty scales a picture to its cells; sixel paints exact pixels, so a
-      // sixel terminal with other-sized cells would get misfit pictures.
-      for (const auto& c : clients)
-        if (c->hello && c->caps.sixel && (c->caps.cell_w != cw || c->caps.cell_h != ch)) all = false;
-      mc.enabled = any && all;
-      mc.kitty = mc.enabled;
-      for (const auto& c : clients)
-        if (c->hello && !c->caps.kitty) mc.kitty = false;
-      if (cw > 0) { mc.cell_w = cw; mc.cell_h = ch; }
-      mc.fg = active_theme().math;
-      const uint64_t gen = math::generation();
-      math::configure(mc);
-      if (math::generation() != gen) dirty = true;
-    }
+    if (configure_images(clients)) dirty = true;
 
     // A new theme: every terminal is given its background and repainted.
     if (const Color bg = active_theme().bg; bg != theme_bg) {
@@ -380,48 +512,8 @@ int run_daemon() {
       const std::string clip = app.take_clipboard();
       if (app.take_redraw())
         for (auto& c : clients) c->needs_full = true;
-      for (auto& c : clients) {
-        if (!c->hello) continue;
-        std::string frame;
-
-        // Hand the mouse back to the terminal, or take it again. Also switch
-        // to any-event tracking while a popup menu is open, so hovering a menu
-        // item with no button held still moves the highlight.
-        if (app.wants_mouse() != c->mouse_on || app.wants_motion() != c->mouse_any) {
-          c->mouse_on = app.wants_mouse();
-          c->mouse_any = app.wants_motion();
-          frame += mouse_mode_seq(c->mouse_on, c->mouse_any);
-          c->needs_full = true;  // repaint once, then hold still
-        }
-        if (!clip.empty()) frame += clipboard_seq(clip);
-        if (c->set_background) {
-          frame += tty::background_seq(theme_bg);
-          c->set_background = false;
-        }
-
-        // While selecting, the screen must not move: a repaint clears the
-        // terminal's own selection out from under the drag.
-        // Image data goes ahead of the cells that show it, in messages of its
-        // own: a screenful of equations can outgrow one frame's payload.
-        std::string pictures;
-        if (!evicted.empty()) math::free_images(evicted, c->images, pictures, c->caps.tmux);
-        if (!app.selection_mode() || c->needs_full) {
-          const ImageMode mode = !images ? ImageMode::None
-                                 : c->caps.kitty ? ImageMode::Kitty
-                                 : c->caps.sixel ? ImageMode::Sixel
-                                                 : ImageMode::None;
-          if (mode == ImageMode::Kitty) math::send_images(back, c->images, pictures, c->caps.tmux);
-          encode_frame(back, c->front, frame, c->needs_full, mode);
-          if (mode == ImageMode::Sixel) math::sixel_pass(back, c->front, frame);
-        }
-        constexpr size_t kPart = 4u << 20;
-        for (size_t off = 0; off < pictures.size(); off += kPart)
-          proto::encode(proto::Type::Frame, std::string_view(pictures).substr(off, kPart), c->out);
-
-        if (!frame.empty()) proto::encode(proto::Type::Frame, frame, c->out);
-        c->needs_full = false;
-        flush_client(*c);
-      }
+      for (auto& c : clients)
+        if (c->hello) send_frame(app, back, *c, clip, evicted, images, theme_bg);
     }
 
     fds.clear();
@@ -467,81 +559,10 @@ int run_daemon() {
 
       if (re & POLLOUT) flush_client(c);
 
-      if (re & POLLIN) {
-        char buf[16384];
-        for (;;) {
-          ssize_t n = read(c.fd, buf, sizeof buf);
-          if (n > 0) { c.in.append(buf, size_t(n)); continue; }
-          if (n == 0) c.dead = true;
-          else if (errno == EINTR) continue;
-          break;
-        }
-
-        proto::Type t;
-        std::string payload;
-        while (proto::decode(c.in, &t, &payload)) {
-          switch (t) {
-            case proto::Type::Hello:
-              if (proto::decode_size(payload, &c.w, &c.h)) {
-                c.hello = true;
-                c.needs_full = true;
-                proto::decode_caps(payload, &c.caps);
-              }
-              break;
-            case proto::Type::Resize:
-              if (proto::decode_size(payload, &c.w, &c.h)) {
-                c.needs_full = true;
-                proto::decode_caps(payload, &c.caps);
-              }
-              break;
-            case proto::Type::Input:
-              // The client never decodes; it forwards what its terminal
-              // produced and the daemon interprets it exactly as if local.
-              c.dec.feed(payload);
-              while (auto ev = c.dec.next()) {
-                // Focus is this terminal's alone, not something to act on.
-                if (ev->type == InputEvent::Type::Focus) {
-                  c.focused = ev->focus_in;
-                  c.focus_known = true;
-                  continue;
-                }
-                switch (app.feed(*ev)) {
-                  // Only this client leaves; its agents carry on for everyone
-                  // else, and for whoever attaches next.
-                  case AppAction::Detach: c.dead = true; break;
-                  case AppAction::Shutdown: c.dead = true; g_stop = kStopQuit; break;
-                  default: break;
-                }
-                // A link this client's user clicked opens on their machine,
-                // which is where the client runs, not necessarily the daemon.
-                if (std::string url = app.take_open_url(); !url.empty())
-                  proto::encode(proto::Type::OpenUrl, url, c.out);
-              }
-              c.escape_since = std::chrono::steady_clock::now();
-              break;
-            case proto::Type::Bye: c.dead = true; break;
-            // Detaching leaves the agents running; only an explicit Kill ends them.
-            case proto::Type::Kill: c.dead = true; g_stop = kStopKill; break;
-            default: break;
-          }
-        }
-      }
-
+      if (re & POLLIN) read_client(app, c);
     }
 
-    // Process readable input before resolving a lone ESC. Flushing before
-    // read() split a bracketed paste or arrow sequence at socket boundaries.
-    // Use elapsed time so output from a busy agent cannot starve Escape.
-    const auto now = std::chrono::steady_clock::now();
-    for (auto& c : clients) {
-      if (c->dead || !c->dec.pending_escape() ||
-          now - c->escape_since < std::chrono::milliseconds(25)) continue;
-      if (auto ev = c->dec.flush()) {
-        const auto action = app.feed(*ev);
-        if (action != AppAction::None) c->dead = true;
-        if (action == AppAction::Shutdown) g_stop = kStopQuit;
-      }
-    }
+    flush_escapes(app, clients);
 
     for (size_t i = 0; i < clients.size();) {
       if (clients[i]->dead) {

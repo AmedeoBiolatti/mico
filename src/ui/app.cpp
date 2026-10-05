@@ -1241,6 +1241,105 @@ constexpr Command kCommands[] = {
 };
 }  // namespace
 
+void App::web_command(const std::string& arg) {
+  if (arg == "tailscale") {
+    // This machine's name on the tailnet, kept; the address with it is
+    // copied. mico does not start `tailscale serve` itself: what a machine
+    // offers to its network is for its user to say.
+    const std::string name = tailscale_name();
+    if (name.empty()) {
+      set_status("tailscale: no name found (is it installed and up? `tailscale status`)");
+      return;
+    }
+    set_web(true);
+    set_web_host(name);
+    copy_to_clipboard(web_remote_url());
+    set_status("tailnet address copied. Now run: tailscale serve --bg " + std::to_string(web_port()) +
+               "  (never funnel)");
+    return;
+  }
+  if (arg == "new-token") {
+    if (!new_web_token()) {
+      set_status("web view: no new token could be made; the old one stands");
+      return;
+    }
+    if (web_enabled()) copy_to_clipboard(web_remote_url().empty() ? web_url() : web_remote_url());
+    set_status("web view: a new token; browsers with the old one are let go" +
+               std::string(web_enabled() ? ", and the new address is on the clipboard" : ""));
+    return;
+  }
+  if (arg == "host off" || arg == "host") {
+    set_web_host({});
+    set_status("web view: no other host answered to");
+    return;
+  }
+  if (arg.starts_with("host ")) {
+    set_web_host(arg.substr(5));
+    if (web_host().empty()) set_status("web view: not a host name");
+    else {
+      set_web(true);
+      copy_to_clipboard(web_remote_url());
+      set_status("web view also answers to " + web_host() + " (over https); its address is on the clipboard");
+    }
+    return;
+  }
+  if (arg == "off") set_web(false);
+  else if (arg == "on" || arg.starts_with("on ")) set_web(true, arg.size() > 3 ? std::atoi(arg.c_str() + 3) : 0);
+  if (!web_enabled()) {
+    set_status("web view off  (:web on serves it on 127.0.0.1:" + std::to_string(web_port()) + ")");
+    return;
+  }
+  // The address carries the token: copied rather than only shown, so it
+  // need not be typed, and it stays out of the screen's scrollback.
+  copy_to_clipboard(web_remote_url().empty() ? web_url() : web_remote_url());
+  set_status("web view on 127.0.0.1:" + std::to_string(web_port()) +
+             (web_host().empty() ? "" : ", and " + web_host() + " over https") +
+             " \xE2\x80\x94 its address (with the token) is on the clipboard");
+}
+
+void App::open_command_palette() {
+  std::vector<MenuItem> items;
+  for (const auto& c : kCommands) {
+    MenuItem it{c.name, c.name};
+    it.detail = c.help;
+    items.push_back(std::move(it));
+    if (std::string_view(c.name) != "outline") continue;
+    // Each agent is a command of its own, starting it.
+    for (const Adapter* a : all_adapters()) {
+      MenuItem ai{std::string(a->id()), std::string(a->id())};
+      ai.detail = "start " + std::string(a->id()) + " in the selected project";
+      items.push_back(std::move(ai));
+    }
+  }
+  open_menu(nullptr, Point{2, std::max(0, 4)}, std::move(items), "Commands");
+  if (menu_) {
+    // A palette is for typing into: the field shows from the start and
+    // Enter runs the first command without a key to reach it.
+    Picker::Options& o = menu_->picker.options();
+    o.show_query = true;
+    o.footer = true;
+    menu_->picker.set_cursor(0);
+  }
+}
+
+void App::blame_command(const std::string& arg) {
+  // "file:line" or "file line", the file from the selected folder.
+  std::string file = arg;
+  int line_no = 0;
+  const size_t cut = arg.find_last_of(": ");
+  if (cut != std::string::npos) {
+    file = arg.substr(0, cut);
+    line_no = std::atoi(arg.c_str() + cut + 1);
+  }
+  while (!file.empty() && file.back() == ' ') file.pop_back();
+  if (file.empty() || line_no <= 0) {
+    set_status("blame <file>:<line>: which chat last changed that line");
+    return;
+  }
+  ws_.git().blame(selected_cwd(), file, line_no);
+  set_status("asking git who last changed " + file + ":" + std::to_string(line_no) + "\xE2\x80\xA6");
+}
+
 void App::run_command(std::string line) {
   // Trim, and tolerate a leading colon so pasting ":fork" works.
   size_t a = line.find_first_not_of(" \t:");
@@ -1257,28 +1356,7 @@ void App::run_command(std::string line) {
   const SessionRef* sess = current_session();
 
   if (cmd == "help") {
-    std::vector<MenuItem> items;
-    for (const auto& c : kCommands) {
-      MenuItem it{c.name, c.name};
-      it.detail = c.help;
-      items.push_back(std::move(it));
-      if (std::string_view(c.name) != "outline") continue;
-      // Each agent is a command of its own, starting it.
-      for (const Adapter* a : all_adapters()) {
-        MenuItem ai{std::string(a->id()), std::string(a->id())};
-        ai.detail = "start " + std::string(a->id()) + " in the selected project";
-        items.push_back(std::move(ai));
-      }
-    }
-    open_menu(nullptr, Point{2, std::max(0, 4)}, std::move(items), "Commands");
-    if (menu_) {
-      // A palette is for typing into: the field shows from the start and
-      // Enter runs the first command without a key to reach it.
-      Picker::Options& o = menu_->picker.options();
-      o.show_query = true;
-      o.footer = true;
-      menu_->picker.set_cursor(0);
-    }
+    open_command_palette();
     return;
   }
   if (cmd == "go") {
@@ -1381,77 +1459,11 @@ void App::run_command(std::string line) {
     return;
   }
   if (cmd == "blame") {
-    // "file:line" or "file line", the file from the selected folder.
-    std::string file = arg;
-    int line_no = 0;
-    const size_t cut = arg.find_last_of(": ");
-    if (cut != std::string::npos) {
-      file = arg.substr(0, cut);
-      line_no = std::atoi(arg.c_str() + cut + 1);
-    }
-    while (!file.empty() && file.back() == ' ') file.pop_back();
-    if (file.empty() || line_no <= 0) {
-      set_status("blame <file>:<line>: which chat last changed that line");
-      return;
-    }
-    ws_.git().blame(selected_cwd(), file, line_no);
-    set_status("asking git who last changed " + file + ":" + std::to_string(line_no) + "\xE2\x80\xA6");
+    blame_command(arg);
     return;
   }
   if (cmd == "web") {
-    if (arg == "tailscale") {
-      // This machine's name on the tailnet, kept; the address with it is
-      // copied. mico does not start `tailscale serve` itself: what a machine
-      // offers to its network is for its user to say.
-      const std::string name = tailscale_name();
-      if (name.empty()) {
-        set_status("tailscale: no name found (is it installed and up? `tailscale status`)");
-        return;
-      }
-      set_web(true);
-      set_web_host(name);
-      copy_to_clipboard(web_remote_url());
-      set_status("tailnet address copied. Now run: tailscale serve --bg " + std::to_string(web_port()) +
-                 "  (never funnel)");
-      return;
-    }
-    if (arg == "new-token") {
-      if (!new_web_token()) {
-        set_status("web view: no new token could be made; the old one stands");
-        return;
-      }
-      if (web_enabled()) copy_to_clipboard(web_remote_url().empty() ? web_url() : web_remote_url());
-      set_status("web view: a new token; browsers with the old one are let go" +
-                 std::string(web_enabled() ? ", and the new address is on the clipboard" : ""));
-      return;
-    }
-    if (arg == "host off" || arg == "host") {
-      set_web_host({});
-      set_status("web view: no other host answered to");
-      return;
-    }
-    if (arg.starts_with("host ")) {
-      set_web_host(arg.substr(5));
-      if (web_host().empty()) set_status("web view: not a host name");
-      else {
-        set_web(true);
-        copy_to_clipboard(web_remote_url());
-        set_status("web view also answers to " + web_host() + " (over https); its address is on the clipboard");
-      }
-      return;
-    }
-    if (arg == "off") set_web(false);
-    else if (arg == "on" || arg.starts_with("on ")) set_web(true, arg.size() > 3 ? std::atoi(arg.c_str() + 3) : 0);
-    if (!web_enabled()) {
-      set_status("web view off  (:web on serves it on 127.0.0.1:" + std::to_string(web_port()) + ")");
-      return;
-    }
-    // The address carries the token: copied rather than only shown, so it
-    // need not be typed, and it stays out of the screen's scrollback.
-    copy_to_clipboard(web_remote_url().empty() ? web_url() : web_remote_url());
-    set_status("web view on 127.0.0.1:" + std::to_string(web_port()) +
-               (web_host().empty() ? "" : ", and " + web_host() + " over https") +
-               " \xE2\x80\x94 its address (with the token) is on the clipboard");
+    web_command(arg);
     return;
   }
   if (cmd == "mcp") {
