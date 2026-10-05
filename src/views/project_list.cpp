@@ -172,9 +172,16 @@ class ProjectList final : public Pane {
     // Second line: git's branch and state, then the path, on the left;
     // "12 chats · 3h" on the right. The path gives way first on a narrow
     // pane, then the git state.
-    const size_t n = pr.sessions.size();
+    // Archived chats are hidden from the chat list, so they don't count.
+    size_t n = 0;
+    int64_t newest = 0;
+    for (const auto& s : pr.sessions)
+      if (!app_->store().archived(s.agent, s.id)) {
+        n++;
+        newest = std::max(newest, s.mtime);
+      }
     std::string info = n == 0 ? "no chats" : std::to_string(n) + (n == 1 ? " chat" : " chats");
-    const std::string when = " \xC2\xB7 " + rel_time(pr.mtime);
+    const std::string when = " \xC2\xB7 " + rel_time(newest);
     if (n > 0 && text::str_width(info) + text::str_width(when) <= p.width() - 4) info += when;
     const int iw = text::str_width(info);
     const int room = p.width() - 3 - iw - 2;
@@ -205,7 +212,7 @@ class ProjectList final : public Pane {
     size_t n = 0;
     int64_t newest = 0;
     for (const auto& s : pr.sessions)
-      if (s.sub == sp.name) {
+      if (s.sub == sp.name && !app_->store().archived(s.agent, s.id)) {
         n++;
         newest = std::max(newest, s.mtime);
       }
