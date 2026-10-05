@@ -829,8 +829,45 @@ class SessionPane final : public Pane {
       return true;
     }
 
-    // Answering an optional question in your own words: Enter sends the box
-    // as the answer, Escape goes back to the card.
+    if (note_key(k)) return true;
+
+    if (completion_key(k)) return true;
+
+    // A permission dialog owns the choosing keys while the box is empty.
+    // Escape is left to the agent below: it is claude's own "reject".
+    // The page keys still scroll the transcript behind it.
+    const bool choosing = k.key == Key::Up || k.key == Key::Down || k.key == Key::Tab ||
+                          k.key == Key::BackTab || k.key == Key::Enter ||
+                          (k.key == Key::Char && !k.ctrl && !k.alt && k.ch >= '1' && k.ch <= '9');
+    if (perm_live_ && !note_perm_ && prompt_.empty() && choosing) {
+      switch (perm_pick_.on_key(k)) {
+        case Picker::Result::Chosen: answer_permission(perm_pick_.index()); return true;
+        case Picker::Result::Ignored: break;  // a number past the last choice
+        default: return true;
+      }
+    }
+
+    if (btw_key(k)) return true;
+
+    // A live question card owns the navigation keys while the prompt box is
+    // empty, so the arrows choose an option rather than scroll the transcript.
+    if (note_q_ < 0 && !reply_live_ && prompt_.empty() && chat_.question_active()) {
+      if (chat_.question_key(k)) {
+        ChatRenderer::Answer a;
+        if (chat_.take_answer(a)) deliver_answer(a);
+        return true;
+      }
+    }
+
+    return prompt_key(k);
+  }
+
+  // The box when it holds something other than a message: an answer to an
+  // optional question in your own words, or a note on a card. And `n`, on an
+  // empty box, starts a note.
+  bool note_key(const KeyEvent& k) {
+    // Answering in your own words: Enter sends the box as the answer, Escape
+    // goes back to the card.
     if (reply_live_) {
       if (k.key == Key::Enter && !k.alt) {
         std::string text = prompt_.text();
@@ -900,9 +937,12 @@ class SessionPane final : public Pane {
         return true;
       }
     }
+    return false;
+  }
 
-    // An open "/" or "@" menu takes the keys that move and choose in it;
-    // everything else still edits the box, which narrows the menu.
+  // An open "/" or "@" menu takes the keys that move and choose in it;
+  // everything else still edits the box, which narrows the menu.
+  bool completion_key(const KeyEvent& k) {
     refresh_completion();
     if (comp_.visible()) {
       const bool plain = !k.ctrl && !k.alt;
@@ -930,23 +970,12 @@ class SessionPane final : public Pane {
         default: break;
       }
     }
+    return false;
+  }
 
-    // A permission dialog owns the choosing keys while the box is empty.
-    // Escape is left to the agent below: it is claude's own "reject".
-    // The page keys still scroll the transcript behind it.
-    const bool choosing = k.key == Key::Up || k.key == Key::Down || k.key == Key::Tab ||
-                          k.key == Key::BackTab || k.key == Key::Enter ||
-                          (k.key == Key::Char && !k.ctrl && !k.alt && k.ch >= '1' && k.ch <= '9');
-    if (perm_live_ && !note_perm_ && prompt_.empty() && choosing) {
-      switch (perm_pick_.on_key(k)) {
-        case Picker::Result::Chosen: answer_permission(perm_pick_.index()); return true;
-        case Picker::Result::Ignored: break;  // a number past the last choice
-        default: return true;
-      }
-    }
-
-    // The side-question panel owns its keys while the box is empty: Esc
-    // closes it, the arrows scroll it, Shift+←/→ go through earlier ones.
+  // The side-question panel owns its keys while the box is empty: Esc
+  // closes it, the arrows scroll it, Shift+←/→ go through earlier ones.
+  bool btw_key(const KeyEvent& k) {
     if (btw_live_ && prompt_.empty() && note_q_ < 0 && !note_perm_ && !reply_live_ && !k.ctrl && !k.alt) {
       const char* seq = nullptr;
       switch (k.key) {
@@ -963,21 +992,14 @@ class SessionPane final : public Pane {
         return true;
       }
     }
+    return false;
+  }
 
-    // A live question card owns the navigation keys while the prompt box is
-    // empty, so the arrows choose an option rather than scroll the transcript.
-    if (note_q_ < 0 && !reply_live_ && prompt_.empty() && chat_.question_active()) {
-      if (chat_.question_key(k)) {
-        ChatRenderer::Answer a;
-        if (chat_.take_answer(a)) deliver_answer(a);
-        return true;
-      }
-    }
-
-    // Chat view: navigation scrolls the transcript, text goes to the prompt
-    // box — except once the box has something in it (or a selection, or more
-    // than one line), in which case the arrows edit the box instead. That
-    // keeps an empty box's Up/Down/End behaving exactly as before.
+  // Chat view: navigation scrolls the transcript, text goes to the prompt
+  // box — except once the box has something in it (or a selection, or more
+  // than one line), in which case the arrows edit the box instead. That
+  // keeps an empty box's Up/Down/End behaving exactly as before.
+  bool prompt_key(const KeyEvent& k) {
     switch (k.key) {
       case Key::Escape:
         // The agent's own status line offers "esc to interrupt"; that has to
