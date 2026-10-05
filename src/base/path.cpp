@@ -1,9 +1,45 @@
 #include "base/path.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <cstdlib>
 #include <vector>
 
 namespace mico {
+
+namespace {
+std::string home_dir() {
+  const char* h = getenv("HOME");
+  return h ? h : ".";
+}
+}  // namespace
+
+std::string config_dir() {
+  if (const char* x = getenv("XDG_CONFIG_HOME"); x && *x) return std::string(x) + "/mico";
+  return home_dir() + "/.config/mico";
+}
+
+std::string state_dir() {
+  if (const char* x = getenv("XDG_STATE_HOME"); x && *x) return std::string(x) + "/mico";
+  return home_dir() + "/.local/state/mico";
+}
+
+bool write_file_atomic(const std::string& path, std::string_view data) {
+  const std::string tmp = path + ".tmp." + std::to_string(getpid());
+  const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) return false;
+  bool ok = true;
+  for (size_t at = 0; ok && at < data.size();) {
+    const ssize_t n = ::write(fd, data.data() + at, data.size() - at);
+    if (n > 0) at += size_t(n);
+    else ok = false;
+  }
+  ok = ::close(fd) == 0 && ok;
+  if (ok && rename(tmp.c_str(), path.c_str()) == 0) return true;
+  unlink(tmp.c_str());
+  return false;
+}
 
 std::string resolve_path(std::string_view cwd, std::string_view p) {
   if (p.empty()) return {};

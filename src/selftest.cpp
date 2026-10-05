@@ -5078,6 +5078,23 @@ int run_selftest() {
               render_settings().links() == Links::UrlsAndPaths,
           "settings: old on/off files still read; unknown names and ways keep the default");
     check(render_settings().theme == "dark" && active_theme().bg == Theme{}.bg, "settings: no theme named, the default");
+    // One-line settings: trimmed when read, written whole, on/off with a fallback.
+    check(read_setting("no-such-setting").empty() && setting_on("no-such-setting", true) &&
+              !setting_on("no-such-setting", false),
+          "settings: one not set reads empty and falls back");
+    put_file(config_dir() + "/word", "  bell \nsecond line\n");
+    check(read_setting("word") == "bell", "settings: a setting is its first line, trimmed");
+    check(write_setting("word", "desktop") && read_setting("word") == "desktop", "settings: written and read back");
+    set_setting_on("switch", false);
+    check(!setting_on("switch", true), "settings: off, whatever the fallback");
+    set_setting_on("switch", true);
+    check(setting_on("switch", false), "settings: on, whatever the fallback");
+    struct stat st{};
+    check(stat((config_dir() + "/switch").c_str(), &st) == 0 && (st.st_mode & 077) == 0,
+          "settings: kept for the user alone");
+    bool stray = false;
+    fs::list_dir(config_dir(), false, [&](const std::string& n) { stray |= n.find(".tmp") != std::string::npos; });
+    check(!stray, "settings: no temporary file left behind");
     if (old_home) setenv("XDG_CONFIG_HOME", keep.c_str(), 1);
     else unsetenv("XDG_CONFIG_HOME");
     set_render_settings(defaults, false);

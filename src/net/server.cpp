@@ -109,21 +109,12 @@ int listen_socket(const std::string& path) {
 
 // $XDG_STATE_HOME/mico/daemon: "pid started last_alive", unix seconds. There
 // while a daemon runs; removed when it stops as it should.
-std::string pidfile_path() {
-  if (const char* x = getenv("XDG_STATE_HOME"); x && *x) return std::string(x) + "/mico/daemon";
-  const char* h = getenv("HOME");
-  return (h ? std::string(h) : std::string(".")) + "/.local/state/mico/daemon";
-}
+std::string pidfile_path() { return state_dir() + "/daemon"; }
 
 void write_pidfile(int64_t started) {
-  const std::string path = pidfile_path(), tmp = path + ".tmp";
   char b[96];
   const int n = snprintf(b, sizeof b, "%d %lld %lld\n", int(getpid()), (long long)started, (long long)time(nullptr));
-  const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-  if (fd < 0) return;
-  const bool ok = n > 0 && write(fd, b, size_t(n)) == n;
-  close(fd);
-  if (ok) rename(tmp.c_str(), path.c_str());
+  if (n > 0) write_file_atomic(pidfile_path(), std::string_view(b, size_t(n)));
 }
 
 std::string clock_of(int64_t t) {

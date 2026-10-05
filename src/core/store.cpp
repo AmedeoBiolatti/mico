@@ -18,10 +18,28 @@
 
 namespace mico {
 
-std::string config_dir() {
-  if (const char* x = getenv("XDG_CONFIG_HOME"); x && *x) return std::string(x) + "/mico";
-  return fs::home() + "/.config/mico";
+std::string read_setting(std::string_view name) {
+  std::string buf;
+  std::string_view v = fs::read_prefix(config_dir() + "/" + std::string(name), 4096, buf);
+  v = v.substr(0, v.find('\n'));
+  while (!v.empty() && (v.back() == ' ' || v.back() == '\r' || v.back() == '\t')) v.remove_suffix(1);
+  while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.remove_prefix(1);
+  return std::string(v);
 }
+
+bool write_setting(std::string_view name, std::string_view value) {
+  fs::make_dirs(config_dir());
+  return write_file_atomic(config_dir() + "/" + std::string(name), std::string(value) + "\n");
+}
+
+bool setting_on(std::string_view name, bool fallback) {
+  const std::string v = read_setting(name);
+  if (v.starts_with("on")) return true;
+  if (v.starts_with("off")) return false;
+  return fallback;
+}
+
+void set_setting_on(std::string_view name, bool on) { write_setting(name, on ? "on" : "off"); }
 
 namespace {
 
@@ -78,16 +96,10 @@ void Store::load_folders() {
 }
 
 void Store::save_folders() const {
-  mkdir(config_dir().c_str(), 0700);
-  const std::string tmp = folders_file() + ".tmp";
-  int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-  if (fd < 0) return;
-  for (const auto& f : folders_) {
-    const std::string line = f + "\n";
-    if (write(fd, line.data(), line.size()) < 0) break;
-  }
-  ::close(fd);
-  rename(tmp.c_str(), folders_file().c_str());
+  std::string body;
+  for (const auto& f : folders_) body += f + "\n";
+  fs::make_dirs(config_dir());
+  write_file_atomic(folders_file(), body);
 }
 
 bool Store::add_folder(const std::string& path, bool persist) {
@@ -189,21 +201,13 @@ void Store::load_marks() {
 }
 
 void Store::save_marks() const {
-  mkdir(config_dir().c_str(), 0700);
-  auto write_lines = [](const std::string& path, const std::string& body) {
-    const std::string tmp = path + ".tmp";
-    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return;
-    if (write(fd, body.data(), body.size()) < 0) {}
-    ::close(fd);
-    rename(tmp.c_str(), path.c_str());
-  };
+  fs::make_dirs(config_dir());
   std::string names;
   for (const auto& [key, name] : names_) names += key + "\t" + name + "\n";
-  write_lines(config_dir() + "/names", names);
+  write_file_atomic(config_dir() + "/names", names);
   std::string arch;
   for (const auto& key : archived_) arch += key + "\n";
-  write_lines(config_dir() + "/archived", arch);
+  write_file_atomic(config_dir() + "/archived", arch);
 }
 
 // ------------------------------------------------------------ sub-projects
@@ -231,7 +235,7 @@ void Store::load_subs() {
 }
 
 void Store::save_subs() const {
-  mkdir(config_dir().c_str(), 0700);
+  fs::make_dirs(config_dir());
   std::string body;
   for (const auto& [project, list] : subs_)
     for (const auto& sp : list) body += "sub\t" + project + "\t" + sp.name + "\t" + sp.path + "\n";
@@ -239,12 +243,7 @@ void Store::save_subs() const {
     const size_t nl = key.find('\n');
     body += "chat\t" + key.substr(0, nl) + "\t" + key.substr(nl + 1) + "\t" + sub + "\n";
   }
-  const std::string path = config_dir() + "/subprojects", tmp = path + ".tmp";
-  int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-  if (fd < 0) return;
-  if (write(fd, body.data(), body.size()) < 0) {}
-  ::close(fd);
-  rename(tmp.c_str(), path.c_str());
+  write_file_atomic(config_dir() + "/subprojects", body);
 }
 
 bool Store::add_subproject(const std::string& project, const std::string& name, const std::string& path) {

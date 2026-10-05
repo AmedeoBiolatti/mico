@@ -65,18 +65,9 @@ const std::string& systemd_run() {
 
 }  // namespace
 
-bool enabled() {
-  std::string buf;
-  return !fs::read_prefix(config_dir() + "/scopes", 64, buf).starts_with("off");
-}
+bool enabled() { return setting_on("scopes", true); }
 
-void set_enabled(bool on) {
-  mkdir(config_dir().c_str(), 0700);
-  if (FILE* f = fopen((config_dir() + "/scopes").c_str(), "w")) {
-    fputs(on ? "on\n" : "off\n", f);
-    fclose(f);
-  }
-}
+void set_enabled(bool on) { set_setting_on("scopes", on); }
 
 bool available() {
   if (const char* e = getenv("MICO_SCOPES"); e && std::string_view(e) == "0") return false;

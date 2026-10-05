@@ -154,27 +154,17 @@ void App::save_view_if_changed() {
   std::string now = view_state();
   if (now == saved_view_) return;
   fs::make_dirs(config_dir());
-  const std::string path = config_dir() + "/view", tmp = path + ".tmp";
-  if (FILE* f = fopen(tmp.c_str(), "w")) {
-    const bool ok = fwrite(now.data(), 1, now.size(), f) == now.size();
-    if (fclose(f) == 0 && ok) rename(tmp.c_str(), path.c_str());
-    else unlink(tmp.c_str());
-  }
+  write_file_atomic(config_dir() + "/view", now);
   saved_view_ = std::move(now);
 }
 
 LayoutMode layout_mode() {
-  std::string buf;
-  const std::string_view v = fs::read_prefix(config_dir() + "/layout-mode", 64, buf);
+  const std::string v = read_setting("layout-mode");
   return v.starts_with("wide") ? LayoutMode::Wide : v.starts_with("compact") ? LayoutMode::Compact : LayoutMode::Auto;
 }
 
 void set_layout_mode(LayoutMode m) {
-  mkdir(config_dir().c_str(), 0700);
-  if (FILE* f = fopen((config_dir() + "/layout-mode").c_str(), "w")) {
-    fputs(m == LayoutMode::Wide ? "wide\n" : m == LayoutMode::Compact ? "compact\n" : "auto\n", f);
-    fclose(f);
-  }
+  write_setting("layout-mode", m == LayoutMode::Wide ? "wide" : m == LayoutMode::Compact ? "compact" : "auto");
 }
 
 App::~App() = default;
@@ -278,14 +268,17 @@ void App::save_layout() {
   layout_fracs_.clear();
   root_->collect_fractions(layout_fracs_);
   if (layout_fracs_.empty()) return;
-  mkdir(config_dir().c_str(), 0700);
-  FILE* f = fopen((config_dir() + "/layout").c_str(), "w");
-  if (!f) return;
+  std::string body;
+  char num[32];
   for (const auto& row : layout_fracs_) {
-    for (size_t i = 0; i < row.size(); i++) fprintf(f, i ? " %.4f" : "%.4f", row[i]);
-    fputc('\n', f);
+    for (size_t i = 0; i < row.size(); i++) {
+      snprintf(num, sizeof num, i ? " %.4f" : "%.4f", double(row[i]));
+      body += num;
+    }
+    body += '\n';
   }
-  fclose(f);
+  fs::make_dirs(config_dir());
+  write_file_atomic(config_dir() + "/layout", body);
 }
 
 void App::open_search(std::string query) {

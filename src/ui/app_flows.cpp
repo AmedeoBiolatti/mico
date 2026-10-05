@@ -13,6 +13,7 @@
 #include <set>
 
 #include "adapters/adapters.h"
+#include "base/fs.h"
 #include "core/store.h"
 #include "base/text.h"
 #include "ui/app.h"
@@ -395,10 +396,10 @@ void App::remember_command(const std::string& cmd) {
                          recent_commands_.end());
   recent_commands_.insert(recent_commands_.begin(), cmd);
   if (recent_commands_.size() > 20) recent_commands_.resize(20);
-  if (FILE* f = fopen((config_dir() + "/commands").c_str(), "w")) {
-    for (const auto& c : recent_commands_) fprintf(f, "%s\n", c.c_str());
-    fclose(f);
-  }
+  std::string body;
+  for (const auto& c : recent_commands_) body += c + "\n";
+  fs::make_dirs(config_dir());
+  write_file_atomic(config_dir() + "/commands", body);
 }
 
 void App::flow_chosen(const PickItem& it) {

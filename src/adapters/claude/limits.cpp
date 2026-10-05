@@ -10,6 +10,7 @@
 #include "adapters/usage_scan.h"
 #include "base/fs.h"
 #include "base/json.h"
+#include "base/path.h"
 
 // Claude's subscription limits reach no transcript: claude reads them off the
 // API's replies and hands them to its status line command, as rate_limits in
@@ -19,10 +20,6 @@
 namespace mico {
 namespace {
 
-std::string state_dir() {
-  if (const char* x = getenv("XDG_STATE_HOME"); x && *x) return std::string(x) + "/mico";
-  return fs::home() + "/.local/state/mico";
-}
 
 // One line per window: "5h <percent used> <resets at, unix seconds>", and
 // "7d …". The file's mtime is when claude last reported them.
@@ -90,15 +87,11 @@ int claude_status_line() {
   });
 
   if (has5 || has7) {
-    const std::string dir = state_dir(), path = limits_path(), tmp = path + ".tmp." + std::to_string(getpid());
-    fs::make_dirs(dir);
-    if (FILE* f = fopen(tmp.c_str(), "w")) {
-      if (has5) fprintf(f, "5h %.1f %lld\n", pct5, (long long)reset5);
-      if (has7) fprintf(f, "7d %.1f %lld\n", pct7, (long long)reset7);
-      const bool ok = fclose(f) == 0;
-      if (ok) rename(tmp.c_str(), path.c_str());
-      else unlink(tmp.c_str());
-    }
+    char line[2][80] = {};
+    if (has5) snprintf(line[0], sizeof line[0], "5h %.1f %lld\n", pct5, (long long)reset5);
+    if (has7) snprintf(line[1], sizeof line[1], "7d %.1f %lld\n", pct7, (long long)reset7);
+    fs::make_dirs(state_dir());
+    write_file_atomic(limits_path(), std::string(line[0]) + line[1]);
   }
 
   // The user's own status line still shows: it is run on the same input, and

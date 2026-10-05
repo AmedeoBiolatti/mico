@@ -12,42 +12,21 @@
 #include "core/store.h"
 
 namespace mico {
-namespace {
-
-std::string state_dir() {
-  if (const char* x = getenv("XDG_STATE_HOME"); x && *x) return std::string(x) + "/mico";
-  return fs::home() + "/.local/state/mico";
-}
-
-void write_word(const std::string& name, const char* word) {
-  mkdir(config_dir().c_str(), 0700);
-  if (FILE* f = fopen((config_dir() + "/" + name).c_str(), "w")) {
-    fputs(word, f);
-    fputc('\n', f);
-    fclose(f);
-  }
-}
-
-}  // namespace
 
 NotifyMode notify_mode() {
-  std::string buf;
-  const std::string_view v = fs::read_prefix(config_dir() + "/notify", 64, buf);
+  const std::string v = read_setting("notify");
   if (v.starts_with("off")) return NotifyMode::Off;
   if (v.starts_with("bell")) return NotifyMode::Bell;
   return NotifyMode::Desktop;
 }
 
 void set_notify_mode(NotifyMode m) {
-  write_word("notify", m == NotifyMode::Off ? "off" : m == NotifyMode::Bell ? "bell" : "desktop");
+  write_setting("notify", m == NotifyMode::Off ? "off" : m == NotifyMode::Bell ? "bell" : "desktop");
 }
 
-bool restore_agents_enabled() {
-  std::string buf;
-  return !fs::read_prefix(config_dir() + "/restore", 64, buf).starts_with("off");
-}
+bool restore_agents_enabled() { return setting_on("restore", true); }
 
-void set_restore_agents(bool on) { write_word("restore", on ? "on" : "off"); }
+void set_restore_agents(bool on) { set_setting_on("restore", on); }
 
 std::string running_path() { return state_dir() + "/running"; }
 

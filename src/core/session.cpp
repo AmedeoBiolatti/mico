@@ -55,45 +55,17 @@ const std::string& self_exe() {
   return path;
 }
 
-bool mcp_tools_enabled() {
-  std::string buf;
-  return fs::read_prefix(config_dir() + "/mcp", 64, buf).starts_with("on");
-}
+bool mcp_tools_enabled() { return setting_on("mcp", false); }
 
-void set_mcp_tools(bool on) {
-  mkdir(config_dir().c_str(), 0700);
-  if (FILE* f = fopen((config_dir() + "/mcp").c_str(), "w")) {
-    fputs(on ? "on\n" : "off\n", f);
-    fclose(f);
-  }
-}
+void set_mcp_tools(bool on) { set_setting_on("mcp", on); }
 
-bool plan_limits_enabled() {
-  std::string buf;
-  return !fs::read_prefix(config_dir() + "/limits", 64, buf).starts_with("off");
-}
+bool plan_limits_enabled() { return setting_on("limits", true); }
 
-void set_plan_limits(bool on) {
-  mkdir(config_dir().c_str(), 0700);
-  if (FILE* f = fopen((config_dir() + "/limits").c_str(), "w")) {
-    fputs(on ? "on\n" : "off\n", f);
-    fclose(f);
-  }
-}
+void set_plan_limits(bool on) { set_setting_on("limits", on); }
 
-bool agent_hints_enabled() {
-  std::string buf;
-  const std::string_view v = fs::read_prefix(config_dir() + "/agent-hints", 64, buf);
-  return !v.starts_with("off");
-}
+bool agent_hints_enabled() { return setting_on("agent-hints", true); }
 
-void set_agent_hints(bool on) {
-  mkdir(config_dir().c_str(), 0700);
-  if (FILE* f = fopen((config_dir() + "/agent-hints").c_str(), "w")) {
-    fputs(on ? "on\n" : "off\n", f);
-    fclose(f);
-  }
-}
+void set_agent_hints(bool on) { set_setting_on("agent-hints", on); }
 
 namespace {
 

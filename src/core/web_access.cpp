@@ -24,11 +24,10 @@ WebConfig& config() {
   static WebConfig c;
   if (!c.loaded) {
     c.loaded = true;
-    std::string buf;
-    const std::string_view v = fs::read_prefix(config_dir() + "/web", 64, buf);
+    const std::string v = read_setting("web");
     c.on = v.starts_with("on");
-    if (const size_t sp = v.find(' '); sp != std::string_view::npos) {
-      const int p = std::atoi(std::string(v.substr(sp + 1)).c_str());
+    if (const size_t sp = v.find(' '); sp != std::string::npos) {
+      const int p = std::atoi(v.c_str() + sp + 1);
       if (p > 0 && p < 65536) c.port = p;
     }
   }
@@ -44,11 +43,7 @@ void set_web(bool on, int port) {
   WebConfig& c = config();
   c.on = on;
   if (port > 0 && port < 65536) c.port = port;
-  mkdir(config_dir().c_str(), 0700);
-  if (FILE* f = fopen((config_dir() + "/web").c_str(), "w")) {
-    fprintf(f, "%s %d\n", on ? "on" : "off", c.port);
-    fclose(f);
-  }
+  write_setting("web", std::string(on ? "on " : "off ") + std::to_string(c.port));
 }
 
 namespace {
@@ -126,10 +121,7 @@ bool valid_host(const std::string& h) {
 }  // namespace
 
 std::string web_host() {
-  std::string buf;
-  std::string_view v = fs::read_prefix(config_dir() + "/web-host", 300, buf);
-  while (!v.empty() && (v.back() == '\n' || v.back() == ' ')) v.remove_suffix(1);
-  const std::string h(v);
+  const std::string h = read_setting("web-host");
   return valid_host(h) ? h : std::string();
 }
 
@@ -137,16 +129,7 @@ void set_web_host(const std::string& host) {
   std::string h;
   for (const char c : host) h.push_back(c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c);
   while (!h.empty() && h.back() == '.') h.pop_back();  // a DNS name's trailing dot
-  mkdir(config_dir().c_str(), 0700);
-  const std::string path = config_dir() + "/web-host";
-  if (!valid_host(h)) {
-    unlink(path.c_str());
-    return;
-  }
-  if (FILE* f = fopen(path.c_str(), "w")) {
-    fprintf(f, "%s\n", h.c_str());
-    fclose(f);
-  }
+  write_setting("web-host", valid_host(h) ? h : std::string());
 }
 
 std::string web_remote_url() {

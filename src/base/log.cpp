@@ -1,4 +1,5 @@
 #include "base/log.h"
+#include "base/path.h"
 
 #include <execinfo.h>
 #include <fcntl.h>
@@ -22,11 +23,6 @@ int g_fd = -1;
 std::string g_path;
 std::string g_tag = "?";
 
-std::string state_dir() {
-  if (const char* x = getenv("XDG_STATE_HOME"); x && *x) return std::string(x) + "/mico";
-  const char* h = getenv("HOME");
-  return (h ? std::string(h) : ".") + "/.local/state/mico";
-}
 
 void mkdirs(const std::string& d) {
   std::string acc;

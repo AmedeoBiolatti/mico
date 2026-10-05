@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "adapters/adapter.h"
+#include "base/path.h"
 #include "model/session_ref.h"
 
 namespace mico {
@@ -26,8 +27,15 @@ struct Project {
   int64_t mtime = 0;                 // newest session
 };
 
-// $XDG_CONFIG_HOME/mico (or ~/.config/mico): where mico keeps its own state.
-std::string config_dir();
+// A setting: one short line in a file of its own in config_dir(). What it
+// says, trimmed, or "" when it is not set. Read from the file each time, so a
+// change made by another mico (or by hand) counts at once.
+std::string read_setting(std::string_view name);
+// Writes it whole or not at all, for the user alone.
+bool write_setting(std::string_view name, std::string_view value);
+// An on/off setting: `fallback` unless its file says "on" or "off".
+bool setting_on(std::string_view name, bool fallback);
+void set_setting_on(std::string_view name, bool on);
 
 // Discovers what the agents have already written. Read-only by construction:
 // mico never writes into ~/.claude or ~/.codex.
