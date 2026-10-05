@@ -6,6 +6,7 @@
 #include <ctime>
 #include "core/activity.h"
 #include "core/search.h"
+#include "core/clipboard.h"
 #include "core/images.h"
 #include "math/math.h"
 #include "math/picture.h"
@@ -146,6 +147,25 @@ void put_oneline(Arena& a, std::string_view s, int max_cols) {
     w += cw;
     started = true;
   }
+}
+
+
+// The path in a file picture's key, "file:<path>:<mtime>:<size>".
+std::string file_path_of(std::string_view key) {
+  key.remove_prefix(5);
+  for (int i = 0; i < 2 && key.rfind(':') != std::string_view::npos; i++) key = key.substr(0, key.rfind(':'));
+  return std::string(key);
+}
+
+// A picture onto the clipboard as it came (a PNG, a JPEG or a GIF); one in
+// another format, or anything drawn here, as a PNG.
+bool copy_picture(const math::Image& im) {
+  if (!im.encoded) return clip::copy_image(math::png(im, math::config().fg), "image/png");
+  const std::string_view bytes = *im.encoded;
+  if (bytes.starts_with("\x89PNG")) return clip::copy_image(bytes, "image/png");
+  if (bytes.starts_with("\xFF\xD8")) return clip::copy_image(bytes, "image/jpeg");
+  if (bytes.starts_with("GIF8")) return clip::copy_image(bytes, "image/gif");
+  return math::pixels(im) && clip::copy_image(math::png(im, 0), "image/png");
 }
 
 }  // namespace
@@ -495,19 +515,22 @@ void ChatRenderer::layout_image(const Event& e, int w) {
   const bool tool = e.tool_id != 0;
   const int indent = tool ? 4 : 2;
   const std::string_view line = conv_.file().line(e.src_line);
-  const int n = std::atoi(std::string(conv_.arena().view(e.summary)).c_str());
-  std::string media;
-  std::string_view b64;
+  LineImage where;
+  const bool found = from_string(conv_.arena().view(e.summary), &where) && where.at + where.len <= line.size();
+  const std::string& media = where.media;
+  const std::string_view b64 = found ? line.substr(where.at, where.len) : std::string_view();
   const math::Image* im = nullptr;
   mdlines_.clear();
   md::Out out{kMaxRowsPerEvent, &scratch_, &segs_, &mdlines_, &spans_, &inline_, &md_work_};
-  if (render_settings().pictures() != Pictures::Off && transcript_image(line, n, &media, &b64)) {
+  if (render_settings().pictures() != Pictures::Off && found) {
     // Named by the data itself, so the same screenshot twice is drawn once,
     // and a window shifted by older history still finds it.
     const std::string key = "tx:" + std::to_string(b64.size()) + ":" +
                             std::string(b64.substr(0, 40)) + std::string(b64.substr(b64.size() - std::min<size_t>(40, b64.size())));
+    const bool zoom = chart_env_.zoomed(key);
     im = math::picture(key, [b64](std::string& bytes) { return math::base64_decode(b64, bytes); },
-                       std::max(4, w - indent - 3), render_settings().picture_rows(), "[image]");
+                       std::max(4, w - indent - 3), zoom ? chart_env_.zoom_rows : render_settings().picture_rows(),
+                       "[image]", zoom);
   }
   if (im) {
     md::picture_rows(*im, 0, out);
@@ -1684,20 +1707,19 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
   const size_t draft_before = draft_rows_;
   drop_draft_rows();
   check_chart_files();
+  // A zoomed image fills the pane: a pane that changed height lays it out again.
+  if (const int zr = std::max(8, p.height() - 2); zr != chart_env_.zoom_rows) {
+    chart_env_.zoom_rows = zr;
+    if (!zoom_.empty()) relayout_ = true;
+  }
   // A relayout under someone reading back through the chat, or a fold opened
   // or closed, keeps the line at the top of the view where it was; one at
   // the bottom, a turn folding as it ends, stays at the bottom.
   const bool toggled = expand_gen_ != rows_gen_ && w == rows_w_ && f.density == rows_density_;
-  uint32_t anchor = UINT32_MAX;
-  int anchor_into = 0;
-  if ((relayout_ && scroll_ > 0) || toggled || reload_) {
-    const int total = int(rows_.size());
-    const int top = std::max(0, total - p.height() - scroll_);
-    if (top < total) {
-      anchor = rows_[size_t(top)].src_line;
-      for (int i = top; i > 0 && rows_[size_t(i - 1)].src_line == anchor; i--) anchor_into++;
-    }
-  }
+  Anchor anchor;
+  if ((relayout_ && scroll_ > 0) || toggled || reload_) anchor = top_anchor(p.height());
+  // A zoom let go: the view goes back to where it was before the zoom.
+  if (zoom_.empty() && zoom_back_.line != UINT32_MAX) anchor = std::exchange(zoom_back_, {});
   if (reload_) {
     reload_ = false;
     reanchor(conv_.parsed_to());
@@ -1706,7 +1728,7 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
     relayout_ = false;
     invalidate_rows();
   }
-  if (anchor != UINT32_MAX) restore_anchor(anchor, anchor_into, w, p.height(), f);
+  if (anchor.line != UINT32_MAX) restore_anchor(anchor.line, anchor.into, w, p.height(), f);
   ensure_rows(w, size_t(2 * p.height() + scroll_), f);
   // Resolve after loading the lazy transcript window, including on the first
   // frame. When the call finishes, its history row becomes visible again.
@@ -1719,6 +1741,7 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
   }
 
   resolve_moves(w, p.height(), f);
+  reveal_zoomed(p.height());
   layout_draft(w);
   // Read back through the chat, the view stays put while the draft grows.
   if (scroll_ > 0) scroll_ = std::max(0, scroll_ + int(draft_rows_) - int(draft_before));
@@ -1733,6 +1756,7 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
 
   question_hits_.clear();
   link_hits_.clear();
+  image_hits_.clear();
   Style cache[kRowStyles];
   for (int i = 0; i < kRowStyles; i++) cache[i] = base_style(i, th);
 
@@ -1821,6 +1845,7 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
           const Style ist{Color(id), bg, attr::kImage};
           for (int c = 0; c < icols && x + c < p.width() - 1; c++)
             p.put(x + c, ry, char32_t(uint32_t(irow) << 16 | uint32_t(c)), ist);
+          image_hits_.push_back(ImageHit{Rect{x, ry, std::min(icols, p.width() - 1 - x), 1}, id});
           x += icols;
           continue;
         }
@@ -2058,9 +2083,20 @@ bool ChatRenderer::on_mouse(const MouseEvent& m, Point local) {
     press_y_ = local.y;
     press_tool_ = tool_at(local.y);
     press_link_ = link_at(local);
+    press_image_ = image_at(local);
     return true;
   }
   if (m.kind == MouseKind::Release && m.button == MouseButton::Left) {
+    // A click on a picture zooms it, before the tool row it may sit in folds.
+    if (press_image_ && image_at(local) == press_image_) {
+      toggle_zoom(press_image_);
+      press_image_ = 0;
+      press_tool_ = 0;
+      press_y_ = -1;
+      press_link_ = 0;
+      return true;
+    }
+    press_image_ = 0;
     // A click (press and release on the same link) opens it. A drag across
     // one is a selection, and never gets here: the app swallows its release.
     if (press_link_ && link_at(local) == press_link_) {
@@ -2092,19 +2128,83 @@ bool ChatRenderer::on_mouse(const MouseEvent& m, Point local) {
   return false;
 }
 
-std::vector<MenuItem> ChatRenderer::context_menu(Point local, const Filters& f) {
+ChatRenderer::Anchor ChatRenderer::top_anchor(int h) const {
+  Anchor a;
+  const int total = int(rows_.size());
+  const int top = std::max(0, total - h - scroll_);
+  if (top >= total) return a;
+  a.line = rows_[size_t(top)].src_line;
+  for (int i = top; i > 0 && rows_[size_t(i - 1)].src_line == a.line; i--) a.into++;
+  return a;
+}
+
+uint32_t ChatRenderer::image_at(Point pt) const {
+  for (const auto& h : image_hits_)
+    if (h.rect.contains(pt)) return h.id;
+  return 0;
+}
+
+void ChatRenderer::toggle_zoom(uint32_t image_id) {
+  const math::Image* im = math::find(image_id);
+  if (!im || !im->display) return;  // inline math stays in its line
+  const std::string src = md::image_source(im->src);
+  // Where the view was before the first zoom, to go back to when it is let go.
+  if (zoom_.empty()) zoom_back_ = top_anchor(last_h_);
+  zoom_ = zoom_ == src ? std::string() : src;
+  chart_env_.zoom = zoom_;
+  zoom_reveal_ = zoom_.empty() ? std::string() : src;
+  relayout_ = true;
+}
+
+// The image just zoomed, at the top of the view, so it shows whole.
+void ChatRenderer::reveal_zoomed(int h) {
+  if (zoom_reveal_.empty()) return;
+  const std::string want = std::exchange(zoom_reveal_, {});
+  for (size_t i = 0; i < rows_.size(); i++) {
+    const Row& r = rows_[i];
+    for (uint16_t k = 0; k < r.seg_count; k++) {
+      const md::Seg& sg = segs_[r.seg_first + k];
+      uint32_t id;
+      int irow, icols;
+      if (sg.ink != md::Ink::MathImage || !md::image_ref(scratch_, sg, &id, &irow, &icols)) continue;
+      const math::Image* im = math::find(id);
+      if (!im || md::image_source(im->src) != want) continue;
+      // Two rows of what came before it stay in view: its caption, usually.
+      const int top = std::max(0, int(i) - 2);
+      scroll_ = std::max(0, int(rows_.size()) - h - top);
+      return;
+    }
+  }
+}
+
+std::vector<MenuItem> ChatRenderer::context_menu(Point local) {
+  // Only what is about the message under the pointer; what is about the whole
+  // chat or view is the pane's, or a command's.
   uint64_t clicked = 0;
+  bool on_message = false;
   int total = int(rows_.size());
   int first = std::max(0, total - last_h_ - scroll_);
   size_t i = size_t(first + local.y - last_pad_);
   if (local.y >= last_pad_ && i < rows_.size()) {
     clicked = rows_[i].tool_id;
     menu_line_ = rows_[i].src_line;
+    on_message = true;
   }
 
   std::vector<MenuItem> items;
-  items.push_back(MenuItem{"Copy this message", "copy"});
-  items.push_back(MenuItem::sep());
+  // On a picture, a chart or an equation: what it can be copied as, first.
+  menu_image_ = image_at(local);
+  if (const math::Image* im = menu_image_ ? math::find(menu_image_) : nullptr) {
+    const std::string src = md::image_source(im->src);
+    if (im->display) items.push_back(MenuItem{zoom_ == src ? "Zoom out" : "Zoom in", "img:zoom", true, false, false, "", "click"});
+    if (clip::can_copy_image()) items.push_back(MenuItem{"Copy image", "img:copy"});
+    if (!im->encoded && im->copy.starts_with("$")) items.push_back(MenuItem{"Copy LaTeX", "img:tex"});
+    if (im->copy.starts_with("[chart") || im->copy.starts_with("[heatmap"))
+      items.push_back(MenuItem{"Copy chart spec", "img:spec"});
+    if (src.starts_with("file:")) items.push_back(MenuItem{"Copy file path", "img:path"});
+    items.push_back(MenuItem::sep());
+  }
+  if (on_message) items.push_back(MenuItem{"Copy this message", "copy"});
   if (clicked) {
     char buf[32];
     snprintf(buf, sizeof buf, "toggle:%llu", (unsigned long long)clicked);
@@ -2113,16 +2213,6 @@ std::vector<MenuItem> ChatRenderer::context_menu(Point local, const Filters& f) 
                                                : (fold ? "Show these steps" : "Expand this tool call"),
                              buf});
   }
-  items.push_back(MenuItem{"Minimal — chat only", "density:0", true, false,
-                           f.density == Density::Minimal});
-  items.push_back(MenuItem{"Normal — + tool calls", "density:1", true, false,
-                           f.density == Density::Normal});
-  items.push_back(MenuItem{"Full — + thinking, output", "density:2", true, false,
-                           f.density == Density::Full});
-  items.push_back(MenuItem::sep());
-  items.push_back(MenuItem{"Expand all tools", "expand_all"});
-  items.push_back(MenuItem{"Collapse all tools", "collapse_all"});
-  items.push_back(MenuItem{"Jump to latest", "bottom"});
   return items;
 }
 
@@ -2137,6 +2227,23 @@ bool ChatRenderer::on_action(const std::string& a, Filters& f, std::string* copy
         if (!copy_out->empty()) copy_out->push_back('\n');
         copy_out->append(conv_.arena().view(e.text.empty() ? e.summary : e.text));
       }
+    }
+    return true;
+  }
+  if (a.starts_with("img:")) {
+    const math::Image* im = math::find(menu_image_);
+    if (!im) return true;
+    const std::string src = md::image_source(im->src);
+    if (a == "img:zoom") {
+      toggle_zoom(menu_image_);
+    } else if (a == "img:tex" && copy_out) {
+      *copy_out = src;
+    } else if (a == "img:spec" && copy_out) {
+      *copy_out = src.substr(0, src.find_last_not_of("\n ") + 1);
+    } else if (a == "img:path" && copy_out) {
+      *copy_out = file_path_of(src);
+    } else if (a == "img:copy") {
+      notice_ = copy_picture(*im) ? "image copied" : "the image could not be copied";
     }
     return true;
   }

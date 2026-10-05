@@ -9,6 +9,7 @@
 #include "adapters/listing.h"
 #include "base/fs.h"
 #include "base/json.h"
+#include "base/text.h"
 
 namespace mico {
 
@@ -34,10 +35,9 @@ void ClaudeAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) 
       fs::for_each_line(blob, [&](std::string_view line) {
         // Listing needs three things: cwd, the ai-title, and the first real
         // user turn. Anything else is skipped before it is scanned.
-        const bool maybe_title = line.find("ai-title") != std::string_view::npos;
-        const bool maybe_cwd = s.cwd.empty() && line.find("\"cwd\":") != std::string_view::npos;
-        const bool maybe_user =
-            first_user.empty() && line.find("\"type\":\"user\"") != std::string_view::npos;
+        const bool maybe_title = text::contains(line, "ai-title");
+        const bool maybe_cwd = s.cwd.empty() && text::contains(line, "\"cwd\":");
+        const bool maybe_user = first_user.empty() && text::contains(line, "\"type\":\"user\"");
         if (!maybe_title && !maybe_cwd && !maybe_user) return true;
 
         std::string_view type, title;

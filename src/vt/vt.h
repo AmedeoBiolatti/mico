@@ -67,7 +67,9 @@ class Vt {
   void delete_chars(int n);
   void erase_chars(int n);
   void set_cursor(int x, int y);
-  void blank(VtRow& r) const;
+  // A row of the screen's width, cleared: a copy of blank_row_, which is one
+  // memmove where filling twenty-byte cells one at a time is not.
+  void blank(VtRow& r) const { r = blank_row_; }
 
   void exec_csi(char final);
   void exec_sgr();
@@ -91,6 +93,7 @@ class Vt {
   Style cur_{};
   Style saved_style_{};
 
+  VtRow blank_row_;
   std::vector<VtRow> screen_;
   std::vector<VtRow> alt_buf_;
   std::deque<VtRow> scrollback_;

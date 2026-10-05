@@ -107,9 +107,20 @@ struct Work {
 // What a ```chart block needs from its surroundings: the folder a relative
 // data file is read from, and a list to record the files it read, so the chat
 // can redraw the chart when one changes.
+// What a laid-out image is drawn from, the same for all its sizes: an
+// equation's TeX, a picture's file or data key, a chart's spec (a subplot's
+// image names its figure's spec, then "#n").
+std::string image_source(std::string_view src);
+
 struct ChartEnv {
   std::string base_dir;
   std::vector<std::pair<std::string, int64_t>>* watched = nullptr;  // path, mtime
+  // The picture, equation or chart zoomed into (what it is drawn from: see
+  // image_source()), laid out as large as `zoom_rows` rows and the width
+  // allow; empty for none.
+  std::string zoom;
+  int zoom_rows = 0;
+  bool zoomed(std::string_view src) const { return !zoom.empty() && zoom == src; }
 };
 
 struct Out {
@@ -171,14 +182,5 @@ struct LinkHit {
   std::string target;
 };
 void find_links(std::string_view s, const std::string& base, std::vector<LinkHit>& out);
-
-// Tool output: shown as written, but with its ANSI colours kept (and its
-// carriage-return redraws settled), URLs and file paths as links, and — given
-// `lang`, for a file's contents — coloured as that language, with a
-// cat -n / Read listing's line numbers set apart.
-
-// True if the text contains anything worth an inline pass. Lets the common
-// case — agent output with no markup at all — stay zero-copy.
-bool has_markup(std::string_view s);
 
 }  // namespace mico::md

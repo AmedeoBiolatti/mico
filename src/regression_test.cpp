@@ -1272,6 +1272,25 @@ int run_regression_tests() {
       };
       const int y = row_showing("legacy");
       check(y >= 0, "the archive fixture chat is listed");
+      // The menu: what is about the chat clicked, and only what applies.
+      const auto labels = [](const std::vector<MenuItem>& items) {
+        std::vector<std::string> out;
+        for (const auto& it : items)
+          if (!it.separator) out.push_back(it.label);
+        return out;
+      };
+      const auto has = [](const std::vector<std::string>& v, std::string_view l) {
+        return std::find(v.begin(), v.end(), std::string(l)) != v.end();
+      };
+      {
+        const auto on_chat = labels(list->context_menu(Point{4, y}));
+        check(has(on_chat, "Open") && has(on_chat, "Archive") && has(on_chat, "Copy path") &&
+                  has(on_chat, "Resume chat") && has(on_chat, "Fork into a new chat") &&
+                  !has(on_chat, "Stop agent") && !has(on_chat, "Show archived") && on_chat.size() <= 7,
+              "menu: a stored chat's offers what applies to it, and no more than seven things");
+        const auto off = labels(list->context_menu(Point{4, 17}));
+        check(off.size() == 2 && has(off, "Show archived"), "menu: off a chat, the list's own: new chat, archived");
+      }
       list->context_menu(Point{4, y});
       list->on_action("archive");
       app.draw(sf);
@@ -1286,6 +1305,10 @@ int run_regression_tests() {
       for (int i = 0; i < 20; i++) { app.service(); app.draw(sf); usleep(2000); }
       // A running chat is listed under its session title, marked "ready".
       const int live_y = row_showing("ready");
+      {
+        const auto on_live = labels(list->context_menu(Point{4, live_y}));
+        check(has(on_live, "Stop agent") && !has(on_live, "Resume chat"), "menu: a running chat's offers Stop, not Resume");
+      }
       list->context_menu(Point{4, live_y});
       list->on_action("archive");
       app.draw(sf);

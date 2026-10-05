@@ -28,11 +28,12 @@ bool base64_decode(std::string_view in, std::string& out);
 void base64_encode(const uint8_t* p, size_t n, std::string& out);
 
 // A picture no wider than `max_cols` cells and no taller than `max_rows`,
-// never enlarged, cached under `key` (which names the source and its
-// version). `load` supplies the encoded bytes when it has to be drawn. Null
-// when images are off, or the bytes cannot be read as an image.
+// never enlarged unless `enlarge` (a picture zoomed into), cached under `key`
+// (which names the source and its version). `load` supplies the encoded
+// bytes when it has to be drawn. Null when images are off, or the bytes
+// cannot be read as an image.
 const Image* picture(const std::string& key, const std::function<bool(std::string&)>& load,
-                     int max_cols, int max_rows, const std::string& copy);
+                     int max_cols, int max_rows, const std::string& copy, bool enlarge = false);
 
 // Makes sure a picture's pixels are in `im.rgba`, decoding them if they were
 // dropped, and marks it used; may drop the pixels of pictures used longest

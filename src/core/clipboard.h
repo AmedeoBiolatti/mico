@@ -30,4 +30,11 @@ Content read(int timeout_ms = 2000);
 // terminals paste a copied file. Empty when any line is not an existing image.
 std::vector<std::string> image_paths(std::string_view pasted);
 
+// Whether this machine's clipboard can be given an image: wl-copy on
+// Wayland, xclip on X11. Only where mico runs: a terminal reached over ssh
+// takes text alone (OSC 52), and its user's clipboard is out of reach.
+bool can_copy_image();
+// Puts an image (`mime`: image/png, image/jpeg) on that clipboard.
+bool copy_image(std::string_view bytes, std::string_view mime);
+
 }  // namespace mico::clip

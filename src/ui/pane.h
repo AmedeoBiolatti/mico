@@ -19,6 +19,7 @@ struct MenuItem {
   bool separator = false;
   bool checked = false;
   std::string detail{};   // dim text after the label ("fork  —  fork the selected chat")
+  std::string hint{};     // dim, at the right edge: the key that does the same ("Ctrl+G")
 
   static MenuItem sep() { return MenuItem{"", "", false, true, false}; }
 };

@@ -115,9 +115,10 @@ bool emit_picture_line(std::string_view alt, std::string_view target, int cols, 
     if (b64.size() < 16) return false;
     const std::string key = "data:" + std::to_string(b64.size()) + ":" + std::string(b64.substr(0, 40)) +
                             std::string(b64.substr(b64.size() - 40));
+    const bool zoom = out.charts && out.charts->zoomed(key);
     const math::Image* im = math::picture(
-        key, [b64](std::string& bytes) { return math::base64_decode(b64, bytes); }, cols - 2, rows,
-        "[" + std::string(alt.empty() ? "image" : alt) + "]");
+        key, [b64](std::string& bytes) { return math::base64_decode(b64, bytes); }, cols - 2,
+        zoom ? out.charts->zoom_rows : rows, "[" + std::string(alt.empty() ? "image" : alt) + "]", zoom);
     if (!im) return false;
     emit_image(*im, 2, out);
     return true;
@@ -136,6 +137,7 @@ bool emit_picture_line(std::string_view alt, std::string_view target, int cols, 
   const int64_t mtime = int64_t(st.st_mtim.tv_sec) * 1000000000 + st.st_mtim.tv_nsec;
   if (out.charts && out.charts->watched) out.charts->watched->emplace_back(path, mtime);
   const std::string key = "file:" + path + ":" + std::to_string(mtime) + ":" + std::to_string(st.st_size);
+  const bool zoom = out.charts && out.charts->zoomed(key);
   const math::Image* im = math::picture(
       key,
       [&path](std::string& bytes) {
@@ -144,7 +146,7 @@ bool emit_picture_line(std::string_view alt, std::string_view target, int cols, 
         bytes.assign(std::istreambuf_iterator<char>(f), {});
         return !bytes.empty();
       },
-      cols - 2, rows, "![" + std::string(alt) + "](" + std::string(target) + ")");
+      cols - 2, zoom ? out.charts->zoom_rows : rows, "![" + std::string(alt) + "](" + std::string(target) + ")", zoom);
   if (!im) return false;
   emit_image(*im, 2, out);
   return true;
@@ -162,7 +164,7 @@ void emit_image(const math::Image& im, uint8_t indent, Out& out) {
 // (no graphics, or too wide), and the caller shows it as Unicode instead.
 bool emit_display_math(std::string_view src, int cols, uint8_t indent, Out& out) {
   if (render_settings().equations() != Equations::Typeset) return false;
-  const math::Image* im = math::image(src, true, cols - indent);
+  const math::Image* im = math::image(src, true, cols - indent, out.charts && out.charts->zoomed(src));
   if (!im) return false;
   emit_image(*im, indent, out);
   return true;
@@ -205,6 +207,12 @@ bool render_chart(std::string_view body, int cols, Out& out, std::string* error)
   if (!chart::load_files(spec, base, error, out.charts ? out.charts->watched : nullptr)) return false;
   // Labels in the terminal's font around a picture of the plot, one whole
   // picture, or all in cells: whichever the terminals attached can show.
+  // Zoomed into: as tall as the pane allows, past the height it asked for.
+  if (out.charts && out.charts->zoomed(body)) {
+    const int tall = std::max(spec.height, out.charts->zoom_rows - (spec.title.empty() ? 3 : 5));
+    spec.height = tall;
+    for (auto& sub : spec.subplots) sub.height = std::max(sub.height, tall / std::max<int>(1, int(spec.subplots.size())));
+  }
   chart::Figure f;
   chart::figure(spec, body, cols - 2, f);
   emit_figure(f, 2, out);
@@ -455,6 +463,15 @@ void split_cells(std::string_view line, std::vector<std::string_view>& out) {
 
 void picture_rows(const math::Image& im, uint8_t indent, Out& out) { emit_image(im, indent, out); }
 
+std::string image_source(std::string_view src) {
+  // A subplot's "#n": only digits after the last '#'.
+  const size_t hash = src.rfind('#');
+  if (hash != std::string_view::npos && hash + 1 < src.size() && hash > 0 &&
+      src.find_first_not_of("0123456789", hash + 1) == std::string_view::npos)
+    return std::string(src.substr(0, hash));
+  return std::string(src);
+}
+
 bool image_ref(const Arena& scratch, const Seg& s, uint32_t* id, int* row, int* cols) {
   if (s.ink != Ink::MathImage || !(s.off & kScratchBit)) return false;
   const uint32_t off = s.off & ~kScratchBit;
@@ -510,11 +527,6 @@ void find_urls(std::string_view s, std::vector<std::pair<size_t, size_t>>& out) 
 std::string url_target(std::string_view found) {
   if (found.starts_with("www.")) return "https://" + std::string(found);
   return std::string(found);
-}
-
-bool has_markup(std::string_view s) {
-  return s.find_first_of("*_`[#>-$") != std::string_view::npos ||
-         s.find("://") != std::string_view::npos || s.find("www.") != std::string_view::npos;
 }
 
 // Lines still allowed under out.max_lines. Wrapping stops there: a paragraph

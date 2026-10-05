@@ -22,45 +22,6 @@ std::string dur(int64_t ms) {
   return b;
 }
 
-std::string count(size_t n) {
-  std::string s = std::to_string(n);
-  for (int i = int(s.size()) - 3; i > 0; i -= 3) s.insert(size_t(i), ",");
-  return s;
-}
-
-std::string ago(int64_t ms) {
-  const int64_t d = int64_t(time(nullptr)) - ms / 1000;
-  char b[24];
-  if (d < 60) return "just now";
-  if (d < 3600) snprintf(b, sizeof b, "%lldm ago", (long long)(d / 60));
-  else if (d < 86400) snprintf(b, sizeof b, "%lldh ago", (long long)(d / 3600));
-  else snprintf(b, sizeof b, "%lldd ago", (long long)(d / 86400));
-  return b;
-}
-
-std::string fit(std::string_view s, int w) {
-  if (w <= 0) return {};
-  if (text::str_width(s) <= w) return std::string(s);
-  std::string out;
-  int used = 0;
-  for (size_t i = 0; i < s.size();) {
-    const size_t at = i;
-    int cw;
-    i = text::glyph_end(s, i, &cw);
-    cw = std::max(1, cw);
-    if (used + cw > w - 1) break;
-    out.append(s.substr(at, i - at));
-    used += cw;
-  }
-  return out + "\xE2\x80\xA6";
-}
-
-std::string pad(const std::string& s, int w, bool right) {
-  const int n = w - text::str_width(s);
-  if (n <= 0) return s;
-  return right ? std::string(size_t(n), ' ') + s : s + std::string(size_t(n), ' ');
-}
-
 // A share of the whole, in eighths of a cell.
 std::string bar(double frac, int w) {
   static const char* kEighths[] = {"", "\xE2\x96\x8F", "\xE2\x96\x8E", "\xE2\x96\x8D", "\xE2\x96\x8C",
@@ -105,7 +66,7 @@ class ToolsView final : public Pane {
   std::string title() const override { return "Tools"; }
 
   void render(Painter& p, bool focused) override {
-    poll();
+    poll_activity(*app_, index_, next_pass_);
     const Theme& th = app_->theme();
     p.clear(Style{th.text, th.panel});
     gather();
@@ -122,7 +83,7 @@ class ToolsView final : public Pane {
       int x = p.text(1, r, "Tools", Style{th.text, th.panel, attr::kBold}) + 3;
       // What it covers is what the sidebar has selected.
       const std::string scope = app_->view_filter().label;
-      x += p.text_clipped(x, r, scope + " \xC2\xB7 " + kSpans[span_].label, Style{th.accent, th.panel},
+      x += p.text_clipped(x, r, scope + " \xC2\xB7 " + kPeriods[span_].label, Style{th.accent, th.panel},
                           std::max(0, W - x - 1));
       std::string state = index_.complete() ? "" : "  reading " + std::to_string(index_.done()) + "/" + std::to_string(index_.total());
       p.text_clipped(x, r, state + "    t time range \xC2\xB7 a " + (app_->all_folders() ? "this folder" : "all folders"),
@@ -133,7 +94,7 @@ class ToolsView final : public Pane {
     // The headline.
     row([&](int r) {
       std::string s = dur(work_total_) + " running tools \xC2\xB7 " + dur(wait_total_) + " waiting for you \xC2\xB7 " +
-                      count(calls_) + " calls";
+                      thousands(calls_) + " calls";
       if (calls_) {
         char b[32];
         snprintf(b, sizeof b, " \xC2\xB7 %.1f%% failed", 100.0 * double(failed_) / double(calls_));
@@ -158,13 +119,13 @@ class ToolsView final : public Pane {
       const bool wait = b.name == tool_kind_name(ToolKind::Wait);
       row([&](int r) {
         int x = 1;
-        x += p.text(x, r, pad(b.name, name_w, false) + "  " + pad(count(b.calls), num_w, true) + "  " + pad(dur(b.total), time_w, true) + "  ",
+        x += p.text(x, r, pad(b.name, name_w, false) + "  " + pad(thousands(b.calls), num_w, true) + "  " + pad(dur(b.total), time_w, true) + "  ",
                     Style{wait ? th.dim : th.text, th.panel});
         if (!wait) p.text(x, r, bar(double(b.total) / double(share_of), bar_w), Style{th.accent, th.panel});
         x += bar_w + 2;
         x += p.text(x, r, pad(dur(b.median()), time_w, true) + "  " + pad(dur(b.slowest), time_w, true) + "  ",
                     Style{wait ? th.dim : th.text, th.panel});
-        p.text(x, r, pad(b.failed ? count(b.failed) : "", 6, true), Style{th.err, th.panel});
+        p.text(x, r, pad(b.failed ? thousands(b.failed) : "", 6, true), Style{th.err, th.panel});
       });
     }
     row([](int) {});
@@ -181,11 +142,11 @@ class ToolsView final : public Pane {
       Bucket& b = groups_[i];
       row([&](int r) {
         int x = 1;
-        x += p.text(x, r, pad(fit(b.name, cmd_w), cmd_w, false) + "  " + pad(count(b.calls), num_w, true) + "  " +
+        x += p.text(x, r, pad(text::ellipsize(b.name, cmd_w), cmd_w, false) + "  " + pad(thousands(b.calls), num_w, true) + "  " +
                               pad(dur(b.total), time_w, true) + "  " + pad(dur(b.median()), time_w, true) + "  " +
                               pad(dur(b.slowest), time_w, true) + "  ",
                     Style{th.text, th.panel});
-        p.text(x, r, pad(b.failed ? count(b.failed) : "", 6, true), Style{th.err, th.panel});
+        p.text(x, r, pad(b.failed ? thousands(b.failed) : "", 6, true), Style{th.err, th.panel});
       });
     }
     row([](int) {});
@@ -210,10 +171,10 @@ class ToolsView final : public Pane {
         int x = 3;
         x += p.text(x, r, pad(dur(s.dur), time_w, true) + "  ", Style{th.text, bg, attr::kBold});
         x += p.text(x, r, pad(tool_kind_name(s.run->kind), 13, false) + " ", Style{th.accent, bg});
-        const std::string where = "  " + fit(s.chat->title.empty() ? agent_label(s.chat->agent) + " chat" : s.chat->title, 30) +
-                                  " \xC2\xB7 " + ago(s.run->start_ms);
+        const std::string where = "  " + text::ellipsize(s.chat->title.empty() ? agent_label(s.chat->agent) + " chat" : s.chat->title, 30) +
+                                  " \xC2\xB7 " + ago(s.run->start_ms / 1000);
         const int room = std::max(0, W - x - 2 - text::str_width(where));
-        x += p.text(x, r, fit(s.run->command.empty() ? s.run->tool : s.run->command, room),
+        x += p.text(x, r, text::ellipsize(s.run->command.empty() ? s.run->tool : s.run->command, room),
                     Style{s.run->failed ? th.err : th.text, bg});
         p.text_clipped(std::max(x, W - 2 - text::str_width(where)), r, where, Style{th.dim, bg}, W - 2 - x);
       });
@@ -242,7 +203,7 @@ class ToolsView final : public Pane {
       case Key::Enter: open_selected(); return true;
       default: break;
     }
-    if (k.is('t')) { span_ = (span_ + 1) % kSpanCount; sel_ = 0; return true; }
+    if (k.is('t')) { span_ = (span_ + 1) % kPeriodCount; sel_ = 0; return true; }
     if (k.is('a')) { app_->set_all_folders(!app_->all_folders()); sel_ = 0; return true; }
     if (k.is('r')) { index_.start(app_->store().projects(), app_->store()); return true; }
     return false;
@@ -265,43 +226,12 @@ class ToolsView final : public Pane {
             MenuItem{"Reread transcripts", "rescan"}};
   }
   void on_action(const std::string& a) override {
-    if (a == "span") span_ = (span_ + 1) % kSpanCount;
+    if (a == "span") span_ = (span_ + 1) % kPeriodCount;
     else if (a == "all") app_->set_all_folders(!app_->all_folders());
     else if (a == "rescan") index_.start(app_->store().projects(), app_->store());
   }
 
  private:
-  struct Span {
-    const char* label;
-    int64_t seconds;  // 0: since local midnight; -1: all time
-  };
-  static constexpr int kSpanCount = 4;
-  static constexpr Span kSpans[kSpanCount] = {
-      {"today", 0}, {"last 7 days", 7 * 86400}, {"last 30 days", 30 * 86400}, {"all time", -1}};
-
-  // A pass is restarted every few seconds; unchanged files come from the
-  // cache, so a quiet refresh is a stat() per chat.
-  void poll() {
-    const int64_t now = int64_t(time(nullptr));
-    if (index_.complete()) {
-      if (now < next_pass_) return;
-      index_.start(app_->store().projects(), app_->store());
-      next_pass_ = now + 4;
-    }
-    index_.step(index_.done() == 0 ? 300 : App::kIndexSliceMs);
-  }
-
-  int64_t span_start_ms() const {
-    const Span& s = kSpans[span_];
-    const time_t now = time(nullptr);
-    if (s.seconds < 0) return 0;
-    if (s.seconds > 0) return (int64_t(now) - s.seconds) * 1000;
-    tm local{};
-    localtime_r(&now, &local);
-    local.tm_hour = local.tm_min = local.tm_sec = 0;
-    return int64_t(mktime(&local)) * 1000;
-  }
-
   void gather() {
     kinds_.assign(size_t(kToolKinds), Bucket{});
     for (int k = 0; k < kToolKinds; k++) kinds_[size_t(k)].name = tool_kind_name(ToolKind(k));
@@ -309,7 +239,7 @@ class ToolsView final : public Pane {
     slow_.clear();
     work_total_ = wait_total_ = 0;
     calls_ = failed_ = 0;
-    const int64_t from = span_start_ms();
+    const int64_t from = period_start_ms(span_);
     const App::ViewFilter f = app_->view_filter();
     for (const ChatActivity* c : index_.chats()) {
       if (!app_->in_filter(c->project, c->path)) continue;
@@ -364,6 +294,27 @@ class ToolsView final : public Pane {
 };
 
 }  // namespace
+
+int64_t period_start_ms(int i) {
+  const Period& s = kPeriods[i];
+  const time_t now = time(nullptr);
+  if (s.seconds < 0) return 0;
+  if (s.seconds > 0) return (int64_t(now) - s.seconds) * 1000;
+  tm local{};
+  localtime_r(&now, &local);
+  local.tm_hour = local.tm_min = local.tm_sec = 0;
+  return int64_t(mktime(&local)) * 1000;
+}
+
+void poll_activity(App& app, ActivityIndex& index, int64_t& next_pass) {
+  const int64_t now = int64_t(time(nullptr));
+  if (index.complete()) {
+    if (now < next_pass) return;
+    index.start(app.store().projects(), app.store());
+    next_pass = now + 4;
+  }
+  index.step(index.done() == 0 ? 300 : App::kIndexSliceMs);
+}
 
 PanePtr make_tools_view(ActivityIndex& index) { return std::make_unique<ToolsView>(index); }
 

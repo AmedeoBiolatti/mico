@@ -36,10 +36,11 @@ void Vt::resize(int w, int h) {
   gen_ = next_generation();
   w_ = w;
   h_ = h;
+  blank_row_.assign(size_t(w_), Cell{});
   screen_.resize(size_t(h_));
   alt_buf_.resize(size_t(h_));
-  for (auto& r : screen_) r.resize(size_t(w_), Cell{U' ', Style{}, 1});
-  for (auto& r : alt_buf_) r.resize(size_t(w_), Cell{U' ', Style{}, 1});
+  for (auto& r : screen_) r.resize(size_t(w_), Cell{});
+  for (auto& r : alt_buf_) r.resize(size_t(w_), Cell{});
   top_ = 0;
   bot_ = h_ - 1;
   cx_ = std::min(cx_, w_ - 1);

@@ -17,39 +17,6 @@
 namespace mico {
 namespace {
 
-std::string count(long n) {
-  std::string s = std::to_string(n);
-  for (int i = int(s.size()) - 3; i > 0; i -= 3) s.insert(size_t(i), ",");
-  return s;
-}
-
-std::string ago(int64_t ms) {
-  const int64_t d = int64_t(time(nullptr)) - ms / 1000;
-  char b[24];
-  if (d < 60) return "just now";
-  if (d < 3600) snprintf(b, sizeof b, "%lldm ago", (long long)(d / 60));
-  else if (d < 86400) snprintf(b, sizeof b, "%lldh ago", (long long)(d / 3600));
-  else snprintf(b, sizeof b, "%lldd ago", (long long)(d / 86400));
-  return b;
-}
-
-std::string fit(std::string_view s, int w) {
-  if (w <= 0) return {};
-  if (text::str_width(s) <= w) return std::string(s);
-  std::string out;
-  int used = 0;
-  for (size_t i = 0; i < s.size();) {
-    const size_t at = i;
-    int cw;
-    i = text::glyph_end(s, i, &cw);
-    cw = std::max(1, cw);
-    if (used + cw > w - 1) break;
-    out.append(s.substr(at, i - at));
-    used += cw;
-  }
-  return out + "\xE2\x80\xA6";
-}
-
 // A path cut from the left, keeping its file name: "…/views/diff.cpp".
 std::string fit_path(std::string_view s, int w) {
   if (w <= 0) return {};
@@ -74,12 +41,6 @@ std::string_view skip_cols(std::string_view s, int cols) {
     cols -= std::max(1, cw);
   }
   return s.substr(i);
-}
-
-std::string pad(const std::string& s, int w, bool right) {
-  const int n = w - text::str_width(s);
-  if (n <= 0) return s;
-  return right ? std::string(size_t(n), ' ') + s : s + std::string(size_t(n), ' ');
 }
 
 std::string chat_name(const ChatActivity& c) {
@@ -137,7 +98,7 @@ class DiffView final : public Pane {
   std::string title() const override { return "Diff"; }
 
   void render(Painter& p, bool focused) override {
-    poll();
+    poll_activity(*app_, index_, next_pass_);
     const Theme& th = app_->theme();
     p.clear(Style{th.text, th.panel});
     gather();
@@ -148,7 +109,7 @@ class DiffView final : public Pane {
     // Heading: what is shown, and how to change it.
     {
       int x = p.text(1, 0, "Diff", Style{th.text, th.panel, attr::kBold}) + 3;
-      x += p.text_clipped(x, 0, app_->view_filter().label + " \xC2\xB7 " + kSpans[span_].label,
+      x += p.text_clipped(x, 0, app_->view_filter().label + " \xC2\xB7 " + kPeriods[span_].label,
                           Style{th.accent, th.panel}, std::max(0, W - x - 1));
       const std::string state =
           index_.complete() ? "" : "  reading " + std::to_string(index_.done()) + "/" + std::to_string(index_.total());
@@ -163,24 +124,24 @@ class DiffView final : public Pane {
 
     // The headline.
     if (group_ == kByCommit) {
-      std::string s = count(long(groups_.size())) + (groups_.size() == 1 ? " commit" : " commits");
+      std::string s = thousands(groups_.size()) + (groups_.size() == 1 ? " commit" : " commits");
       int x = p.text_clipped(1, 2, s, Style{th.text, th.panel, attr::kBold}, W - 2) + 1;
       std::string who;
       if (chats_) {
-        who = " \xC2\xB7 by " + count(long(chats_)) + (chats_ == 1 ? " chat" : " chats");
+        who = " \xC2\xB7 by " + thousands(chats_) + (chats_ == 1 ? " chat" : " chats");
         std::string names;
         for (const auto& [agent, n] : agents_) names += (names.empty() ? "" : ", ") + agent_label(agent) + " " + std::to_string(n);
         who += " (" + names + ")";
       }
       p.text_clipped(x, 2, who, Style{th.dim, th.panel}, std::max(0, W - x - 1));
     } else {
-      std::string s = count(long(files_)) + (files_ == 1 ? " file" : " files") + " changed";
+      std::string s = thousands(files_) + (files_ == 1 ? " file" : " files") + " changed";
       int x = p.text_clipped(1, 2, s, Style{th.text, th.panel, attr::kBold}, W - 2) + 1;
-      x += p.text(x + 1, 2, "+" + count(added_), Style{th.added, th.panel, attr::kBold}) + 1;
-      x += p.text(x + 1, 2, "\xE2\x88\x92" + count(removed_), Style{th.removed, th.panel, attr::kBold}) + 1;
+      x += p.text(x + 1, 2, "+" + thousands(added_), Style{th.added, th.panel, attr::kBold}) + 1;
+      x += p.text(x + 1, 2, "\xE2\x88\x92" + thousands(removed_), Style{th.removed, th.panel, attr::kBold}) + 1;
       std::string who;
       if (chats_) {
-        who = " \xC2\xB7 by " + count(long(chats_)) + (chats_ == 1 ? " chat" : " chats");
+        who = " \xC2\xB7 by " + thousands(chats_) + (chats_ == 1 ? " chat" : " chats");
         std::string names;
         for (const auto& [agent, n] : agents_) names += (names.empty() ? "" : ", ") + agent_label(agent) + " " + std::to_string(n);
         who += " (" + names + ")";
@@ -228,8 +189,8 @@ class DiffView final : public Pane {
       if (sel) p.put(1, y, U'❯', Style{th.accent, bg, attr::kBold});
       int x = 3;
       const bool counted = group_ != kByCommit || (g.git && g.git->found);
-      x += p.text(x, y, pad(counted ? "+" + count(g.added) : "", count_w - 1, true) + " ", Style{th.added, bg});
-      x += p.text(x, y, pad(counted ? "\xE2\x88\x92" + count(g.removed) : "", count_w - 1, true) + "  ",
+      x += p.text(x, y, pad(counted ? "+" + thousands(g.added) : "", count_w - 1, true) + " ", Style{th.added, bg});
+      x += p.text(x, y, pad(counted ? "\xE2\x88\x92" + thousands(g.removed) : "", count_w - 1, true) + "  ",
                   Style{th.removed, bg});
       const std::string tag = group_ == kByCommit ? (!g.git || g.git->found ? "" : g.git->repo ? " not in git" : " no repo")
                               : g.deleted         ? " deleted"
@@ -239,9 +200,9 @@ class DiffView final : public Pane {
       if (group_ == kByCommit) {
         const std::string hash = g.commit->hash.substr(0, 7) + " ";
         x += p.text(x, y, hash, Style{th.hunk, bg});
-        x += p.text(x, y, fit(g.label, lw - text::str_width(hash)), Style{th.text, bg, sel ? attr::kBold : uint16_t(0)});
+        x += p.text(x, y, text::ellipsize(g.label, lw - text::str_width(hash)), Style{th.text, bg, sel ? attr::kBold : uint16_t(0)});
       } else {
-        const std::string shown = group_ == kByChat ? fit(g.label, lw) : fit_path(g.label, lw);
+        const std::string shown = group_ == kByChat ? text::ellipsize(g.label, lw) : fit_path(g.label, lw);
         x += p.text(x, y, shown, Style{th.text, bg, sel ? attr::kBold : uint16_t(0)});
       }
       p.text(x, y, tag, Style{g.deleted || group_ == kByCommit ? th.removed : th.added, bg});
@@ -250,7 +211,7 @@ class DiffView final : public Pane {
       if (group_ == kByCommit) {
         by = agent_label(g.chats[0]->agent) + " \xC2\xB7 " + chat_name(*g.chats[0]);
       } else if (group_ == kByChat) {
-        by = agent_label(g.chats.empty() ? "" : g.chats[0]->agent) + " \xC2\xB7 " + count(long(g.files.size())) +
+        by = agent_label(g.chats.empty() ? "" : g.chats[0]->agent) + " \xC2\xB7 " + thousands(g.files.size()) +
              (g.files.size() == 1 ? " file" : " files");
       } else if (g.chats.size() == 1) {
         by = agent_label(g.chats[0]->agent) + " \xC2\xB7 " + chat_name(*g.chats[0]);
@@ -259,8 +220,8 @@ class DiffView final : public Pane {
         for (const auto& a : g.agents) names += (names.empty() ? "" : ", ") + agent_label(a);
         by = std::to_string(g.chats.size()) + " chats \xC2\xB7 " + names;
       }
-      p.text(x, y, fit(by, by_w), Style{th.dim, bg});
-      p.text(W - 2 - when_w, y, pad(ago(g.last), when_w, true), Style{th.dim, bg});
+      p.text(x, y, text::ellipsize(by, by_w), Style{th.dim, bg});
+      p.text(W - 2 - when_w, y, pad(ago(g.last / 1000), when_w, true), Style{th.dim, bg});
       list_rows_.push_back({y, i});
     }
 
@@ -274,13 +235,13 @@ class DiffView final : public Pane {
       // The commit as git has it: which, by whom, and how many files.
       p.hline(1, rule, std::max(0, W - 2), U'─', Style{th.border, th.panel});
       std::string what = " " + g.git->hash.substr(0, 10) + " \xC2\xB7 " + g.git->author + " \xC2\xB7 " +
-                         count(long(g.edits.size())) + (g.edits.size() == 1 ? " file " : " files ");
+                         thousands(g.edits.size()) + (g.edits.size() == 1 ? " file " : " files ");
       int x = 2 + p.text_clipped(2, rule, what, Style{th.text, th.panel, attr::kBold}, std::max(0, W - 4));
       p.text_clipped(x + 1, rule, " n/p file \xC2\xB7 enter open the chat that made it \xC2\xB7 pgup/pgdn scroll ",
                      Style{th.dim, th.panel}, std::max(0, W - x - 3));
     } else {
       p.hline(1, rule, std::max(0, W - 2), U'─', Style{th.border, th.panel});
-      std::string what = " " + g.label + " \xC2\xB7 " + count(long(g.edits.size())) +
+      std::string what = " " + g.label + " \xC2\xB7 " + thousands(g.edits.size()) +
                          (g.edits.size() == 1 ? " change " : " changes ");
       int x = 2 + p.text_clipped(2, rule, what, Style{th.text, th.panel, attr::kBold}, std::max(0, W - 4));
       p.text_clipped(x + 1, rule, " n/p change \xC2\xB7 enter open the chat there \xC2\xB7 pgup/pgdn scroll \xC2\xB7 \xE2\x86\x90/\xE2\x86\x92 ",
@@ -315,8 +276,8 @@ class DiffView final : public Pane {
         }
         std::string op = std::string(" \xC2\xB7 ") + edit_op_name(e.op);
         if (!e.moved_to.empty()) op += " \xE2\x86\x92 " + show_path(e.moved_to, ref.chat->project);
-        x += p.text_clipped(x, y, op + " \xC2\xB7 " + ago(e.at_ms), Style{th.dim, th.strip_bg}, std::max(0, W - 20 - x));
-        const std::string plus = "+" + count(e.added), minus = " \xE2\x88\x92" + count(e.removed);
+        x += p.text_clipped(x, y, op + " \xC2\xB7 " + ago(e.at_ms / 1000), Style{th.dim, th.strip_bg}, std::max(0, W - 20 - x));
+        const std::string plus = "+" + thousands(e.added), minus = " \xE2\x88\x92" + thousands(e.removed);
         const int rx = W - 3 - text::str_width(plus) - text::str_width(minus);
         if (rx > x + 1) {
           p.text(rx, y, plus, Style{th.added, th.strip_bg});
@@ -335,7 +296,7 @@ class DiffView final : public Pane {
       if (!l) continue;
       if (row.line == kMore) {
         p.text_clipped(2 + num_w, y,
-                       "\xE2\x80\xA6 " + count(long(l->fc.lines.size()) - kMaxLines) + " more lines \xC2\xB7 enter opens the chat",
+                       "\xE2\x80\xA6 " + thousands(long(l->fc.lines.size()) - kMaxLines) + " more lines \xC2\xB7 enter opens the chat",
                        Style{th.dim, th.panel}, W - num_w - 4);
         continue;
       }
@@ -378,7 +339,7 @@ class DiffView final : public Pane {
     if (k.is(' ')) { scroll_ += std::max(1, view_h_ - 2); return true; }
     if (k.is('n')) { jump(+1); return true; }
     if (k.is('p')) { jump(-1); return true; }
-    if (k.is('t')) { span_ = (span_ + 1) % kSpanCount; reset_detail(); return true; }
+    if (k.is('t')) { span_ = (span_ + 1) % kPeriodCount; reset_detail(); return true; }
     if (k.is('g')) { regroup((group_ + 1) % kGroups); return true; }
     if (k.is('a')) { app_->set_all_folders(!app_->all_folders()); return true; }
     if (k.is('r')) { index_.start(app_->store().projects(), app_->store()); return true; }
@@ -420,7 +381,7 @@ class DiffView final : public Pane {
   }
   void on_action(const std::string& a) override {
     if (a.starts_with("group")) regroup(std::atoi(a.c_str() + 5));
-    else if (a == "span") { span_ = (span_ + 1) % kSpanCount; reset_detail(); }
+    else if (a == "span") { span_ = (span_ + 1) % kPeriodCount; reset_detail(); }
     else if (a == "all") app_->set_all_folders(!app_->all_folders());
     else if (a == "rescan") index_.start(app_->store().projects(), app_->store());
   }
@@ -490,13 +451,6 @@ class DiffView final : public Pane {
     return false;
   }
 
-  struct Span {
-    const char* label;
-    int64_t seconds;  // 0: since local midnight; -1: all time
-  };
-  static constexpr int kSpanCount = 4;
-  static constexpr Span kSpans[kSpanCount] = {
-      {"today", 0}, {"last 7 days", 7 * 86400}, {"last 30 days", 30 * 86400}, {"all time", -1}};
   // A row of the diff below the list: an edit's header, one of its lines, or
   // a note in their place.
   static constexpr int kHeader = -1, kSpacer = -2, kMissing = -3, kMore = -4;
@@ -628,29 +582,6 @@ class DiffView final : public Pane {
     }
   }
 
-  // The same index as Tools: a pass every few seconds, unchanged files from
-  // its cache.
-  void poll() {
-    const int64_t now = int64_t(time(nullptr));
-    if (index_.complete()) {
-      if (now < next_pass_) return;
-      index_.start(app_->store().projects(), app_->store());
-      next_pass_ = now + 4;
-    }
-    index_.step(index_.done() == 0 ? 300 : App::kIndexSliceMs);
-  }
-
-  int64_t span_start_ms() const {
-    const Span& s = kSpans[span_];
-    const time_t now = time(nullptr);
-    if (s.seconds < 0) return 0;
-    if (s.seconds > 0) return (int64_t(now) - s.seconds) * 1000;
-    tm local{};
-    localtime_r(&now, &local);
-    local.tm_hour = local.tm_min = local.tm_sec = 0;
-    return int64_t(mktime(&local)) * 1000;
-  }
-
   // A file as the list shows it: inside its folder, from there; with every
   // folder shown, under the folder's name; elsewhere, from home.
   std::string show_path(const std::string& file, const std::string& project) const {
@@ -709,7 +640,7 @@ class DiffView final : public Pane {
   void gather() {
     project_paths_.clear();
     for (const auto& pr : app_->store().projects()) project_paths_[pr.name] = pr.path;
-    const int64_t from = span_start_ms();
+    const int64_t from = period_start_ms(span_);
     if (group_ == kByCommit) return gather_commits(from);
     std::unordered_map<std::string, size_t> at;
     std::vector<Group> groups;

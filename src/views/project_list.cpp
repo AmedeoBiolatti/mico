@@ -283,39 +283,17 @@ class ProjectList final : public Pane {
     // a new selection rebuilds the layout, which would close this very menu.
     // From the keyboard (no pointer) it acts on the selection.
     int row = sel_;
-    if (local.y >= head_) {
-      const int hit = list_.index_at(local.y - head_);
-      if (hit >= 0) row = hit;
-    }
+    if (local.y >= 0) row = local.y >= head_ ? list_.index_at(local.y - head_) : -1;
     const bool on_row = row >= 0 && row < add_row();
     menu_target_ = on_row ? items_[size_t(row)] : Item{-1, -1};
-    const bool on_sub = on_row && menu_target_.sub >= 0;
-    std::vector<MenuItem> items;
-    if (on_sub) {
-      items = {
-          MenuItem{"New agent here…", "new_agent"},
-          MenuItem{"Rename sub-project…", "rename_sub"},
-          MenuItem{"Remove sub-project", "remove_sub"},
-          MenuItem{"Add sub-project…", "add_sub"},
-          MenuItem{"Copy path", "copy_path"},
-      };
-    } else {
-      items = {
-          MenuItem{"Add sub-project…", "add_sub", on_row},
-          MenuItem{"New agent here…", "new_agent", on_row},
-          MenuItem{"Open newest session", "open_newest", on_row},
-          MenuItem{"Copy path", "copy_path", on_row},
-          MenuItem::sep(),
-          MenuItem{"Add folder…", "add_folder_menu"},
-          MenuItem{"Remove this folder", "remove_folder", on_row},
-      };
-    }
-    items.push_back(MenuItem::sep());
-    items.push_back(MenuItem{"Rescan", "rescan"});
-    items.push_back(MenuItem::sep());
-    items.push_back(MenuItem{"Detach (agents keep running)", "detach"});
-    items.push_back(MenuItem{"Stop all agents and quit", "shutdown"});
-    return items;
+    // Off a folder: what is about the list. Detaching and quitting are F10,
+    // :detach and :quit, never one slip of the mouse away.
+    if (!on_row) return {MenuItem{"Add folder\xE2\x80\xA6", "add_folder_menu"}, MenuItem{"Rescan", "rescan"}};
+    if (menu_target_.sub >= 0)
+      return {MenuItem{"New chat here\xE2\x80\xA6", "new_agent"}, MenuItem{"Rename sub-project\xE2\x80\xA6", "rename_sub"},
+              MenuItem{"Copy path", "copy_path"}, MenuItem::sep(), MenuItem{"Remove sub-project", "remove_sub"}};
+    return {MenuItem{"New chat here\xE2\x80\xA6", "new_agent"}, MenuItem{"Add sub-project\xE2\x80\xA6", "add_sub"},
+            MenuItem{"Copy path", "copy_path"}, MenuItem::sep(), MenuItem{"Remove folder", "remove_folder"}};
   }
 
   void on_action(const std::string& a) override {
@@ -352,21 +330,15 @@ class ProjectList final : public Pane {
       app_->pick_folder();
     } else if (a == "remove_folder") {
       if (pr && app_->store().remove_folder(pr->path)) app_->set_status("removed " + pr->path);
-    } else if (a == "open_newest") {
-      if (pr && !pr->sessions.empty()) {
-        select_target();
-        app_->select_stored(pr->sessions.front().path);
-        app_->open_selected_chat();
-      }
     } else if (a == "copy_path") {
-      if (pr) app_->set_status("path: " + (sp ? sp->path : pr->path));
+      if (pr) {
+        const std::string path = sp ? sp->path : pr->path;
+        app_->copy_to_clipboard(path);
+        app_->set_status("copied: " + path);
+      }
     } else if (a == "rescan") {
       app_->store().scan();
       app_->set_status("rescanned");
-    } else if (a == "detach") {
-      app_->detach();
-    } else if (a == "shutdown") {
-      app_->shutdown();
     }
   }
 

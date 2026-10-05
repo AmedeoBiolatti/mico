@@ -11,6 +11,34 @@ namespace mico {
 
 using namespace tools;
 
+namespace {
+
+// A block of a message's content as Claude writes it: a tool_use (id, name,
+// input) or a tool_result (tool_use_id, is_error, content).
+struct ToolBlock {
+  std::string_view type;
+  std::string id, name, use_id;
+  js::Value input{}, content{};
+  bool error = false;
+};
+
+ToolBlock read_block(std::string_view raw) {
+  ToolBlock b;
+  js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
+    if (k == "type") b.type = v.body();
+    else if (k == "id") b.id = text_of(v);
+    else if (k == "name") b.name = text_of(v);
+    else if (k == "input") b.input = v;
+    else if (k == "tool_use_id") b.use_id = text_of(v);
+    else if (k == "is_error") b.error = v.is_true();
+    else if (k == "content") b.content = v;
+    return true;
+  });
+  return b;
+}
+
+}  // namespace
+
 // tool_use blocks in assistant messages, tool_result blocks in
 // user messages, each record stamped.
 void ClaudeAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const {
@@ -38,25 +66,12 @@ void ClaudeAdapter::read_tools(std::string_view raw, uint64_t offset, ToolSink& 
     return true;
   });
   if (!content.is_array()) return;
-  js::scan_array(content.raw, [&](const js::Value& b) {
-    if (!b.is_object()) return true;
-    std::string_view type;
-    std::string id, name, use_id;
-    js::Value input{}, output{};
-    bool error = false;
-    js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
-      if (k == "type") type = v.body();
-      else if (k == "id") id = text_of(v);
-      else if (k == "name") name = text_of(v);
-      else if (k == "input") input = v;
-      else if (k == "tool_use_id") use_id = text_of(v);
-      else if (k == "is_error") error = v.is_true();
-      else if (k == "content") output = v;
-      return true;
-    });
-    if (type == "tool_use" && !id.empty()) sink.call(id, at, offset, name, subject(input));
-    else if (type == "tool_result" && !use_id.empty())
-      sink.result(use_id, at, error, -1, sink.wants_output(use_id, {}) ? result_text(output) : std::string());
+  js::scan_array(content.raw, [&](const js::Value& v) {
+    if (!v.is_object()) return true;
+    const ToolBlock b = read_block(v.raw);
+    if (b.type == "tool_use" && !b.id.empty()) sink.call(b.id, at, offset, b.name, subject(b.input));
+    else if (b.type == "tool_result" && !b.use_id.empty())
+      sink.result(b.use_id, at, b.error, -1, sink.wants_output(b.use_id, {}) ? result_text(b.content) : std::string());
     return true;
   });
 }
@@ -123,22 +138,9 @@ void ClaudeAdapter::read_background(std::string_view raw, uint64_t offset, Backg
       return true;
     });
     if (content.is_array())
-      js::scan_array(content.raw, [&](const js::Value& b) {
-        if (!b.is_object()) return true;
-        std::string_view type;
-        std::string id, name, use_id;
-        js::Value input{}, said{};
-        bool error = false;
-        js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
-          if (k == "type") type = v.body();
-          else if (k == "id") id = text_of(v);
-          else if (k == "name") name = text_of(v);
-          else if (k == "input") input = v;
-          else if (k == "tool_use_id") use_id = text_of(v);
-          else if (k == "is_error") error = v.is_true();
-          else if (k == "content") said = v;
-          return true;
-        });
+      js::scan_array(content.raw, [&](const js::Value& block) {
+        if (!block.is_object()) return true;
+        const auto [type, id, name, use_id, input, said, error] = read_block(block.raw);
         if (type == "tool_use" && !id.empty() &&
             (name == "Monitor" || name == "Bash" || name == "TaskStop" || name == "KillShell" || name == "KillBash")) {
           BackgroundTasks::Call c;

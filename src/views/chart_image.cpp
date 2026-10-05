@@ -75,6 +75,26 @@ void seg(math::Canvas& c, float x0, float y0, float x1, float y1, float t) {
   math::draw_line(c, it, 1.f, 0, 0);
 }
 
+// One series onto `c`: a line `t` thick through its points, or a dot `dot`
+// wide on each, a point that maps to no number leaving a gap. `at(x, y)`
+// maps a data point to pixels. A series with far more points than the plot's
+// `width` in pixels is thinned: nobody sees the difference.
+template <class At>
+void stroke(math::Canvas& c, const Series& ser, float width, At at, bool dots, float t, float dot) {
+  const size_t step = std::max<size_t>(1, ser.y.size() / size_t(std::max(1.f, width * 3)));
+  bool have = false;
+  float lx = 0, ly = 0;
+  for (size_t i = 0; i < ser.y.size(); i += step) {
+    const auto [X, Y] = at(i < ser.x.size() ? ser.x[i] : double(i), ser.y[i]);
+    if (!std::isfinite(X) || !std::isfinite(Y)) { have = false; continue; }  // a gap
+    if (dots) seg(c, X, Y, X, Y, dot);
+    else if (have) seg(c, lx, ly, X, Y, t);
+    else seg(c, X, Y, X, Y, t);  // a lone point still shows
+    have = true;
+    lx = X, ly = Y;
+  }
+}
+
 // Round-numbered ticks across [lo, hi]: steps of 1, 2 or 5 times a power of ten.
 std::vector<double> nice_ticks(double lo, double hi, int most) {
   std::vector<double> t;
@@ -338,22 +358,9 @@ math::Image draw_xy(const Spec& s, int cols, int cw, int ch, const Style& st) {
   // The data, one layer per series, kept inside the plot box. A series with
   // far more points than pixels is thinned: nobody sees the difference.
   const float t = std::max(1.5f, fch * 0.09f), dot = std::max(3.4f, fch * 0.26f);
+  const auto at = [&](double x, double y) { return std::pair{px(x), py(ty(y))}; };
   for (size_t k = 0; k < s.series.size(); k++) {
-    const Series& ser = s.series[k];
-    const size_t step = std::max<size_t>(1, ser.y.size() / size_t(std::max(1.f, pw * 3)));
-    bool have = false;
-    float lx = 0, ly = 0;
-    for (size_t i = 0; i < ser.y.size(); i += step) {
-      const double x = i < ser.x.size() ? ser.x[i] : double(i);
-      const double y = ty(ser.y[i]);
-      if (!std::isfinite(x) || !std::isfinite(y)) { have = false; continue; }  // a gap
-      const float X = px(x), Y = py(y);
-      if (dots) seg(c, X, Y, X, Y, dot);
-      else if (have) seg(c, lx, ly, X, Y, t);
-      else seg(c, X, Y, X, Y, t);  // a lone point still shows
-      have = true;
-      lx = X, ly = Y;
-    }
+    stroke(c, s.series[k], pw, at, dots, t, dot);
     // Kept inside the plot box: each row's span is trimmed to it.
     const int cl = int(left) - 1, cr = int(right) + 1, ct = int(top) - 1, cb = int(bottom) + 1;
     for (int yy = std::max(0, c.y0); yy <= std::min(c.h - 1, c.y1); yy++) {
@@ -548,6 +555,7 @@ bool cells_xy(const Spec& s, std::string_view identity, int cols, int cw, int ch
     const bool dots = s.kind == Spec::Kind::Scatter;
     const float t = std::max(1.5f, fch * 0.09f), dot = std::max(3.4f, fch * 0.26f);
     const float pw = float(R - L);
+    const auto at = [&](double x, double y) { return std::pair{px(x), py(ty(y))}; };
     if (hist) {
       // A column per bin, a pixel of air between neighbours.
       const Series& ser = s.series.front();
@@ -565,21 +573,7 @@ bool cells_xy(const Spec& s, std::string_view identity, int cols, int cw, int ch
       pic.paint(c, st.series[0], 0.9f);
     }
     for (size_t k = 0; k < s.series.size() && !hist; k++) {
-      const Series& ser = s.series[k];
-      const size_t step = std::max<size_t>(1, ser.y.size() / size_t(std::max(1.f, pw * 3)));
-      bool have = false;
-      float lx = 0, ly = 0;
-      for (size_t i = 0; i < ser.y.size(); i += step) {
-        const double x = i < ser.x.size() ? ser.x[i] : double(i);
-        const double y = ty(ser.y[i]);
-        if (!std::isfinite(x) || !std::isfinite(y)) { have = false; continue; }  // a gap
-        const float X = px(x), Y = py(y);
-        if (dots) seg(c, X, Y, X, Y, dot);
-        else if (have) seg(c, lx, ly, X, Y, t);
-        else seg(c, X, Y, X, Y, t);  // a lone point still shows
-        have = true;
-        lx = X, ly = Y;
-      }
+      stroke(c, s.series[k], pw, at, dots, t, dot);
       pic.paint(c, st.series[k % kSeriesColors]);
     }
     math::Image img;

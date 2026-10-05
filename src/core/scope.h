@@ -29,10 +29,6 @@ std::vector<std::string> wrap(const std::vector<std::string>& argv, const std::s
 // other byte a '-'. "mico-" first.
 std::string unit_name(const std::string& text);
 
-// The scope (or other unit) `pid` is in, from /proc/<pid>/cgroup: its last
-// component, "mico-claude-3-4242.scope". Empty when it cannot be read.
-std::string unit_of(pid_t pid);
-
 // The setting: ~/.config/mico/scopes; on unless turned off.
 bool enabled();
 void set_enabled(bool on);

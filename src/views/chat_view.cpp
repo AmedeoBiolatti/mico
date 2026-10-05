@@ -134,28 +134,18 @@ class ChatView final : public Pane {
       for (const auto& c : chips_)
         if (local.x >= c.rect.x && local.x < c.rect.x + c.rect.w)
           return chip_menu(chat_.state(), c.key, false, "");
-    auto items = chat_.context_menu(local, app_->filters());
-    items.insert(items.begin(), MenuItem{"Outline of this chat\xE2\x80\xA6  Ctrl+G", "outline"});
-    if (app_->current_session()) items.insert(items.begin(), MenuItem{"Open chat", "open_chat"});
+    std::vector<MenuItem> items;
+    if (app_->current_session()) items.push_back(MenuItem{"Open chat", "open_chat"});
+    for (auto& it : chat_.context_menu(local)) items.push_back(std::move(it));
+    if (!items.empty()) items.push_back(MenuItem::sep());
+    items.push_back(MenuItem{"Outline\xE2\x80\xA6", "outline", true, false, false, "", "Ctrl+G"});
     return items;
   }
   void on_action(const std::string& a) override {
     if (a == "open_chat") { app_->open_selected_chat(); return; }
     if (a == "outline") { open_outline(app_, this, chat_); return; }
     if (handle_outline_action(app_, this, chat_, a)) return;
-    if (a.rfind("chipcopy:", 0) == 0) {
-      if (const std::string* v = chat_.state().find(a.substr(9))) {
-        app_->copy_to_clipboard(*v);
-        app_->set_status("copied: " + *v);
-      }
-      return;
-    }
-    std::string copy;
-    chat_.on_action(a, app_->filters(), &copy);
-    if (!copy.empty()) {
-      app_->copy_to_clipboard(copy);
-      app_->set_status("copied to clipboard");
-    }
+    chat_action(*app_, chat_, a);
   }
 
  private:
@@ -167,6 +157,24 @@ class ChatView final : public Pane {
 };
 
 }  // namespace
+
+void chat_action(App& app, ChatRenderer& chat, const std::string& a) {
+  if (a.rfind("chipcopy:", 0) == 0) {
+    if (const std::string* v = chat.state().find(a.substr(9))) {
+      app.copy_to_clipboard(*v);
+      app.set_status("copied: " + *v);
+    }
+    return;
+  }
+  std::string copy;
+  chat.on_action(a, app.filters(), &copy);
+  if (!copy.empty()) {
+    app.copy_to_clipboard(copy);
+    app.set_status("copied to clipboard");
+  } else if (std::string n = chat.take_notice(); !n.empty()) {
+    app.set_status(std::move(n));
+  }
+}
 
 PanePtr make_chat_view() { return std::make_unique<ChatView>(); }
 

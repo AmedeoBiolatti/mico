@@ -18,6 +18,27 @@ int64_t now_ms() {
   return int64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
+// Runs `argv` with `in` as its stdin and `out` as its stdout, each /dev/null
+// when -1, and stderr to /dev/null. -1 when it could not be started.
+pid_t spawn(const std::vector<std::string>& argv, int in, int out) {
+  if (argv.empty()) return -1;
+  const std::string bin = find_program(argv[0]);
+  if (bin.empty()) return -1;
+  // Made before the fork: the child only execs.
+  std::vector<char*> args;
+  args.reserve(argv.size() + 1);
+  for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
+  args.push_back(nullptr);
+  const pid_t pid = fork();
+  if (pid != 0) return pid;
+  const int null = open("/dev/null", O_RDWR);
+  dup2(in >= 0 ? in : null, STDIN_FILENO);
+  dup2(out >= 0 ? out : null, STDOUT_FILENO);
+  dup2(null, STDERR_FILENO);
+  execv(bin.c_str(), args.data());
+  _exit(127);
+}
+
 }  // namespace
 
 std::string find_program(std::string_view name) {
@@ -40,31 +61,13 @@ std::string find_program(std::string_view name) {
 
 Result capture(const std::vector<std::string>& argv, const Options& opt) {
   Result r;
-  if (argv.empty()) return r;
-  const std::string bin = find_program(argv[0]);
-  if (bin.empty()) return r;
-  // Made before the fork: the child only execs.
-  std::vector<char*> args;
-  args.reserve(argv.size() + 1);
-  for (const auto& a : argv) args.push_back(const_cast<char*>(a.c_str()));
-  args.push_back(nullptr);
   int fds[2];
   if (pipe2(fds, O_CLOEXEC) != 0) return r;
-  const pid_t pid = fork();
+  const pid_t pid = spawn(argv, -1, fds[1]);
   if (pid < 0) {
     close(fds[0]);
     close(fds[1]);
     return r;
-  }
-  if (pid == 0) {
-    dup2(fds[1], STDOUT_FILENO);
-    const int null = open("/dev/null", O_RDWR);
-    if (null >= 0) {
-      dup2(null, STDIN_FILENO);
-      dup2(null, STDERR_FILENO);
-    }
-    execv(bin.c_str(), args.data());
-    _exit(127);
   }
   close(fds[1]);
   r.ran = true;
@@ -95,6 +98,53 @@ Result capture(const std::vector<std::string>& argv, const Options& opt) {
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
   if (WIFEXITED(status)) r.exit_code = WEXITSTATUS(status);
   return r;
+}
+
+int feed(const std::vector<std::string>& argv, std::string_view input, int timeout_ms) {
+  int fds[2];
+  if (pipe2(fds, O_CLOEXEC) != 0) return -1;
+  const pid_t pid = spawn(argv, fds[0], -1);
+  if (pid < 0) {
+    close(fds[0]);
+    close(fds[1]);
+    return -1;
+  }
+  close(fds[0]);
+  // Written whole, then closed: the end of the input is what it waits for.
+  // A reader that stops early (SIGPIPE is ignored by the daemon) ends this.
+  const int64_t deadline = now_ms() + timeout_ms;
+  fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK);
+  bool late = false;
+  for (size_t at = 0; at < input.size();) {
+    const ssize_t n = write(fds[1], input.data() + at, input.size() - at);
+    if (n > 0) {
+      at += size_t(n);
+      continue;
+    }
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0 && errno == EAGAIN) {
+      const int64_t left = deadline - now_ms();
+      pollfd p{fds[1], POLLOUT, 0};
+      if (left > 0 && ::poll(&p, 1, int(left)) >= 0) continue;
+      late = true;
+    }
+    break;
+  }
+  close(fds[1]);
+  int status = 0;
+  for (;;) {
+    const pid_t got = waitpid(pid, &status, WNOHANG);
+    if (got == pid) break;
+    if (got < 0 && errno != EINTR) return -1;
+    if (late || now_ms() > deadline) {
+      kill(pid, SIGKILL);
+      while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+      return -1;
+    }
+    timespec ts{0, 10'000'000};
+    nanosleep(&ts, nullptr);
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
 }  // namespace mico::proc

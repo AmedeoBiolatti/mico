@@ -44,10 +44,18 @@ class ChatRenderer {
   bool on_mouse(const MouseEvent& m, Point local);
   // The URL a click just landed on, once.
   std::string take_url() { return std::exchange(open_url_, {}); }
-  std::vector<MenuItem> context_menu(Point local, const Filters& f);
+  std::vector<MenuItem> context_menu(Point local);
   // `copy_out`, when given, receives text the action asked to put on the
   // clipboard.
   bool on_action(const std::string& a, Filters& f, std::string* copy_out = nullptr);
+  // What an action did that the status line should say ("image copied"), once.
+  std::string take_notice() { return std::exchange(notice_, {}); }
+
+  // A picture, chart or display equation clicked is zoomed into: laid out
+  // again as large as the pane allows, where it is. Clicked again, or another
+  // one zoomed, it is back to its size.
+  void toggle_zoom(uint32_t image_id);
+  const std::string& zoomed() const { return zoom_; }
 
   // --- model questions ---------------------------------------------------
   // A question card is parsed from a Question event's `questions` JSON and
@@ -309,6 +317,12 @@ class ChatRenderer {
   bool reload_ = false;
   // Opens the fold holding line `line`, so a search or a jump can show it.
   bool unfold_line(uint32_t line);
+  // The line at the top of a view `h` rows tall, and how many rows into it.
+  struct Anchor {
+    uint32_t line = UINT32_MAX;
+    int into = 0;
+  };
+  Anchor top_anchor(int h) const;
   // After a relayout, puts `line` back at the top of the view, `into` rows
   // into it.
   void restore_anchor(uint32_t line, int into, int w, int h, const Filters& f);
@@ -403,6 +417,23 @@ class ChatRenderer {
   };
   std::vector<LinkHit> link_hits_;
   uint16_t press_link_ = 0;
+  // Where images were drawn this frame: a click zooms one, a right-click
+  // offers to copy it.
+  struct ImageHit {
+    Rect rect;
+    uint32_t id;
+  };
+  std::vector<ImageHit> image_hits_;
+  uint32_t image_at(Point pt) const;
+  uint32_t press_image_ = 0;
+  uint32_t menu_image_ = 0;
+  // The image zoomed into, by md::image_source(); and the one just zoomed or
+  // let go, brought into view once it is laid out again.
+  std::string zoom_;
+  std::string zoom_reveal_;
+  Anchor zoom_back_;  // where the view was before the zoom
+  void reveal_zoomed(int h);
+  std::string notice_;
   std::string open_url_;
   uint64_t rows_links_gen_ = 0;
   uint64_t rows_settings_gen_ = 0;  // the render settings it was laid out under

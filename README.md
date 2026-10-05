@@ -30,8 +30,7 @@ cmake -S . -B build -G Ninja && cmake --build build
 | `mico --local` | single process; agents die with it |
 
 Detaching is just closing the client, or pressing `q`. Agents keep running.
-Nothing bound to a keystroke stops them: that needs `mico kill` or the
-"Stop all agents and quit" menu item.
+Nothing bound to a keystroke stops them: that needs `mico kill` or `:quit`.
 
 | key | |
 |---|---|
@@ -126,7 +125,8 @@ run in. The list lives in `$XDG_CONFIG_HOME/mico/folders` (one absolute path per
 line) and seeds with mico's own working directory on first run.
 
 The Projects pane ends with a `+ add folder` row — select it and press Enter,
-or right-click for **Add folder…** / **Remove this folder** (or `:folder`).
+or right-click the empty part of the list for **Add folder…** (or `:folder`);
+right-click a folder to **Remove folder**.
 Adding opens a folder browser in mico itself, starting at `~/`: typing
 narrows the folders listed, `Tab` goes into the one under the cursor, `Enter`
 tracks it, and the last row tracks exactly the path typed. It works the same
@@ -628,6 +628,7 @@ command.
 :new [command]   start an agent; no argument asks which
 :folder          track another folder
 :outline         the chat's outline (Ctrl+G)
+:expand  :collapse   open or close every tool call in the chats on screen
 :claude [dir]    :codex [dir]   :pi [dir]   :omp [dir]
 :fork  :resume   act on the selected chat
 :commit <hash>   the chat that made a commit
@@ -936,8 +937,10 @@ chat takes focus without starting another process. An exited chat restarts in
 place, keeping its unsent draft and avoiding duplicate rows. Arrow keys only
 preview a row, so browsing the list does not launch agents. A saved preview also
 has an **Open chat** button and accepts Enter. The `+ New chat` button,
-pinned to the bottom of the pane, starts a fresh Claude session. Right-click for
-new claude / new codex / new pi / new omp / resume / fork / stop. The main pane
+pinned to the bottom of the pane, starts a fresh Claude session. Right-click a
+chat for what applies to it: open, rename, archive, move to a sub-project,
+copy its path, resume, fork, stop. Right-click the empty part of the list for
+**New chat…** (which asks which agent) and **Show archived** (`a`). The main pane
 is whatever the list has selected — a live session's own view, or a read-only
 browse of a stored transcript.
 
@@ -978,7 +981,8 @@ the selection out from under you. Drag and copy as you normally would, then
 `F8` to resume.
 
 For a single message, right-click it and "Copy this message" — that goes through
-OSC 52 too. Raw panes offer "Copy visible screen".
+OSC 52 too. Raw panes offer "Copy visible screen". A picture, a chart or an
+equation can be copied as itself: see *Zoom and copy* below.
 
 ## The chat view
 
@@ -1036,6 +1040,17 @@ In kitty a PNG is not decoded by mico at all: the terminal is sent it as it is
 and fits it to its cells. Other formats are decoded and compressed on worker
 threads, never in the frame: a picture shows as soon as it is ready, and those
 a screen above and below the view are made ready before they scroll in.
+
+**Zoom and copy.** A click on a picture, a chart or a display equation zooms
+it where it is: laid out again as wide as the chat and as tall as the pane
+(a picture may be enlarged past its own size; an equation is typeset up to
+twice as large; a chart is drawn taller), and brought to the top of the view.
+A second click puts it back, and the view where it was. A right-click offers
+what it can be copied as: **Copy image** (a picture as the file it is, an
+equation or a chart as a PNG), **Copy LaTeX**, **Copy chart spec**, **Copy
+file path**. An image is put on the clipboard of the machine mico runs on,
+through wl-copy or xclip, and is offered only where one of them is there: a
+terminal reached over ssh takes text alone.
 
 **Tool output.** Command output keeps its ANSI colours: the sixteen of a
 terminal palette as the theme tunes them, 256-colour and 24-bit ones exactly,
@@ -1433,6 +1448,13 @@ menus, Claude's permission panel — is one component, `Picker`
 (`ui/picker.h`). A new one is a list of items and what to do with the answer;
 the keys, the mouse, filtering, scrolling and drawing come with it, so they
 behave the same everywhere.
+
+A right-click menu is about what was clicked: a message, a chat, a folder.
+It lists only what applies there (Resume only on a stopped chat, Stop only on a
+running one), with the key that does the same at its right edge. What is about
+the whole view — the density, detaching, quitting, expanding every tool call —
+is a command or a setting, not a menu item. Off a row, the menu is the list's
+own: a new chat, archived chats, a new folder.
 
 | | |
 |---|---|

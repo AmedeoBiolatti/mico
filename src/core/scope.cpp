@@ -11,7 +11,6 @@
 #include <cstdlib>
 #include <thread>
 
-#include "base/fs.h"
 #include "base/log.h"
 #include "base/process.h"
 #include "core/store.h"
@@ -93,16 +92,6 @@ std::vector<std::string> wrap(const std::vector<std::string>& argv, const std::s
                                   "--description=" + description, "--"};
   out.insert(out.end(), argv.begin(), argv.end());
   return out;
-}
-
-std::string unit_of(pid_t pid) {
-  std::string buf;
-  const std::string_view s = fs::read_prefix("/proc/" + std::to_string(pid) + "/cgroup", 4096, buf);
-  // cgroup v2: "0::/user.slice/…/app.slice/mico-claude-3-4242.scope".
-  size_t e = s.find('\n');
-  std::string_view line = s.substr(0, e);
-  const size_t slash = line.rfind('/');
-  return slash == std::string_view::npos ? std::string() : std::string(line.substr(slash + 1));
 }
 
 }  // namespace mico::scope

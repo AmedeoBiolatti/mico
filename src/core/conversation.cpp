@@ -95,16 +95,16 @@ void Conversation::clear_facts() {
 // Images in a line, whichever agent wrote it: one Image event each, a tool
 // result's carrying its tool's id. Their pixels stay in the file.
 void Conversation::add_images(std::string_view line, size_t before) {
-  const int n = count_images(line);
-  if (n == 0) return;
+  const std::vector<LineImage> images = line_images(line);
+  if (images.empty()) return;
   uint64_t tool = 0;
   for (size_t j = before; j < batch_.size(); j++)
     if (batch_[j].kind == EventKind::ToolResult) tool = batch_[j].tool_id;
-  for (int k = 0; k < n; k++) {
+  for (const LineImage& im : images) {
     Event e;
     e.kind = EventKind::Image;
     e.tool_id = tool;
-    e.summary = arena_.add(std::to_string(k));
+    e.summary = arena_.add(to_string(im));
     batch_.push_back(e);
   }
 }

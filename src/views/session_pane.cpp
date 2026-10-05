@@ -1232,27 +1232,27 @@ class SessionPane final : public Pane {
         }
     }
 
+    // What was clicked, then the chat, then stopping it. Only what applies is
+    // listed: the view's own settings are Settings' and the commands'.
     std::vector<MenuItem> items;
-    items.push_back(MenuItem{showing_raw() ? "Switch to chat view"
-                                           : "Switch to raw view (F2)",
-                             "toggle_view"});
-    if (!showing_raw()) {
-      auto sub = chat_.context_menu(Point{local.x, local.y - body_top_}, app_->filters());
-      items.push_back(MenuItem{"Outline of this chat\xE2\x80\xA6  Ctrl+G", "outline"});
-      items.push_back(MenuItem::sep());
-      items.insert(items.end(), sub.begin(), sub.end());
+    if (showing_raw()) {
+      items.push_back(MenuItem{"Copy visible screen", "copy_screen"});
+      items.push_back(MenuItem{"Chat view", "toggle_view", true, false, false, "", "F2"});
+    } else {
+      items = chat_.context_menu(Point{local.x, local.y - body_top_});
+      if (!items.empty()) items.push_back(MenuItem::sep());
+      items.push_back(MenuItem{"Outline\xE2\x80\xA6", "outline", true, false, false, "", "Ctrl+G"});
     }
-    items.push_back(MenuItem{"Copy visible screen", "copy_screen"});
-    items.push_back(MenuItem::sep());
     // Forking a live session branches from wherever it is now. The id has to
     // be known, which for codex means waiting for its rollout to be found.
-    const bool linkable = s_->adapter() && !s_->session_id().empty();
-    if (s_->exited()) items.push_back(MenuItem{"Resume chat", "resume_self", linkable});
-    items.push_back(MenuItem{"Fork into a new chat", "fork_self", linkable});
-    items.push_back(MenuItem{"Copy transcript path", "copy_path", !s_->transcript().empty()});
-    items.push_back(MenuItem::sep());
-    items.push_back(MenuItem{"Stop agent", "stop", !s_->exited()});
-    items.push_back(MenuItem{"Close pane", "close"});
+    if (s_->adapter() && !s_->session_id().empty()) {
+      items.push_back(MenuItem{"Fork into a new chat", "fork_self"});
+      if (s_->exited()) items.push_back(MenuItem{"Resume chat", "resume_self"});
+    }
+    if (!s_->exited()) {
+      items.push_back(MenuItem::sep());
+      items.push_back(MenuItem{"Stop agent", "stop"});
+    }
     return items;
   }
 
@@ -1273,7 +1273,6 @@ class SessionPane final : public Pane {
       app_->set_status("wait for answer delivery before changing agent settings");
       return;
     }
-    if (a == "copy_path") { app_->set_status(s_->transcript()); return; }
     if (a.rfind("chipkey:", 0) == 0) {
       // A raw key the agent uses to change a setting (Shift+Tab for the
       // permission cycle). No optimistic update — the next click cycles again.
@@ -1325,13 +1324,6 @@ class SessionPane final : public Pane {
       app_->set_status("opened " + cmd);
       return;
     }
-    if (a.rfind("chipcopy:", 0) == 0) {
-      if (const std::string* v = chat_.state().find(a.substr(9))) {
-        app_->copy_to_clipboard(*v);
-        app_->set_status("copied: " + *v);
-      }
-      return;
-    }
     if (a == "fork_self") {
       app_->spawn_continuation(s_->agent(), s_->session_id(), s_->cwd(), true);
       return;
@@ -1347,12 +1339,7 @@ class SessionPane final : public Pane {
       app_->set_status("copied screen to clipboard");
       return;
     }
-    std::string copy;
-    chat_.on_action(a, app_->filters(), &copy);
-    if (!copy.empty()) {
-      app_->copy_to_clipboard(copy);
-      app_->set_status("copied to clipboard");
-    }
+    chat_action(*app_, chat_, a);
   }
 
   // The emulator's visible rows as plain text, trailing blanks trimmed.

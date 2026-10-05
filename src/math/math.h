@@ -57,8 +57,9 @@ struct Image {
 
 // A display equation (`display`) or inline math, drawn to fit `max_cols`.
 // Null when images are off, when inline math reads fine as Unicode, or when
-// it cannot be drawn narrow enough.
-const Image* image(std::string_view src, bool display, int max_cols);
+// it cannot be drawn narrow enough. `zoomed`: a display equation drawn as
+// large as fits, up to twice its size, for someone looking at it closely.
+const Image* image(std::string_view src, bool display, int max_cols, bool zoomed = false);
 const Image* find(uint32_t id);
 
 // A picture drawn elsewhere (a chart), cached under `key`. Storing one with

@@ -1,5 +1,10 @@
 #pragma once
+#include <cstdio>
+#include <ctime>
+#include <iterator>
+
 #include "adapters/adapters.h"
+#include "base/text.h"
 #include "model/background.h"
 #include "ui/pane.h"
 #include "ui/picker.h"
@@ -7,6 +12,7 @@
 
 namespace mico {
 class App;
+class ChatRenderer;
 class LiveSession;
 class UsageIndex;
 class ChatSearch;
@@ -16,6 +22,52 @@ struct SessionState;
 inline std::string agent_label(std::string_view agent) {
   if (const Adapter* a = adapter_for(agent)) return std::string(a->label());
   return std::string(agent);
+}
+
+// A count with its thousands set apart: "12,345".
+inline std::string thousands(long long n) {
+  std::string s = std::to_string(n);
+  for (int i = int(s.size()) - 3; i > (s[0] == '-' ? 1 : 0); i -= 3) s.insert(size_t(i), ",");
+  return s;
+}
+
+// How long ago a moment (seconds since the epoch) was: "just now", "5m ago",
+// "3h ago", "2d ago".
+inline std::string ago(int64_t unix_s) {
+  const int64_t d = int64_t(time(nullptr)) - unix_s;
+  char b[24];
+  if (d < 60) return "just now";
+  if (d < 3600) snprintf(b, sizeof b, "%lldm ago", (long long)(d / 60));
+  else if (d < 86400) snprintf(b, sizeof b, "%lldh ago", (long long)(d / 3600));
+  else snprintf(b, sizeof b, "%lldd ago", (long long)(d / 86400));
+  return b;
+}
+
+// What is left of a chat pane's menu action once the pane has taken its own:
+// a chip's value copied, or the renderer's (copy this message, expand, copy
+// an image...), with what it copied or did said on the status line.
+void chat_action(App& app, ChatRenderer& chat, const std::string& action);
+
+// The periods the Tools and Diff views count over; `t` steps through them.
+struct Period {
+  const char* label;
+  int64_t seconds;  // 0: since local midnight; -1: all time
+};
+inline constexpr Period kPeriods[] = {
+    {"today", 0}, {"last 7 days", 7 * 86400}, {"last 30 days", 30 * 86400}, {"all time", -1}};
+inline constexpr int kPeriodCount = int(std::size(kPeriods));
+// Where period `i` begins, in ms since the epoch; 0 for all time.
+int64_t period_start_ms(int i);
+// The tool-call index those views read: a pass restarted every few seconds,
+// unchanged files from its cache, so a quiet refresh is a stat() per chat.
+// `next_pass` is the caller's, when the next pass is due.
+void poll_activity(App& app, ActivityIndex& index, int64_t& next_pass);
+
+// `s` padded with spaces to `w` columns, on the left when `right` aligns it.
+inline std::string pad(const std::string& s, int w, bool right) {
+  const int n = w - text::str_width(s);
+  if (n <= 0) return s;
+  return right ? std::string(size_t(n), ' ') + s : s + std::string(size_t(n), ' ');
 }
 
 // A chat's state as the sidebar shows it: its mark, the mark's colour, and

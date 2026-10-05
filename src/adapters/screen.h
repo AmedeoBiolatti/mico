@@ -17,11 +17,6 @@ bool row_is_blank(const VtRow& r);
 // stray horizontal lines.
 bool row_is_chrome(const VtRow& r);
 
-// True when a row *begins* with an application's own furniture: a box border,
-// a prompt marker, a status glyph. Judged on the first visible glyph, so a
-// bordered input line counts even though it also carries text.
-bool row_starts_furniture(const VtRow& r);
-
 // A row led by a completed-message bullet (Claude's ●). Rows above it are
 // already in the transcript.
 bool row_is_committed_bullet(const VtRow& r);

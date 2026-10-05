@@ -134,7 +134,7 @@ Image draw(std::string_view src, bool display, int cell_w, int cell_h, float sca
 constexpr size_t kMaxSource = 4096;
 constexpr int kMaxRows = 48;
 
-const Image* image(std::string_view src, bool display, int max_cols) {
+const Image* image(std::string_view src, bool display, int max_cols, bool zoomed) {
   State& s = state();
   if (!s.cfg.enabled || max_cols < 1 || src.size() > kMaxSource) return nullptr;
   if (s.bytes > kBudget) drop_all(s);
@@ -159,23 +159,35 @@ const Image* image(std::string_view src, bool display, int max_cols) {
     }
   }
 
-  // Display math too wide for the pane is tried smaller before giving up.
+  // The image `key` names, drawn at `scale` the first time it is asked for.
+  auto drawn = [&](float scale) {
+    if (auto it = s.by_key.find(key); it != s.by_key.end()) return find(it->second);
+    Image im = draw(src, display, s.cfg.cell_w, s.cfg.cell_h, scale);
+    im.copy = display ? "$$" + im.src + "$$" : "$" + im.src + "$";
+    const uint32_t id = im.id = s.next_id++;
+    if (s.next_id >= 0xFFFFFF) s.next_id = 1;  // ids travel as a 24-bit colour
+    s.bytes += im.alpha.size();
+    s.by_id.emplace(id, std::move(im));
+    s.by_key.emplace(key, id);
+    return find(id);
+  };
+
+  // Display math too wide for the pane is tried smaller before giving up;
+  // zoomed, it is tried larger first.
   static constexpr float kScales[] = {1.f, 0.82f, 0.68f};
+  static constexpr float kZoomed[] = {2.f, 1.6f, 1.3f};
+  if (zoomed && display) {
+    key[0] = 'Z';
+    for (int tier = 0; tier < 3; tier++) {
+      key[1] = char('0' + tier);
+      const Image* im = drawn(kZoomed[tier]);
+      if (im && im->rows <= 2 * kMaxRows && im->cols <= max_cols) return im;
+    }
+    key[0] = 'D';
+  }
   for (int tier = 0; tier < (display ? 3 : 1); tier++) {
     key[1] = char('0' + tier);
-    uint32_t id = 0;
-    if (auto it = s.by_key.find(key); it != s.by_key.end()) {
-      id = it->second;
-    } else {
-      Image im = draw(src, display, s.cfg.cell_w, s.cfg.cell_h, kScales[tier]);
-      im.copy = display ? "$$" + im.src + "$$" : "$" + im.src + "$";
-      im.id = id = s.next_id++;
-      if (s.next_id >= 0xFFFFFF) s.next_id = 1;  // ids travel as a 24-bit colour
-      s.bytes += im.alpha.size();
-      s.by_id.emplace(id, std::move(im));
-      s.by_key.emplace(key, id);
-    }
-    const Image* im = find(id);
+    const Image* im = drawn(kScales[tier]);
     if (im && im->rows > kMaxRows) return nullptr;
     if (im && im->cols <= max_cols) return im;
   }

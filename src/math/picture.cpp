@@ -289,10 +289,11 @@ bool decode_image(std::string_view bytes, std::vector<uint8_t>& rgba, int* w, in
 }
 
 const Image* picture(const std::string& key, const std::function<bool(std::string&)>& load,
-                     int max_cols, int max_rows, const std::string& copy) {
+                     int max_cols, int max_rows, const std::string& copy, bool enlarge) {
   const Config& cfg = config();
   if (!cfg.enabled || max_cols < 2 || max_rows < 1) return nullptr;
-  const std::string full = "pic:" + std::to_string(max_cols) + "x" + std::to_string(max_rows) + ":" + key;
+  const std::string full = std::string(enlarge ? "picz:" : "pic:") + std::to_string(max_cols) + "x" +
+                           std::to_string(max_rows) + ":" + key;
   if (const Image* im = cached(full)) return im;
   // What could not be read is not tried again on every relayout.
   static std::unordered_set<std::string> failed;
@@ -305,7 +306,7 @@ const Image* picture(const std::string& key, const std::function<bool(std::strin
     return nullptr;
   }
   const int cw = cfg.cell_w, ch = cfg.cell_h;
-  const double scale = std::min({1.0, double(max_cols * cw) / w, double(max_rows * ch) / h});
+  const double scale = std::min({enlarge ? 8.0 : 1.0, double(max_cols * cw) / w, double(max_rows * ch) / h});
   const int tw = std::max(1, int(std::lround(w * scale))), th = std::max(1, int(std::lround(h * scale)));
 
   // Laid out from its size alone: the pixels wait until a terminal needs

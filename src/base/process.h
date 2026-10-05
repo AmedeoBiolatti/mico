@@ -39,4 +39,11 @@ struct Result {
 // /dev/null, and collects its standard output.
 Result capture(const std::vector<std::string>& argv, const Options& opt = {});
 
+// Runs argv with `input` on its standard input and its output on /dev/null,
+// and waits for it to exit, up to `timeout_ms`. For a program that is handed
+// something and may leave a process of its own behind to keep it (wl-copy,
+// xclip): only the one started is waited for. Its exit code; -1 when it could
+// not run, was killed, or ran past the deadline.
+int feed(const std::vector<std::string>& argv, std::string_view input, int timeout_ms = 5000);
+
 }  // namespace mico::proc

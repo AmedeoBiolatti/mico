@@ -342,25 +342,28 @@ class ChatList final : public Pane {
       };
     }
 
-    std::vector<MenuItem> items;
-    for (const Adapter* ag : all_adapters())
-      items.push_back(MenuItem{"New " + std::string(ag->id()) + " here", "new:" + std::string(ag->id())});
-    items.insert(items.end(), {
-        MenuItem::sep(),
-        MenuItem{"Open", "open", on_row},
-        MenuItem{"Select (space)", "mark", named},
-        MenuItem{"Rename…", "rename", named},
-        MenuItem{"Move to sub-project…", "movesub_menu",
-                 named && app_->current_project() && !app_->current_project()->subs.empty()},
-        MenuItem{r && r->archived ? "Unarchive" : "Archive", r && r->archived ? "unarchive" : "archive",
-                 named},
-        MenuItem::sep(),
-        MenuItem{"Resume chat", "resume", bool(stored || (r && r->live && r->live->exited() && named))},
-        MenuItem{"Fork into a new run", "fork", bool(stored || live)},
-        MenuItem{show_archived_ ? "Hide archived" : "Show archived", "toggle_archived"},
-        MenuItem::sep(),
-        MenuItem{"Stop this agent", "stop", live},
-    });
+    // Off a chat: what is about the list. On one: what is about that chat,
+    // and only what applies to it.
+    if (!on_row)
+      return {MenuItem{"New chat\xE2\x80\xA6", "new_chat"},
+              MenuItem{show_archived_ ? "Hide archived" : "Show archived", "toggle_archived", true, false, false, "", "a"}};
+    const bool has_subs = app_->current_project() && !app_->current_project()->subs.empty();
+    const std::string path = r->live ? r->live->transcript() : menu_path_;
+    std::vector<MenuItem> items{MenuItem{"Open", "open"}};
+    if (named) {
+      items.push_back(MenuItem{"Rename\xE2\x80\xA6", "rename"});
+      items.push_back(r->archived ? MenuItem{"Unarchive", "unarchive"} : MenuItem{"Archive", "archive"});
+      if (has_subs) items.push_back(MenuItem{"Move to sub-project\xE2\x80\xA6", "movesub_menu"});
+    }
+    if (!path.empty()) items.push_back(MenuItem{"Copy path", "copy_path"});
+    const bool resumable = stored || (r->live && r->live->exited() && named);
+    if (resumable || stored || live) items.push_back(MenuItem::sep());
+    if (resumable) items.push_back(MenuItem{"Resume chat", "resume"});
+    if (stored || live) items.push_back(MenuItem{"Fork into a new chat", "fork"});
+    if (live) {
+      items.push_back(MenuItem::sep());
+      items.push_back(MenuItem{"Stop agent", "stop"});
+    }
     return items;
   }
 
@@ -370,7 +373,14 @@ class ChatList final : public Pane {
     const int at = menu_index();
     const Row* r = at >= 0 ? &rows_[size_t(at)] : nullptr;
 
-    if (a.starts_with("new:")) { app_->spawn_agent(a.substr(4), cwd); return; }
+    if (a == "new_chat") { app_->open_new_agent(); return; }
+    if (a == "copy_path" && r) {
+      const std::string path = r->live ? r->live->transcript() : r->stored ? r->stored->path : std::string();
+      if (path.empty()) return;
+      app_->copy_to_clipboard(path);
+      app_->set_status("copied: " + path);
+      return;
+    }
     if (a == "open" && r) { activate(at); return; }
     if (a == "toggle_archived") { show_archived_ = !show_archived_; return; }
     if (a == "clear_sel") { marked_.clear(); anchor_ = -1; return; }

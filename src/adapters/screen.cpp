@@ -26,24 +26,6 @@ bool row_is_chrome(const VtRow& r) {
   return any;
 }
 
-bool row_starts_furniture(const VtRow& r) {
-  for (const Cell& c : r) {
-    if (c.width == 0 || c.cp == U' ' || c.cp == 0) continue;
-    if (c.cp >= 0x2500 && c.cp <= 0x257F) return true;  // a box border
-    if (c.cp >= 0x2580 && c.cp <= 0x259F) return true;  // block shading
-    if (c.cp == 0x276F || c.cp == 0x203A || c.cp == '>') return true;  // a prompt
-    if (c.cp == 0x23F5 || c.cp == 0x25B6 || c.cp == 0x25BA) return true;  // play/status
-    // Working-spinner frames and the bullets both agents lead their status
-    // lines with. In the strip zone a line starting with any of these is the
-    // agent's own chrome, not conversation.
-    if (c.cp == '*' || c.cp == 0x00B7 || c.cp == 0x2022 || c.cp == 0x2219) return true;
-    if ((c.cp >= 0x2722 && c.cp <= 0x273D) || c.cp == 0x2217) return true;
-    if (c.cp == 0x26A0 || c.cp == 0x26A1 || c.cp == 0x2139) return true;  // warn / info
-    return false;
-  }
-  return false;
-}
-
 // A status or spinner line, judged by content: "Working (5s · esc to
 // interrupt)", "1 startup issue · ctrl + t for details", and the like. These
 // are the agent talking about itself, and they change every second.
@@ -568,7 +550,5 @@ int side_panel_edge(const Vt& vt, int start, int end, int from) {
       best = x;
   return best;
 }
-
-void Vt::blank(VtRow& r) const { r.assign(size_t(w_), Cell{U' ', Style{}, 1}); }
 
 }  // namespace mico

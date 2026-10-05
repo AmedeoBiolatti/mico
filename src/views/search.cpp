@@ -10,16 +10,6 @@
 namespace mico {
 namespace {
 
-std::string ago(int64_t t) {
-  const int64_t d = int64_t(time(nullptr)) - t;
-  char b[24];
-  if (d < 60) return "just now";
-  if (d < 3600) snprintf(b, sizeof b, "%lldm ago", (long long)(d / 60));
-  else if (d < 86400) snprintf(b, sizeof b, "%lldh ago", (long long)(d / 3600));
-  else snprintf(b, sizeof b, "%lldd ago", (long long)(d / 86400));
-  return b;
-}
-
 // Search across every chat: a query line, then the matches grouped by chat,
 // newest chat first, each with a line of context. Results arrive while the
 // search runs; Enter or a click opens the chat at the match.

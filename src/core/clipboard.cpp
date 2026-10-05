@@ -185,4 +185,27 @@ std::vector<std::string> image_paths(std::string_view pasted) {
   return out;
 }
 
+namespace {
+
+// The command that takes an image for the clipboard, without its type.
+std::vector<std::string> image_writer() {
+  if (getenv("WAYLAND_DISPLAY") && on_path("wl-copy")) return {"wl-copy", "--type"};
+  if (getenv("DISPLAY") && on_path("xclip")) return {"xclip", "-selection", "clipboard", "-i", "-t"};
+  return {};
+}
+
+}  // namespace
+
+bool can_copy_image() { return !image_writer().empty(); }
+
+bool copy_image(std::string_view bytes, std::string_view mime) {
+  std::vector<std::string> argv = image_writer();
+  if (argv.empty() || bytes.empty()) return false;
+  argv.emplace_back(mime);
+  const bool ok = proc::feed(argv, bytes) == 0;
+  MLOG("clipboard: %zu bytes of %.*s %s through %s", bytes.size(), int(mime.size()), mime.data(),
+       ok ? "copied" : "not copied", argv[0].c_str());
+  return ok;
+}
+
 }  // namespace mico::clip

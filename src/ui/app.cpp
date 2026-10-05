@@ -914,6 +914,7 @@ void App::open_menu(Pane* owner, Point pos, std::vector<MenuItem> items, std::st
     PickItem p;
     p.label = std::move(it.label);
     p.detail = std::move(it.detail);
+    p.hint = std::move(it.hint);
     p.id = std::move(it.action);
     p.enabled = it.enabled;
     p.separator = it.separator;
@@ -1215,6 +1216,8 @@ constexpr Command kCommands[] = {
     {"new", "start an agent — :new, or :new <command>"},
     {"folder", "track another folder"},
     {"outline", "go to a message, edit or failure in this chat (Ctrl+G)"},
+    {"expand", "open every tool call in the chats on screen"},
+    {"collapse", "close every tool call in the chats on screen"},
     {"fork", "fork the selected chat into a new one"},
     {"resume", "resume the selected chat"},
     {"density", "minimal | normal | full"},
@@ -1372,6 +1375,13 @@ void App::run_command(std::string line) {
     close_menu();
     if (focus_ < placed_.size()) placed_[focus_].pane->on_action("outline");
     for (size_t i = 0; i < placed_.size() && !menu_; i++) placed_[i].pane->on_action("outline");
+    return;
+  }
+  if (cmd == "expand" || cmd == "collapse") {
+    // Every chat on screen; a pane with no chat ignores it.
+    const std::string action = cmd == "expand" ? "expand_all" : "collapse_all";
+    for (const auto& pl : placed_) pl.pane->on_action(action);
+    mark_dirty();
     return;
   }
   if (cmd == "folder") {
