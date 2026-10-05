@@ -25,17 +25,31 @@ namespace mico {
 // people use a tool like this — these variables make the child believe it is a
 // nested sub-session of its parent, and Claude Code then stops writing a
 // transcript at all, which silently breaks the chat view.
+//
+// Only those: the user's own configuration under the same prefixes stays
+// (CLAUDE_CONFIG_DIR, CLAUDE_CODE_USE_BEDROCK, CODEX_HOME, ...), or agents
+// started by mico would read another config, or reach another API.
+bool session_identity(std::string_view key) {
+  static constexpr std::string_view kNames[] = {
+      "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_PROJECT_DIR", "CLAUDE_ENV_FILE",
+      "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SSE_PORT",
+      "CLAUDE_AGENT_SDK_VERSION", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID"};
+  static constexpr std::string_view kPrefixes[] = {"CLAUDE_CODE_SESSION_", "CLAUDE_CODE_MESSAGING_",
+                                                   "ANTHROPIC_CLI_", "MICO_"};
+  for (const std::string_view n : kNames)
+    if (key == n) return true;
+  for (const std::string_view p : kPrefixes)
+    if (key.starts_with(p)) return true;
+  return false;
+}
+
 std::vector<std::string> agent_env(const std::vector<std::string>& set) {
-  static constexpr std::string_view kPrefixes[] = {"CLAUDE_", "CLAUDECODE", "CODEX_", "ANTHROPIC_CLI_", "MICO_"};
   const auto name_of = [](std::string_view kv) { return kv.substr(0, kv.find('=')); };
   std::vector<std::string> env;
   for (char** e = environ; e && *e; e++) {
     const std::string_view kv(*e);
     if (kv.find('=') == std::string_view::npos) continue;
-    const std::string_view key = name_of(kv);
-    bool doomed = false;
-    for (const std::string_view pfx : kPrefixes) doomed |= key.starts_with(pfx);
-    if (!doomed) env.emplace_back(kv);
+    if (!session_identity(name_of(kv))) env.emplace_back(kv);
   }
   for (const std::string& s : set) {
     const std::string_view key = name_of(s);

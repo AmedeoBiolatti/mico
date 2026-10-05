@@ -525,6 +525,10 @@ int run_regression_tests() {
     setenv("LINES", "5", 1);
     setenv("MICO_KEEP_NOT", "1", 1);
     setenv("PLAIN_TEST_VAR", "kept", 1);
+    setenv("CLAUDE_CODE_SESSION_ID", "parent", 1);
+    setenv("CLAUDE_CODE_ENTRYPOINT", "cli", 1);
+    setenv("CLAUDE_CONFIG_DIR_TEST_KEEP", "1", 1);
+    setenv("CODEX_HOME", project.c_str(), 1);
     const std::string got = project + "/agent-env";
     Pty p;
     check(p.spawn({"/bin/sh", "-c", "env > '" + got + "'"}, project, 80, 24), "env: an agent starts");
@@ -538,9 +542,14 @@ int run_regression_tests() {
     const auto has = [&](std::string_view line) { return ("\n" + env).find("\n" + std::string(line)) != std::string::npos; };
     check(has("PLAIN_TEST_VAR=kept") && has("TERM=xterm-256color\n") && has("COLORTERM=truecolor\n"),
           "env: an agent gets mico's environment and the terminal it is drawn for");
-    check(!has("CLAUDECODE=") && !has("MICO_TEST_LEAK=") && !has("MICO_KEEP_NOT=") && !has("LINES="),
+    check(!has("CLAUDECODE=") && !has("MICO_TEST_LEAK=") && !has("MICO_KEEP_NOT=") && !has("LINES=") &&
+              !has("CLAUDE_CODE_SESSION_ID=") && !has("CLAUDE_CODE_ENTRYPOINT="),
           "env: an agent gets no session identity of what launched mico, and no stale size");
-    for (const char* k : {"CLAUDECODE", "MICO_TEST_LEAK", "LINES", "MICO_KEEP_NOT", "PLAIN_TEST_VAR"}) unsetenv(k);
+    check(has("CLAUDE_CONFIG_DIR_TEST_KEEP=1") && has("CODEX_HOME=" + project + "\n"),
+          "env: the user's own CLAUDE_ and CODEX_ configuration reaches the agent");
+    for (const char* k : {"CLAUDECODE", "MICO_TEST_LEAK", "LINES", "MICO_KEEP_NOT", "PLAIN_TEST_VAR",
+                          "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR_TEST_KEEP", "CODEX_HOME"})
+      unsetenv(k);
     p.terminate();
   }
 

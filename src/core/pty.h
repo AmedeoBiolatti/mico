@@ -7,6 +7,10 @@
 
 namespace mico {
 
+// Whether `key` is one of the variables an agent sets for its own session
+// (CLAUDECODE, CLAUDE_CODE_SESSION_ID, ...), as opposed to the user's own
+// configuration that shares its prefix.
+bool session_identity(std::string_view key);
 // The environment a spawned agent gets: mico's, without the variables that
 // would make it think it is a nested session of whatever launched mico, then
 // `set` applied in order ("NAME=value" sets, a bare "NAME" removes). Built
