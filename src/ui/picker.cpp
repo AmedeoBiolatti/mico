@@ -579,12 +579,12 @@ void Picker::render(Painter p, const Theme& th) {
                                                    std::to_string(items_.size() - std::count_if(items_.begin(), items_.end(), [](const PickItem& i) { return i.separator; }));
     const int cw = count.empty() ? 0 : text::str_width(count) + 2;
     if (query_.empty()) {
-      p.put(x0 + 3, y, U'▏', Style{th.accent, field.bg});
+      p.put(x0 + 3, y, U'▏', Style{th.accent, field.bg, attr::kDecor});  // the cursor
       p.text_clipped(x0 + 4, y, opt_.query_placeholder, Style{th.dim, field.bg}, std::max(0, fw - 5));
     } else {
       const int used = p.text_clipped(x0 + 3, y, query_, Style{th.text, field.bg, attr::kBold},
                                       std::max(0, fw - 5 - cw));
-      p.put(x0 + 3 + used, y, U'▏', Style{th.accent, field.bg});
+      p.put(x0 + 3 + used, y, U'▏', Style{th.accent, field.bg, attr::kDecor});
       if (cw) p.text(x0 + fw - cw + 1, y, count, Style{th.dim, field.bg});
     }
     y++;

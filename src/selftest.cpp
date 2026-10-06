@@ -2723,7 +2723,10 @@ int run_selftest() {
           const Cell& a = back.at(x, y);
           const Cell& b = r[size_t(x)];
           if (a.width == 0) continue;
-          if (a.cp != b.cp || !(a.st == b.st)) {
+          // How a copy reads a cell is mico's own; a terminal never sees it.
+          Style want = a.st;
+          want.a &= uint16_t(~(attr::kDecor | attr::kJoin));
+          if (a.cp != b.cp || !(want == b.st)) {
             if (++mismatches <= 2)
               printf("  FAIL  step %d cell (%d,%d): want U+%04X fg=%06X bg=%06X a=%d,"
                      " got U+%04X fg=%06X bg=%06X a=%d\n",
@@ -5352,8 +5355,34 @@ int run_selftest() {
     put(5, 1, " b)", 0);
     put(2, 2, " ", attr::kDecor);
     put(3, 2, "y = 1", 0);
-    check(selection_text(cs, Point{0, 0}, Point{19, 2}, Rect{0, 0, 20, 3}) == "  x = f(a, b)\n  y = 1",
+    check(selection_text(cs, Point{0, 0}, Point{19, 2}, Rect{0, 0, 20, 3}) == "x = f(a, b)\ny = 1",
           "code: copying joins a wrapped line and leaves the marks out");
+  }
+
+  // Copying a chat turn: the gutter bar, the scrollbar and the pane's margin are
+  // the view's, not the text's. A nested line keeps its extra indent, and a
+  // wrapped code line behind a gutter bar still joins.
+  {
+    Surface cs;
+    cs.resize(24, 4);
+    cs.clear(Style{});
+    const auto put = [&](int x, int y, std::string_view t, uint16_t a) {
+      for (size_t i = 0; i < t.size();) cs.at(x++, y) = Cell{text::decode(t, i), Style{0, 0, a}, 1};
+    };
+    for (int y = 0; y < 4; y++) {
+      put(1, y, "\xE2\x96\x8C", attr::kDecor);   // ▌
+      put(23, y, "\xE2\x94\x82", attr::kDecor);  // │
+    }
+    put(4, 0, "Make it so:", 0);
+    put(4, 1, "- one", 0);
+    put(6, 2, "nested", 0);
+    put(4, 3, "\xE2\x86\xAA", attr::kDecor | attr::kJoin);
+    put(6, 3, "more", 0);
+    const Rect area{0, 0, 24, 4};
+    check_str(selection_text(cs, Point{0, 0}, Point{23, 3}, area), "Make it so:\n- one\n  nested more",
+              "copy: no bars, no scrollbar, no margin; nesting and wraps kept");
+    check_str(selection_text(cs, Point{9, 0}, Point{23, 1}, area), "it so:\n- one",
+              "copy: a selection begun mid-row keeps its first line as it is");
   }
 
   // Links: found in text, kept by markdown, stamped on cells, written as OSC 8.

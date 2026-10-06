@@ -37,12 +37,14 @@ void normalize_selection(Point a, Point b, Rect area, Point& top, Point& bot) {
 
 namespace {
 // The blank cells a continuation row starts with before its wrap mark: the
-// chat's own indent, not part of the line being continued.
+// chat's own indent, not part of the line being continued. A bar or padding
+// drawn before the mark is decoration and does not count.
 int continuation_indent(const Surface& s, int y, int x0, int x1) {
   int n = 0;
   for (int x = std::max(0, x0); x <= x1 && x < s.width(); x++) {
     const Cell& c = s.at(x, y);
-    if (c.st.a & attr::kDecor) return n;
+    if (c.st.a & attr::kJoin) return n;
+    if (c.st.a & attr::kDecor) continue;
     if (c.cp != U' ' && c.cp != 0) return 0;
     n++;
   }
@@ -52,19 +54,23 @@ int continuation_indent(const Surface& s, int y, int x0, int x1) {
 
 std::string selection_text(const Surface& s, Point top, Point bot, Rect area,
                            std::string (*image_text)(uint32_t id)) {
-  std::string out;
+  std::vector<std::string> lines;
   std::vector<uint32_t> named;  // images already written out
-  bool first = true;
   for (int y = std::max(0, top.y); y <= bot.y && y < s.height(); y++) {
     const int x0 = (y == top.y) ? top.x : area.x;
     const int x1 = (y == bot.y) ? bot.x : area.right() - 1;
+    // A row with a wrap mark continues the one above.
+    bool join = false;
+    for (int x = std::max(0, x0); x <= x1 && x < s.width() && !join; x++) join = (s.at(x, y).st.a & attr::kJoin) != 0;
     std::string line;
-    bool has_image = false, text = false, join = false;
+    bool has_image = false, text = false;
     for (int x = std::max(0, x0); x <= x1 && x < s.width(); x++) {
       const Cell& c = s.at(x, y);
       if (c.width == 0) continue;  // trailing half of a double-width glyph
       if (c.st.a & attr::kDecor) {
-        join |= (c.st.a & attr::kJoin) != 0;
+        // A bar before the text holds its column, so what is indented behind
+        // it still reads as indented; anywhere else it reads as nothing.
+        if (!text && !join) line.append(c.width, ' ');
         continue;
       }
       if (c.st.a & attr::kImage) {
@@ -82,17 +88,28 @@ std::string selection_text(const Surface& s, Point top, Point bot, Rect area,
     // An equation's other rows: nothing of their own to copy.
     if (image_text && has_image && !text) continue;
     while (!line.empty() && line.back() == ' ') line.pop_back();
-    if (join && !first) {
+    if (join && !lines.empty()) {
       // A wrapped line's continuation: back onto the line it came from,
       // without the indentation it was drawn with.
       size_t lead = 0;
       while (lead < line.size() && line[lead] == ' ' && lead < size_t(continuation_indent(s, y, x0, x1))) lead++;
-      out += line.substr(lead);
+      lines.back() += line.substr(lead);
       continue;
     }
-    if (!first) out.push_back('\n');
-    first = false;
-    out += line;
+    lines.push_back(std::move(line));
+  }
+
+  // The indent every line shares is the pane's margin, not the text's: it is
+  // left out, and what is indented further keeps the difference. A first line
+  // that starts mid-row has no margin to lose.
+  const size_t from = top.x > area.x ? 1 : 0;
+  size_t margin = std::string::npos;
+  for (size_t i = from; i < lines.size(); i++)
+    if (!lines[i].empty()) margin = std::min(margin, lines[i].find_first_not_of(' '));
+  std::string out;
+  for (size_t i = 0; i < lines.size(); i++) {
+    if (i) out.push_back('\n');
+    out += i >= from && margin != std::string::npos && !lines[i].empty() ? lines[i].substr(margin) : lines[i];
   }
   return out;
 }
@@ -230,6 +247,7 @@ void Painter::vline(int x, int y, int len, char32_t cp, Style st) {
 
 void Painter::box(Rect r, Style st) {
   if (r.w < 2 || r.h < 2) return;
+  st.a |= attr::kDecor;  // a frame, never part of a copy
   hline(r.x + 1, r.y, r.w - 2, U'─', st);
   hline(r.x + 1, r.bottom() - 1, r.w - 2, U'─', st);
   vline(r.x, r.y + 1, r.h - 2, U'│', st);

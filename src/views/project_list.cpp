@@ -34,7 +34,7 @@ void draw_filter_header(Painter& p, const Theme& th, std::string_view label, boo
   const Style st{on ? th.text : th.dim, on ? (focused ? th.sel_bg : th.sel_inactive) : th.panel,
                  on ? attr::kBold : attr::kNone};
   p.fill(Rect{0, 0, p.width(), 1}, st);
-  p.put(0, 0, on ? U'\u258C' : U' ', Style{th.accent, st.bg});  // ▌
+  p.put(0, 0, on ? U'\u258C' : U' ', Style{th.accent, st.bg, attr::kDecor});  // ▌
   p.put(1, 0, U'\u25C6', Style{on ? th.accent : th.dim, st.bg, attr::kBold});  // ◆
   p.text_clipped(3, 0, label, st, std::max(0, p.width() - 4));
   p.hline(0, 1, p.width(), U'\u2500', Style{th.border, th.panel});
@@ -165,7 +165,7 @@ class ProjectList final : public Pane {
     const Style meta{th.dim, st.bg};
     p.fill(Rect{0, y, p.width(), TallList::kItemH}, st);
     for (int dy = 0; dy < TallList::kItemH; dy++)
-      p.put(0, y + dy, sel ? U'▌' : U' ', Style{th.accent, st.bg});
+      p.put(0, y + dy, sel ? U'▌' : U' ', Style{th.accent, st.bg, attr::kDecor});
     draw_dot(p, 1, y, st.bg, [&](const LiveSession& s) { return in_project(pr, s.cwd()); });
     p.text_clipped(3, y, pr.name.empty() ? pr.path : pr.name, st, std::max(0, p.width() - 4));
 
@@ -203,7 +203,7 @@ class ProjectList final : public Pane {
     const Style meta{th.dim, st.bg};
     p.fill(Rect{0, y, p.width(), TallList::kItemH}, st);
     for (int dy = 0; dy < TallList::kItemH; dy++)
-      p.put(0, y + dy, sel ? U'▌' : U' ', Style{th.accent, st.bg});
+      p.put(0, y + dy, sel ? U'▌' : U' ', Style{th.accent, st.bg, attr::kDecor});
     p.put(3, y, U'└', Style{th.border, st.bg});  // └
     draw_dot(p, 4, y, st.bg, [&](const LiveSession& s) {
       return in_project(pr, s.cwd()) && app_->live_sub(s) == sp.name;

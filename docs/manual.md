@@ -1017,7 +1017,10 @@ it marks its transcript, which takes effect once the agent exits.
 Dragging with the left mouse button over any pane selects the text under it and
 copies it to the clipboard the moment you let go. The copy goes through OSC 52,
 so it reaches your local clipboard even across ssh, and the range stays
-highlighted until the next click or keypress. A plain click is untouched: it
+highlighted until the next click or keypress. What it copies is the text, not
+the view: the bars beside turns and quotes, the scrollbar, frames and cursors
+are left out, and so is the pane's margin, while anything indented further keeps
+its indent. A plain click is untouched: it
 still activates whatever it landed on — a row, a chip, a tool call — and a tool
 call now opens on release rather than on press, so a drag that happens to start
 on one selects text instead of also toggling it.

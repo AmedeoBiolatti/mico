@@ -1270,7 +1270,7 @@ void render(std::string_view text, uint32_t base, bool in_scratch, int cols, Out
       for (const auto& k : kCallouts) {
         if (!trim(body).starts_with(k.tag)) continue;
         callout = k.ink;
-        const Str bar = out.scratch->add("\xE2\x96\x8E ");
+        const Str bar = out.scratch->add(kQuoteBar);
         const Str lab = out.scratch->add(k.label);
         out.segs->push_back(Seg{bar.off | kScratchBit, bar.len, k.ink});
         out.segs->push_back(Seg{lab.off | kScratchBit, lab.len, k.ink, kAttrBold});
@@ -1296,7 +1296,7 @@ void render(std::string_view text, uint32_t base, bool in_scratch, int cols, Out
       if (body.empty()) out.lines->push_back(Line{uint32_t(out.segs->size()), 0, 4});
       else emit_block(text, base, in_scratch, runs, cols - 4, 4, out);
       // A bar down the quote's left edge, in the callout's colour.
-      const Str bar = out.scratch->add("\xE2\x96\x8E ");
+      const Str bar = out.scratch->add(kQuoteBar);
       hang(out, before, out.lines->size() - before, Seg{bar.off | kScratchBit, bar.len, callout}, 2);
     } else if (bool ordered = false; size_t mark = list_marker(line, &ordered)) {
       in_quote = false;

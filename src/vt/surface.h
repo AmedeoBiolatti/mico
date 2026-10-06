@@ -75,7 +75,10 @@ void normalize_selection(Point a, Point b, Rect area, Point& top, Point& bot);
 
 // The text a selection covers, read off a composed Surface: one line per screen
 // row, trailing blanks trimmed, a double-width glyph counted once. Intermediate
-// rows are read full width, the way a linear text selection works. An image
+// rows are read full width, the way a linear text selection works. Decoration
+// (attr::kDecor: bars, frames, the scrollbar, a cursor) is never copied: before
+// a row's text it reads as blank, keeping the indent as drawn, and after it as
+// nothing. The indent all the lines share is dropped, keeping any deeper. An image
 // cell reads as nothing; with `image_text`, the first cell of each image
 // selected reads as what it returns for the image's id (an equation's LaTeX),
 // and rows holding nothing but image cells are dropped.

@@ -1776,8 +1776,9 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
     const bool tinted = r.gutter == Gutter::User;
     const Color bg = tinted ? th.user_bg : th.panel;
     if (tinted) p.fill(Rect{1, ry, p.width() - 2, 1}, Style{th.text, bg});
-    if (r.gutter == Gutter::User) p.put(1, ry, U'▌', Style{th.user, bg, attr::kBold});
-    if (r.gutter == Gutter::Answer) p.put(1, ry, U'▎', Style{th.accent, bg, attr::kBold});
+    // The bars mark who is speaking; a copy of the turn leaves them out.
+    if (r.gutter == Gutter::User) p.put(1, ry, U'▌', Style{th.user, bg, attr::kBold | attr::kDecor});
+    if (r.gutter == Gutter::Answer) p.put(1, ry, U'▎', Style{th.accent, bg, attr::kBold | attr::kDecor});
 
     // A tool call's bullet is drawn here: a spinner while it waits on its
     // result, otherwise the expand/collapse marker. Keeping it out of the
@@ -1872,6 +1873,8 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
         st.a |= attr::kDecor;
         if (seg_text(sg) == "\xE2\x86\xAA") st.a |= attr::kJoin;
       }
+      // Nor is a quote's bar part of what it quotes.
+      if (seg_text(sg) == md::kQuoteBar) st.a |= attr::kDecor;
       if (sg.attr) {
         if (sg.attr & md::kAttrBold) st.a |= attr::kBold;
         if (sg.attr & md::kAttrDim) st.a |= attr::kDim;
@@ -1942,7 +1945,7 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
     const Color thumb = dragging_ ? th.accent : th.dim;
     for (int y = 0; y < h; y++) {
       const bool on = y >= bar_y && y < bar_y + bar_h;
-      p.put(bar_col_, y, on ? U'▐' : U'│', Style{on ? thumb : th.border, th.panel});
+      p.put(bar_col_, y, on ? U'▐' : U'│', Style{on ? thumb : th.border, th.panel, attr::kDecor});
     }
   } else {
     bar_col_ = -1;
