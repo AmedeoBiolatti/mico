@@ -63,14 +63,14 @@ mico
 `--prefix DIR` installs somewhere else. After a rebuild, install again and run
 `mico kill`, so the next daemon runs the new copy.
 
-**From a release.** Each release has a binary for x86-64 Linux, built on
-Ubuntu 24.04 (it runs there and on newer systems, WSL2 included). Check it
-before running it: the checksum says the download is whole, the attestation
-that GitHub built it from this repository's source.
+**From a release.** Each release has a binary for x86-64 and one for ARM64
+Linux, built on Ubuntu 24.04 (they run there and on newer systems, WSL2
+included). Check it before running it: the checksum says the download is
+whole, the attestation that GitHub built it from this repository's source.
 
 ```sh
-gh release download -R AmedeoBiolatti/mico -p 'mico-*.tar.gz' -p SHA256SUMS
-sha256sum -c SHA256SUMS
+gh release download -R AmedeoBiolatti/mico -p "mico-*-linux-$(uname -m).tar.gz" -p SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 gh attestation verify mico-*.tar.gz -R AmedeoBiolatti/mico
 tar -xzf mico-*.tar.gz && install -Dm755 mico-*/bin/mico ~/.local/bin/mico
 ```
