@@ -55,13 +55,14 @@ compiler (GCC 13 or Clang 18).
 
 ```sh
 git clone https://github.com/AmedeoBiolatti/mico && cd mico
-cmake -S . -B build -G Ninja && cmake --build build
-cmake --install build    # copies mico to ~/.local/bin; no root needed
+./install.sh             # builds and copies mico to ~/.local/bin; no root needed
 mico
 ```
 
-`--prefix DIR` installs somewhere else. After a rebuild, install again and run
-`mico kill`, so the next daemon runs the new copy.
+To update, `git pull && ./install.sh`, then `mico kill` so the next daemon runs
+the new copy. `./install.sh --help` lists its options (`--prefix DIR`,
+`--test`); the script is short, and only runs CMake. By hand it is
+`cmake -S . -B build -G Ninja && cmake --build build && cmake --install build`.
 
 **From a release.** Each release has a binary for x86-64 and one for ARM64
 Linux, built on Ubuntu 24.04 (they run there and on newer systems, WSL2
