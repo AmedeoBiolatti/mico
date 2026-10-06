@@ -84,7 +84,7 @@ class GitView final : public Pane {
     Rect detail{};
     if (side) {
       detail = Rect{list.w + 1, 2, W - list.w - 1, H - 2};
-      for (int y = 2; y < H; y++) p.put(list.w, y, U'│', Style{th.border, th.panel});
+      for (int y = 2; y < H; y++) p.put(list.w, y, U'│', Style{th.border, th.panel, attr::kDecor});
     } else if (H > 14) {
       list.h = (H - 2) / 2;
       detail = Rect{0, 2 + list.h + 1, W, H - 3 - list.h};
@@ -437,7 +437,7 @@ class GitView final : public Pane {
       const bool sel = i == sel_;
       const Color bg = sel ? (focused ? th.sel_bg : th.sel_inactive) : th.panel;
       if (sel) p.fill(Rect{0, r, W, 1}, Style{th.text, bg});
-      if (sel) p.put(0, r, U'▌', Style{th.accent, bg});
+      if (sel) p.put(0, r, U'▌', Style{th.accent, bg, attr::kDecor});
       if (l.selectable()) shown_.push_back({r + list_rect_.y, i});
       const Style text{th.text, bg, sel ? attr::kBold : uint16_t(0)}, dim{th.dim, bg};
       switch (l.kind) {

@@ -202,7 +202,7 @@ class ChatList final : public Pane {
     const Style meta{th.dim, base.bg};
     p.fill(Rect{0, y, p.width(), TallList::kItemH}, base);
     for (int dy = 0; dy < TallList::kItemH; dy++)
-      p.put(0, y + dy, cursor ? U'▌' : U' ', Style{th.accent, base.bg});
+      p.put(0, y + dy, cursor ? U'▌' : U' ', Style{th.accent, base.bg, attr::kDecor});
 
     const State st = state_of(r);
     const ChatState cs = chat_state(r.live, th, app_->anim());

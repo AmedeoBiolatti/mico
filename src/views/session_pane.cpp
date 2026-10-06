@@ -1664,7 +1664,7 @@ class SessionPane final : public Pane {
           cx += draw(cx, row, shown.substr(off, after - off), Style{base.bg, th.accent});
           draw(cx, row, shown.substr(after), base);
         } else {
-          p.put(cx, row, U'\u258F', Style{th.accent, base.bg});
+          p.put(cx, row, U'\u258F', Style{th.accent, base.bg, attr::kDecor});  // the cursor
         }
       } else {
         draw(x, row, shown, base);

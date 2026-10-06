@@ -35,7 +35,7 @@ class SearchView final : public Pane {
     // The query line.
     int x = p.text(1, 0, " Search ", Style{th.bg, th.accent, attr::kBold}) + 2;
     x += p.text_clipped(x, 0, query_, Style{th.text, th.panel, attr::kBold}, std::max(0, p.width() - x - 2));
-    if (focused) p.put(x, 0, U'▏', Style{th.accent, th.panel});
+    if (focused) p.put(x, 0, U'▏', Style{th.accent, th.panel, attr::kDecor});  // the cursor
     const std::string scope = app_->view_filter().label;
     if (query_.empty())
       p.text_clipped(x + 2, 0, "type to search " + (scope == "all folders" ? std::string("every chat") : scope),

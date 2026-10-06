@@ -48,6 +48,9 @@ inline constexpr uint8_t kAttrBold = 1, kAttrDim = 2, kAttrItalic = 4, kAttrUnde
 // A diff's changed words, inside a line that was otherwise kept.
 inline constexpr uint8_t kAttrStrong = 32;
 
+// The bar down a quote's or a callout's left edge. A copy leaves it out.
+inline constexpr std::string_view kQuoteBar = "\xE2\x96\x8E ";
+
 // High bit of `off` selects the scratch arena over the event arena.
 inline constexpr uint32_t kScratchBit = 0x80000000u;
 
