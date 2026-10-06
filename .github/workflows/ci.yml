@@ -17,7 +17,7 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.name }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -30,6 +30,11 @@ jobs:
             cxx: clang++-18
             # LLVMgold, so ld can link clang's LTO objects.
             packages: llvm-18-linker-tools
+          # Releases ship an ARM64 build too; char is unsigned there.
+          - name: Linux ARM64 GCC
+            runner: ubuntu-24.04-arm
+            cc: gcc-13
+            cxx: g++-13
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
