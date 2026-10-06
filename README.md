@@ -154,13 +154,13 @@ The [full manual](docs/manual.md) covers every feature in detail, including
 
 ```sh
 ctest --test-dir build --output-on-failure   # every test, each in its own HOME
-./build/mico --selftest                      # parsers, renderers, adapters
-./build/mico --bench                         # scan, open, frame and scroll timings
+./build/mico-test --selftest                 # parsers, renderers, adapters
+./build/mico-test --bench                    # scan, open, frame and scroll timings
 python3 tests/render_preview.py out/         # render the UI to PNGs (needs Pillow)
 ```
 
 None of the tests start a real coding agent. CI builds with GCC 13 and
-Clang 18 on pushes to `main` and on pull requests.
+Clang 18, and on ARM64, on pushes to `main` and on pull requests.
 
 ## License
 

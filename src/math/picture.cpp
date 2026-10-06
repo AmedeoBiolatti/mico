@@ -539,4 +539,14 @@ bool preparing() {
   return !wk.todo.empty() || wk.busy > 0 || !wk.done.empty();
 }
 
+bool zlib_inflate(const uint8_t* data, size_t n, std::vector<uint8_t>& out) {
+  out.clear();
+  int len = 0;
+  char* p = stbi_zlib_decode_malloc(reinterpret_cast<const char*>(data), int(n), &len);
+  if (!p) return false;
+  out.assign(p, p + len);
+  STBI_FREE(p);
+  return true;
+}
+
 }  // namespace mico::math

@@ -1,13 +1,15 @@
 #include "math/atlas.h"
+#include "math/deflate.h"
 
 #include <algorithm>
 #include <cstring>
 #include <memory>
 #include <vector>
 
-// The atlas is linked in whole. An assembler directive rather than a generated
-// source file: a 600 KB array literal costs the compiler seconds on every
-// build, the directive costs nothing.
+// The atlas is linked in whole, zlib-compressed: it halves, and is inflated
+// the first time an equation is drawn. An assembler directive rather than a
+// generated source file: a 300 KB array literal costs the compiler seconds on
+// every build, the directive costs nothing.
 extern "C" const unsigned char mico_math_atlas[];
 extern "C" const unsigned char mico_math_atlas_end[];
 asm(".section .rodata\n"
@@ -26,6 +28,8 @@ constexpr size_t kHeader = 16;
 constexpr size_t kRecord = 26;
 
 struct Atlas {
+  std::vector<uint8_t> raw;           // the inflated atlas; `data` points into it,
+                                      // and a move keeps the buffer where it is
   int master = 64;
   std::vector<Glyph> glyphs;          // sorted by codepoint
   std::vector<uint32_t> offsets;      // into the RLE coverage
@@ -44,8 +48,9 @@ T rd(const unsigned char* p) {
 const Atlas& atlas() {
   static const Atlas a = [] {
     Atlas a;
-    const unsigned char* p = mico_math_atlas;
-    const size_t len = size_t(mico_math_atlas_end - mico_math_atlas);
+    if (!zlib_inflate(mico_math_atlas, size_t(mico_math_atlas_end - mico_math_atlas), a.raw)) return a;
+    const unsigned char* p = a.raw.data();
+    const size_t len = a.raw.size();
     if (len < kHeader || memcmp(p, "MATL", 4) != 0) return a;
     a.master = int(rd<uint32_t>(p + 8));
     const uint32_t n = rd<uint32_t>(p + 12);

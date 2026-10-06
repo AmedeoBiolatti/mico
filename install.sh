@@ -56,8 +56,13 @@ fi
 configure=(cmake -S . -B build -DCMAKE_BUILD_TYPE=Release)
 if [ ! -f build/CMakeCache.txt ] && command -v ninja >/dev/null; then configure+=(-G Ninja); fi
 "${configure[@]}"
-cmake --build build --parallel "$(nproc 2>/dev/null || echo 4)"
-if [ "$run_tests" = 1 ]; then ctest --test-dir build --output-on-failure -j 4 --timeout 300; fi
+jobs="$(nproc 2>/dev/null || echo 4)"
+if [ "$run_tests" = 1 ]; then
+  cmake --build build --parallel "$jobs"  # mico and mico-test
+  ctest --test-dir build --output-on-failure -j 4 --timeout 300
+else
+  cmake --build build --parallel "$jobs" --target mico
+fi
 cmake --install build --prefix "$prefix"
 
 bin="$prefix/bin"
