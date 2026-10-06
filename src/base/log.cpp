@@ -152,7 +152,7 @@ void on_fatal(int sig, siginfo_t* info, void*) {
   }
   raw("\n    backtrace (addr2line -Cfie ");
   raw(g_exe);
-  raw(" <offset> names a frame):\n");
+  raw(" <offset> names a frame, from debug info: the build's own mico, or mico.debug beside a release):\n");
   void* frames[64];
   const int n = backtrace(frames, 64);
   backtrace_symbols_fd(frames, n, g_fd);

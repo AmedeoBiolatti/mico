@@ -61,7 +61,7 @@ add_library(mico_math STATIC
 )
 target_link_libraries(mico_math PUBLIC mico_base)
 # The glyph atlas is linked in by an .incbin in atlas.cpp.
-set(MICO_MATH_ATLAS ${CMAKE_SOURCE_DIR}/src/math/atlas.bin)
+set(MICO_MATH_ATLAS ${CMAKE_SOURCE_DIR}/src/math/atlas.bin.z)
 set_source_files_properties(src/math/atlas.cpp PROPERTIES
   COMPILE_DEFINITIONS MICO_MATH_ATLAS="${MICO_MATH_ATLAS}"
   OBJECT_DEPENDS ${MICO_MATH_ATLAS})
@@ -197,15 +197,23 @@ target_link_libraries(mico_net PUBLIC mico_tui mico_api)
 add_executable(mico
   src/main.cpp
   src/mcp.cpp
+)
+# The self-tests and the benchmark are a binary of their own, so the mico that
+# ships carries none of them. Both use the same libraries; `ctest` runs both.
+add_executable(mico-test
+  src/test_main.cpp
+  src/mcp.cpp
   src/bench.cpp
   src/selftest.cpp
   src/regression_test.cpp
   src/api_test.cpp
 )
-target_link_libraries(mico PRIVATE mico_net)
-# Resolve every symbol at load time: lazy PLT binding showed up at ~10% of
-# samples in a profile dominated by short-lived hot loops.
-target_link_options(mico PRIVATE -Wl,-z,now -static-libstdc++ -static-libgcc)
+foreach(exe mico mico-test)
+  target_link_libraries(${exe} PRIVATE mico_net)
+  # Resolve every symbol at load time: lazy PLT binding showed up at ~10% of
+  # samples in a profile dominated by short-lived hot loops.
+  target_link_options(${exe} PRIVATE -Wl,-z,now -static-libstdc++ -static-libgcc)
+endforeach()
 
 # `cmake --install build` puts mico in ~/.local/bin: no root needed. Agents
 # start mico as their MCP server by the path it runs from, so once installed,
@@ -215,6 +223,12 @@ if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
 endif()
 include(GNUInstallDirs)
 install(TARGETS mico RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# Installed stripped: debug info is nine tenths of the file. build/mico keeps
+# it, and is what addr2line reads to name a crash's frames.
+if(CMAKE_STRIP)
+  install(CODE "execute_process(COMMAND \"${CMAKE_STRIP}\" --strip-all
+    \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/mico\" COMMAND_ERROR_IS_FATAL ANY)")
+endif()
 
 # `ctest` runs the self-test and the fixture-driven handoff checks. None of
 # them starts a real agent. Each gets its own HOME and XDG dirs, so a local run
@@ -231,9 +245,9 @@ set(MICO_TEST_ENV
   CXX=${CMAKE_CXX_COMPILER}
   MICO_BUILD=${CMAKE_BINARY_DIR})
 
-add_test(NAME selftest COMMAND mico --selftest)
+add_test(NAME selftest COMMAND mico-test --selftest)
 set_tests_properties(selftest PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
-add_test(NAME api COMMAND mico --api-test)
+add_test(NAME api COMMAND mico-test --api-test)
 set_tests_properties(api PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 
 find_package(Python3 COMPONENTS Interpreter)

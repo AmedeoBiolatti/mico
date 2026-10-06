@@ -76,10 +76,17 @@ mico --dump [w h] [--project N --session N --density 0|1|2 --scroll N]
 mico --vt FILE [--dump w h]     replay captured pty bytes through the emulator
 mico --spawn 'CMD'              run any command as a pane (no adapter)
 mico --spawn-agent claude|codex|pi|omp  start an agent at launch
-mico --bench                    time scan, open, frame and scroll paths
-mico --selftest                 JSON reader, wrapper, markdown, both adapters
 mico --math 'TEX' out.png [--inline] [--cell W H]   draw one equation to a PNG
 mico --chart 'JSON' out.png [--cols N] [--cell W H]   draw one chart to a PNG
+```
+
+The self-tests and the benchmark are a binary of their own, built beside mico
+and never installed, so the mico that ships carries none of their code:
+
+```
+mico-test --selftest            JSON reader, wrapper, markdown, both adapters
+mico-test --api-test            the state protocol against fixture sessions
+mico-test --bench               time scan, open, frame and scroll paths
 ```
 
 The self-test also covers session identity, resume, draft isolation, tool
@@ -317,9 +324,9 @@ adapter, or correlation not yet resolved, degrades to raw-only.
 
 ## Performance
 
-`mico --bench` measures the paths that matter against the largest transcript in
+`mico-test --bench` measures the paths that matter against the largest transcript in
 the folder it runs in, or in `$MICO_BENCH_FOLDER` (here a 205 MB codex rollout).
-`mico --selftest` checks the hand-written JSON reader and the wrapper; with
+`mico-test --selftest` checks the hand-written JSON reader and the wrapper; with
 `$MICO_BENCH_FOLDER` set it also checks scrollbar seeking on that folder's
 largest transcript.
 
@@ -623,7 +630,10 @@ The file resets itself once it passes ~4 MB.
   thread was doing — pumping which session (agent, id, folder), drawing which
   tab and chat, indexing or searching which transcript, running git where —
   and a backtrace. `addr2line -Cfie build/mico +0x…` names a frame, for the
-  same build.
+  same build. An installed mico is stripped of its debug info, which is nine
+  tenths of the file: the build folder keeps it in `build/mico`, and each
+  release has it as `mico-<tag>-linux-<arch>-debug.tar.gz`, whose
+  `mico.debug` put beside the binary is what addr2line and gdb then read.
 - **A kill** (SIGKILL, which is what the OOM killer and `systemd-oomd`
   send) leaves nothing: it cannot be caught. So the daemon keeps
   `$XDG_STATE_HOME/mico/daemon` (pid, start, and a heartbeat each minute) and
@@ -1647,7 +1657,7 @@ src/views/   project_list  chat_list
              code.cpp      syntax colouring for fenced code
 src/math/    tex.h       math parser: atoms, fractions, scripts, arrays…
              layout.h    TeX's box rules, simplified: spacing, axis, limits
-             atlas.h     pre-rendered Latin Modern Math glyphs (atlas.bin)
+             atlas.h     pre-rendered Latin Modern Math glyphs (atlas.bin.z)
              math.h      equation -> cell-sized image, cached per config
              kitty.h     sends images to a terminal once, frees them
              sixel.h     redraws images as sixel pictures when they move

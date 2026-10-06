@@ -3196,9 +3196,11 @@ int run_selftest() {
     claude_adapter().prepare(own, x);
     check(std::count(own.argv.begin(), own.argv.end(), "--settings") == 1, "limits: settings given by hand are left alone");
 
+    // The mico built beside this mico-test: the one claude runs.
     char exe[4096];
     const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
-    const std::string self = n > 0 ? std::string(exe, size_t(n)) : std::string();
+    std::string self = n > 0 ? std::string(exe, size_t(n)) : std::string();
+    self = self.substr(0, self.rfind('/') + 1) + "mico";
     char tmpl[] = "/tmp/mico_limits_XXXXXX";
     const std::string dir = mkdtemp(tmpl) ? tmpl : "/tmp";
     const auto status = [&](const std::string& json, const std::string& out) {

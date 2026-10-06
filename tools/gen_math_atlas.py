@@ -6,7 +6,8 @@ build never needs Python, Pillow or the font:
 
     python3 tools/gen_math_atlas.py [path/to/latinmodern-math.otf]
 
-Writes src/math/atlas.bin:
+Writes src/math/atlas.bin.z, zlib-compressed (it halves; mico inflates it
+on the first equation drawn):
 
     "MATL" u32 version  u32 master_px  u32 count
     count x { u32 cp  i16 adv  i16 x0 y0 x1 y1   (1/1000 em, y up)
@@ -24,6 +25,7 @@ Latin Modern Math is under the GUST Font License, which allows this.
 """
 import struct
 import sys
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -114,12 +116,10 @@ def main():
         records.append(struct.pack("<IhhhhhHHhhI", cp, adv, x0, -y1, x1, -y0, bw, bh,
                                    left, top, off))
 
-    out = Path(__file__).resolve().parent.parent / "src" / "math" / "atlas.bin"
+    out = Path(__file__).resolve().parent.parent / "src" / "math" / "atlas.bin.z"
+    atlas = b"MATL" + struct.pack("<III", 1, MASTER, len(records)) + b"".join(records) + bytes(blob)
     with open(out, "wb") as f:
-        f.write(b"MATL" + struct.pack("<III", 1, MASTER, len(records)))
-        for r in records:
-            f.write(r)
-        f.write(blob)
+        f.write(zlib.compress(atlas, 9))
     print(f"{len(records)} glyphs, {len(blob)} bytes of coverage -> {out}")
     if skipped:
         print(f"not in the font ({len(skipped)}):", " ".join(f"{c:04X}" for c in skipped[:40]),

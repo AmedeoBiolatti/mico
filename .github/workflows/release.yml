@@ -50,9 +50,15 @@ jobs:
         run: |
           test "$(uname -m)" = "$ARCH"
           name="mico-${TAG//\//-}-linux-$ARCH"
-          cmake --install build --prefix "$name"
+          cmake --install build --prefix "$name"  # stripped
           cp LICENSE README.md "$name/"
+          # The debug info, for naming a crash's frames, as a download of its
+          # own; the binary points at it, so beside it is where it goes.
+          objcopy --only-keep-debug --compress-debug-sections=zlib build/mico mico.debug
+          objcopy --add-gnu-debuglink=mico.debug "$name/bin/mico"
           tar -czf "$name.tar.gz" "$name"
+          tar -czf "$name-debug.tar.gz" mico.debug
+          ls -l "$name/bin/mico" mico-*.tar.gz
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:

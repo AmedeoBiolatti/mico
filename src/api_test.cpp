@@ -1,4 +1,4 @@
-// `mico --api-test`: the state protocol against a workspace over fixture
+// `mico-test --api-test`: the state protocol against a workspace over fixture
 // transcripts. Runs under the test HOME ctest sets up; starts no agent.
 #include <stdio.h>
 #include <stdlib.h>
