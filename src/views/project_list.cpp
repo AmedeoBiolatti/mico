@@ -90,8 +90,9 @@ class ProjectList final : public Pane {
     const Theme& th = app_->theme();
     whole.clear(Style{th.text, th.panel});
     rebuild();
-    // Off the Sessions tab the list filters, and "All folders" heads it.
-    head_ = app_->filtering() && whole.height() > kFilterHeaderH + 3 ? kFilterHeaderH : 0;
+    // "All folders" heads the list on every tab: on Sessions it lists the
+    // chats of every folder, elsewhere it is what the tab covers.
+    head_ = whole.height() > kFilterHeaderH + 3 ? kFilterHeaderH : 0;
     if (head_) draw_filter_header(whole, th, "All folders", app_->all_folders(), focused);
     Painter p = whole.sub(Rect{0, head_, whole.width(), whole.height() - head_});
     const int add = int(items_.size());  // index of the "+ add folder" button

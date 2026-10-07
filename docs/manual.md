@@ -720,6 +720,10 @@ what the tab shows. `Sessions` is the working view; `Usage` adds up what the
 agents spent, `Search` searches chats, `Tools` shows where their time went,
 `Diff` what they changed in files, `Git` the repository and who works where.
 
+On `Sessions` the **All folders** row at the top of Projects lists the chats
+of every folder in Chats, newest first, each with its folder; opening one
+selects its folder.
+
 On `Usage`, `Search`, `Tools`, `Diff` and `Git` the column is the filter. Each list gains a
 row at the top — **All folders** above the folders, **All chats** above the
 chats — and what is lit is what the tab covers:
