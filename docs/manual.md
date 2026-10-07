@@ -36,6 +36,8 @@ cmake -S . -B build -G Ninja && cmake --build build
 | `mico` | attach, starting a daemon if needed |
 | `mico --attach` | attach only; fail if no daemon is running |
 | `mico --daemon` | run the daemon in the foreground |
+| `mico update` | install the latest release over this binary, after checking its SHA-256 (`--check` only looks); then `mico kill` to run it |
+| `mico --version` | print the version |
 | `mico kill` | stop the daemon **and every agent it owns** (the next daemon resumes them) |
 | `mico --local` | single process; agents die with it |
 

@@ -26,6 +26,8 @@ int run_daemon();
 int run_client(bool allow_spawn);
 int kill_daemon();
 int run_mcp_server();
+int run_update(bool check_only);
+const char* version();
 }  // namespace mico
 
 namespace {
@@ -93,6 +95,11 @@ int show_keys() {
 int main(int argc, char** argv) {
   // The MCP server agents start: nothing else of mico, and only JSON on stdout.
   if (argc > 1 && !strcmp(argv[1], "--mcp")) return mico::run_mcp_server();
+  if (argc > 1 && !strcmp(argv[1], "update")) return mico::run_update(argc > 2 && !strcmp(argv[2], "--check"));
+  if (argc > 1 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-V"))) {
+    printf("mico %s\n", mico::version());
+    return 0;
+  }
   // Claude runs it for every status line update: quick, quiet, no log.
   if (argc > 1 && !strcmp(argv[1], "--claude-status")) return mico::claude_status_line();
   int dump_w = 0, dump_h = 0, pick_p = 0, pick_s = 0, density = -1, scroll = 0;
@@ -233,6 +240,8 @@ int main(int argc, char** argv) {
       printf(
           "mico — a view over your coding agents' sessions\n\n"
           "  mico                 interactive\n"
+          "  mico update          install the latest release (--check only looks)\n"
+          "  mico --version       print the version\n"
           "  mico --dump [w h]    render one frame as text (for testing)\n"
           "  mico --dump --usage  render the usage tab instead\n"
           "  --project N --session N --density 0|1|2\n\n"
