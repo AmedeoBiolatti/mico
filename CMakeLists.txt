@@ -280,10 +280,12 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_postmortem.py $<TARGET_FILE:mico>)
   add_test(NAME git-commits
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/git_commits.py $<TARGET_FILE:mico>)
+  add_test(NAME git-repos
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/git_repos.py $<TARGET_FILE:mico>)
   foreach(check claude_questions claude_permission claude_paste)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(daemon-input web-answers web-ui daemon-restore daemon-postmortem agent-scopes compact-mode chat-images chat-copy git-commits web-view claude-questions claude-permission claude-paste claude-background
+  set_tests_properties(daemon-input web-answers web-ui daemon-restore daemon-postmortem agent-scopes compact-mode chat-images chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

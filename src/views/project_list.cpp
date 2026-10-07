@@ -133,12 +133,24 @@ class ProjectList final : public Pane {
 
   // What git says of `dir`, in at most `w` columns from x: the branch, then
   // how many files differ, commits ahead and behind, and conflicts, as room
-  // allows. Nothing outside a repository. Returns the columns used.
+  // allows. A folder in no repository that holds some: how many, and their
+  // states added up. Returns the columns used.
   int draw_git(Painter& p, int x, int y, int w, const std::string& dir, Color bg) {
-    const GitStatus* g = app_->workspace().git().status(dir);
-    if (!g || !g->repo || w < 4) return 0;
+    GitIndex& git = app_->workspace().git();
+    const GitStatus* g = git.status(dir);
+    if (!g || w < 4) return 0;
+    GitStatus sum;
+    std::string name;
+    if (g->repo) {
+      name = !g->branch.empty() ? g->branch : !g->head.empty() ? g->head : "no commits";
+    } else {
+      const GitRepos& rs = app_->workspace().repos_in(dir);
+      if (rs.tops.empty()) return 0;
+      name = std::to_string(rs.tops.size()) + (rs.tops.size() == 1 ? " repo" : " repos");
+      sum = git.total(rs.tops);
+      g = &sum;
+    }
     const Theme& th = app_->theme();
-    const std::string name = !g->branch.empty() ? g->branch : !g->head.empty() ? g->head : "no commits";
     int used = p.text_clipped(x, y, name, Style{th.accent, bg}, w);
     const auto part = [&](const std::string& s, Color c) {
       if (used + 1 + text::str_width(s) > w) return;

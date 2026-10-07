@@ -1,5 +1,6 @@
 #include "core/git.h"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 
@@ -85,6 +87,55 @@ void watch_stamps(const std::string& git_dir, int64_t& head, int64_t& index) {
   index = mtime_ns(git_dir + "/index");
 }
 
+bool has_dot_git(const std::string& dir) {
+  struct stat st{};
+  return stat((dir + "/.git").c_str(), &st) == 0;
+}
+
+std::string parent_of(const std::string& p) {
+  const size_t slash = p.rfind('/');
+  if (slash == std::string::npos) return {};
+  return slash == 0 ? "/" : p.substr(0, slash);
+}
+
+std::string read_line(const std::string& path) {
+  std::string out;
+  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return out;
+  char buf[4096];
+  const ssize_t n = read(fd, buf, sizeof buf);
+  close(fd);
+  if (n > 0) out.assign(buf, size_t(n));
+  return trimmed(out.substr(0, out.find('\n')));
+}
+
+// The work trees in `dir` and in each folder in it, not inside one found.
+void scan_tops(const std::string& dir, int depth, std::vector<std::string>& out) {
+  DIR* d = opendir(dir.c_str());
+  if (!d) return;
+  std::vector<std::string> subdirs;
+  while (const dirent* e = readdir(d)) {
+    const std::string_view name = e->d_name;
+    if (name.empty() || name[0] == '.' || name == "node_modules") continue;
+    // A link is not followed: it may lead out of the folder, or round in a loop.
+    if (e->d_type == DT_LNK) continue;
+    std::string path = dir == "/" ? "/" + std::string(name) : dir + "/" + std::string(name);
+    if (e->d_type == DT_UNKNOWN) {
+      struct stat st{};
+      if (lstat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+    } else if (e->d_type != DT_DIR) {
+      continue;
+    }
+    subdirs.push_back(std::move(path));
+  }
+  closedir(d);
+  std::sort(subdirs.begin(), subdirs.end());
+  for (std::string& s : subdirs) {
+    if (has_dot_git(s)) out.push_back(std::move(s));
+    else if (depth > 1) scan_tops(s, depth - 1, out);
+  }
+}
+
 }  // namespace
 
 bool parse_status(std::string_view s, GitStatus& out) {
@@ -117,7 +168,10 @@ bool parse_status(std::string_view s, GitStatus& out) {
       if (f[2] != '.') out.staged++;
       if (f[3] != '.') out.changed++;
       out.files++;
-      GitStatus::Entry en{f[2], f[3], std::string(after_spaces(f, f[0] == '1' ? 8 : 9)), {}};
+      GitStatus::Entry en{f[2], f[3], std::string(after_spaces(f, f[0] == '1' ? 8 : 9)), {}, {}};
+      // "N..." for a file; "S" and three marks for a submodule.
+      if (const std::string_view sub = after_spaces(f, 2); sub.size() >= 4 && sub[0] == 'S')
+        en.sub = std::string(sub.substr(1, 3));
       // A rename or copy is followed by its original path, a field of its own.
       if (f[0] == '2') {
         const size_t next = s.find('\0', i);
@@ -128,11 +182,11 @@ bool parse_status(std::string_view s, GitStatus& out) {
     } else if (f.starts_with("u ")) {
       out.conflicts++;
       out.files++;
-      out.entries.push_back(GitStatus::Entry{'U', 'U', std::string(after_spaces(f, 10)), {}});
+      out.entries.push_back(GitStatus::Entry{'U', 'U', std::string(after_spaces(f, 10)), {}, {}});
     } else if (f.starts_with("? ")) {
       out.untracked++;
       out.files++;
-      out.entries.push_back(GitStatus::Entry{'?', '?', std::string(f.substr(2)), {}});
+      out.entries.push_back(GitStatus::Entry{'?', '?', std::string(f.substr(2)), {}, {}});
     } else if (!f.starts_with("! ") && !f.starts_with("# ")) {
       return false;
     }
@@ -256,6 +310,45 @@ std::vector<GitLogEntry> parse_log(std::string_view out) {
     v.push_back(std::move(e));
   });
   return v;
+}
+
+// The graph, then \x01 and the fields: a line with no \x01 is graph alone.
+const char* const kGraphFormat = "--format=%x01%H%x00%an%x00%at%x00%s%x00%D";
+
+void parse_graph_log(std::string_view out, std::vector<GitGraphRow>& rows, std::vector<GitLogEntry>& commits) {
+  rows.clear();
+  commits.clear();
+  changes::each_line(out, [&](std::string_view l) {
+    GitGraphRow row;
+    const size_t mark = l.find('\x01');
+    std::string_view graph = l.substr(0, mark);
+    while (!graph.empty() && graph.back() == ' ') graph.remove_suffix(1);
+    row.graph = std::string(graph);
+    if (mark != std::string_view::npos) {
+      std::string_view f[5];
+      std::string_view rest = l.substr(mark + 1);
+      for (int i = 0; i < 5; i++) {
+        const size_t nul = i < 4 ? rest.find('\0') : std::string_view::npos;
+        f[i] = rest.substr(0, nul);
+        if (nul == std::string_view::npos) {
+          if (i < 4) return;  // cut short: not a commit line git wrote whole
+          break;
+        }
+        rest.remove_prefix(nul + 1);
+      }
+      GitLogEntry e;
+      e.hash = std::string(f[0]);
+      e.author = std::string(f[1]);
+      e.time = std::atoll(std::string(f[2]).c_str());
+      e.subject = std::string(f[3]);
+      e.refs = std::string(f[4]);
+      row.commit = int(commits.size());
+      commits.push_back(std::move(e));
+    } else if (row.graph.empty()) {
+      return;
+    }
+    rows.push_back(std::move(row));
+  });
 }
 
 std::vector<std::pair<std::string, GitNumstat>> parse_numstat(std::string_view out) {
@@ -384,13 +477,24 @@ void GitIndex::run(Job& job, Done& d) {
       d.query.ok = run_git(job.dir, job.args, d.query.out, 16u << 20, job.any_exit);
       if (!d.query.ok) d.query.out.clear();
       break;
-    case Kind::Blame:
+    case Kind::Scan:
+      scan_tops(job.dir, 2, d.scan);
+      break;
+    case Kind::Blame: {
       d.blame.dir = job.dir;
       d.blame.file = job.arg;
       d.blame.line = job.line;
-      if (!run_git(job.dir,
+      // Asked in the file's own folder: it may be in a repository inside
+      // the one asked about, or the folder asked about may be in none.
+      std::string dir = job.dir, file = job.arg;
+      if (const size_t slash = file.rfind('/'); slash != std::string::npos) {
+        const std::string folder = file.substr(0, slash);
+        dir = file[0] == '/' ? (folder.empty() ? "/" : folder) : dir + "/" + folder;
+        file = file.substr(slash + 1);
+      }
+      if (!run_git(dir,
                    {"blame", "--porcelain", "-L", std::to_string(job.line) + "," + std::to_string(job.line), "--",
-                    job.arg},
+                    file},
                    out, 1u << 20)) {
         d.blame.error = "git blame found no line " + std::to_string(job.line) + " in " + job.arg;
       } else {
@@ -399,6 +503,7 @@ void GitIndex::run(Job& job, Done& d) {
         else d.blame.hash = hash;
       }
       break;
+    }
   }
 }
 
@@ -427,6 +532,60 @@ void GitIndex::refresh(const std::string& dir) {
   e.queued = true;
   e.again = false;
   enqueue(Job{Kind::Status, dir, e.git_dir.empty() ? "git-dir" : "", 0, {}, false});
+}
+
+const std::string& GitIndex::top_of(const std::string& dir) {
+  auto [it, fresh] = top_of_.try_emplace(dir);
+  if (fresh)
+    for (std::string p = dir; !p.empty(); p = p == "/" ? std::string() : parent_of(p))
+      if (has_dot_git(p)) {
+        it->second = p;
+        break;
+      }
+  return it->second;
+}
+
+const std::string& GitIndex::main_of(const std::string& top) {
+  auto [it, fresh] = main_of_.try_emplace(top, top);
+  if (!fresh) return it->second;
+  // A linked work tree's .git is a file naming its git dir, and that names
+  // the repository's own in `commondir`: the main work tree's .git.
+  struct stat st{};
+  if (stat((top + "/.git").c_str(), &st) != 0 || S_ISDIR(st.st_mode)) return it->second;
+  std::string gd = read_line(top + "/.git");
+  if (!gd.starts_with("gitdir: ")) return it->second;
+  gd = gd.substr(8);
+  if (!gd.starts_with('/')) gd = top + "/" + gd;
+  std::string common = read_line(gd + "/commondir");
+  if (common.empty()) return it->second;  // a submodule's, which has none
+  if (!common.starts_with('/')) common = gd + "/" + common;
+  char real[PATH_MAX];
+  if (!realpath(common.c_str(), real)) return it->second;
+  common = real;
+  if (common.ends_with("/.git")) it->second = parent_of(common);
+  return it->second;
+}
+
+const std::vector<std::string>* GitIndex::tops_below(const std::string& dir) {
+  ScanEntry& e = scans_[dir];
+  if (!e.queued && (!e.have || e.again || now_ms() - e.read_ms > 60000)) {
+    e.queued = true;
+    e.again = false;
+    enqueue(Job{Kind::Scan, dir, {}, 0, {}, false});
+  }
+  return e.have ? &e.tops : nullptr;
+}
+
+GitStatus GitIndex::total(const std::vector<std::string>& tops) {
+  GitStatus sum;
+  for (const std::string& t : tops)
+    if (const GitStatus* st = status(t); st && st->repo) {
+      sum.files += st->files;
+      sum.conflicts += st->conflicts;
+      sum.ahead += st->ahead;
+      sum.behind += st->behind;
+    }
+  return sum;
 }
 
 const GitCommit* GitIndex::commit(const std::string& dir, const std::string& hash) {
@@ -459,6 +618,9 @@ const GitIndex::Query* GitIndex::query(const std::string& dir, const std::vector
 void GitIndex::refresh_all() {
   for (auto& [dir, e] : status_) e.again = true;
   for (auto& [key, q] : queries_) q.again = true;
+  for (auto& [dir, s] : scans_) s.again = true;
+  top_of_.clear();
+  main_of_.clear();
   version_++;
 }
 
@@ -522,6 +684,15 @@ bool GitIndex::pump() {
         if (!q.have || q.q.ok != d.query.ok || q.q.out != d.query.out) changed = true;
         q.q = std::move(d.query);
         q.have = true;
+        break;
+      }
+      case Kind::Scan: {
+        ScanEntry& e = scans_[d.job.dir];
+        e.queued = false;
+        e.read_ms = now_ms();
+        if (!e.have || e.tops != d.scan) changed = true;
+        e.tops = std::move(d.scan);
+        e.have = true;
         break;
       }
     }

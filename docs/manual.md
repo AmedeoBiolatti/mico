@@ -704,7 +704,8 @@ command.
 
 How the view was left comes back after a restart: the density, the tab, the
 folder, sub-project and chat selected, the sidebar's "All" filters, the Diff
-tab's span and grouping, and the last hundred command lines. They are kept in
+tab's span and grouping, the Git tab's view, and the last hundred command
+lines. They are kept in
 `~/.config/mico/view`, beside the split sizes in `~/.config/mico/layout`.
 
 `:help` opens the same list as a palette, so a command can be run by clicking
@@ -886,7 +887,9 @@ holds up a frame (`src/core/git.h`).
 files differ from it (staged, changed or untracked, each once), conflicts,
 and commits ahead of and behind its upstream. A sub-project in a folder of
 its own shows its own, since it may be another branch or another
-repository. A folder that is not in a work tree shows nothing. It is read
+repository. A folder in no repository that holds some shows how many, and
+their states added up: `3 repos ±19 ↑1` (see [Several
+repositories](#several-repositories)). One that holds none shows nothing. It is read
 again when an agent there finishes a turn, when git's HEAD, its log or the
 index change (a commit, a checkout, staging), and every half minute while it
 is on screen.
@@ -901,57 +904,123 @@ costs no more than it did. The Diff tab's third grouping (`g` until it says
 "by commit") lists them, newest first, each with its chat; below the one
 selected is its diff as git has it, file by file, drawn like any other
 change — so it holds what a shell command or a formatter changed too, which
-the agents' own records cannot. `Enter` opens the chat at the commit. A
-commit git no longer has — amended, rebased away, made in another
-repository — is still listed, marked `not in git`.
+the agents' own records cannot. `Enter` opens the chat at the commit. The
+commit is looked for in the repository holding the folder the chat ran in,
+then in every repository in that folder and in its tracked folder, so one an
+agent made with `cd api && git commit` from the folder above is found. A
+commit none of them has — amended, rebased away, made elsewhere — is still
+listed, marked `not in git`.
 
 **From a commit, or a line, to its chat.** `:commit <hash>` (full or
 abbreviated) opens the chat that made the commit, at the call.
 `:blame <file>:<line>` asks git which commit last changed that line of a
 file in the selected folder, and opens the chat that made it — or says that
-no chat mico knows did.
+no chat mico knows did. Git is asked in the file's own folder, so
+`:blame api/src/main.c:12` works from a folder above the repository.
 
 ### The Git tab
 
-`:git`, or the tab after Diff: the selected folder's repository, and the
-agents in it.
+`:git`, or the tab after Diff: the selected folder's repository, or
+repositories, and the agents in them, in views switched with `1`–`5` (or a
+click on the strip). The heading names the folder, the focused repository
+when there are several, and its focused work tree's branch, state and agents.
 
 ```
- Work trees                                    │ src/core/git.cpp
- ▸ main  ±38   ~/Desktop/llm/mico              │ last changed by Claude · Git tab
-     ◍ Claude Git tab                 working  │ ┄┄┄ line 1 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
-   refactor  clean   ~/Desktop/llm/mico-refactor│   1 + #include "core/git.h"
- Other branches                                │   2 +
-   old-ui  [gone]  Codex · Tabs           3d   │ …
- Changes · mico · 38 files
-   M src/ui/app.cpp     +143 −9   Claude · Git tab
-  ?? src/core/git.cpp   new       Claude · Git tab
- Commits · mico (HEAD)
- ◆ 777c513 The view is remembered   Claude · View state   1h
- · acae6a5 Subscription limits      bamedeo               2h
+ Git  mico · release-0.1.2 ±18 ↑1  ⠋ 2 agents        1-4 views · ←→ fold · enter go
+  1 Changes 18   2 Log   3 Branches 11   4 Trees 2
+ ─────────────────────────────────────────────────────────────────────────────────
+ ▾ Staged 1                                       │ src/ui/app.cpp
+   ▾ src/ui 1                                     │ changed, not staged · last changed
+       M app.h                    +2              │ by Claude · Git tab
+ ▾ Changes 15                                     │ ┄┄┄ line 120 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+   ▾ src 14                                       │ 120   if (key == "tab") {
+     ▾ core 6                                     │ 121 − // By name; a number is…
+         M git.cpp          +177 −6  Claude · Git │ 121 + // By name …
+     ▾ ui 2
+         M app.cpp          +143 −9  Claude · Git
+ ▾ Untracked 2
+     U tests/git_repos.py     new
 ```
 
-- **Work trees**, from `git worktree list`: each with its branch, `±N ↑a ↓b`,
-  and under it every running agent whose folder is in it (the deepest work
-  tree wins, so one nested in the main checkout is its own), with the same
-  marks as the chat list. `Enter` on an agent opens its chat; on a work tree,
-  focuses it: the sections below are its.
-- **Other branches**, the ones no work tree has checked out, newest first,
-  each with its upstream's state and the chat that last committed to it (from
-  what the chats announced), else its last subject. `Enter` lists its commits.
-- **Changes**: what the focused work tree has not committed, with git's two
-  letters and the lines added and removed, and the chat that last changed
-  each file since HEAD's commit, from the agents' own edit records. A file
-  changed through the shell, or by you, names no chat. `Enter` opens that chat
-  at the edit.
-- **Commits**: the focused branch's log, two hundred deep. `◆` marks one a
-  chat made, and names it; `Enter` opens it there.
+- **1 Changes**: what the focused work tree has not committed, as an editor
+  lists it: **Conflicts**, **Staged**, **Changes** (not staged) and
+  **Untracked**, each a tree of folders, a folder that holds only one folder
+  shown as one (`src/core`). Each file has git's letter (`M`, `A`, `D`, `R`,
+  `U` untracked, `!` in conflict), the lines it adds and removes in that
+  section, and the chat that last changed it since HEAD's commit, from the
+  agents' own edit records. A file staged and changed again is in both, each
+  with its own diff (`--cached`, or against the index). A file changed through
+  the shell, or by you, names no chat. `Enter` opens that chat at the edit.
+- **2 Log**: the focused branch's commits, two hundred deep, on git's own
+  graph, with where branches and tags point, who made each and when. `◆`
+  marks one a chat made, and names it; `Enter` opens it there. Opened from a
+  branch, it is that branch's log; `Esc` goes back to HEAD.
+- **3 Branches**: **Local** and **Remote** (folded until opened), each grouped
+  by prefix (`feature/`, `fix/`). `●` is the branch the focused work tree has
+  checked out, `○` one another work tree has (`in mico-refactor`); then how
+  far it is from its upstream (`↑2 ↓3`, or `gone`), and the chat that last
+  committed to it (from what the chats announced), else its last subject.
+  `Enter` shows its log.
+- **4 Trees**, from `git worktree list`: each work tree with its branch,
+  `±N ↑a ↓b` and folder, `●` on the focused one, and under it every running
+  agent at work in it, with the same marks as the chat list. Where an agent
+  works is where it last did: the folder of its latest edit, or of its latest
+  command that names one (`cd ../kin-wt/shipping && make`, `git -C ../web
+  status`), reading aside — else the folder it runs in. An agent started in
+  the main checkout and at work in another work tree is listed under that
+  one, with where it runs: `runs in ./`. The deepest work tree wins, so one
+  nested in the main checkout is its own. `Enter` on an agent opens its chat;
+  on a work tree, focuses it and shows its Changes.
+- **5 Repos**, when the folder has several (see below).
+
+Folders, sections and branch groups fold: `Enter` or `←`/`→` on one, or a
+click on its `▾`; `←` elsewhere goes up to the fold the row is in. What is
+folded is kept while mico runs; the view shown, across restarts.
 
 Beside the list (below it, on a narrow pane) is whatever is selected: a
-file's diff against HEAD, a commit's diff, or what is known of a work tree or
-branch. `PgUp`/`PgDn` scroll it, `r` reads git again. With every folder in
-the filter, the tab lists each folder's branch and state and how many agents
-work there; `Enter` narrows to one.
+file's diff, a commit's, what a section or folder holds (its files, their
+lines, the chats that changed them), or what is known of a branch, work tree
+or repository. `PgUp`/`PgDn` scroll it, `r` reads git again. With every
+folder in the filter, the tab lists each folder's branch and state (or how
+many repositories it holds) and how many agents work there; `Enter` narrows
+to one.
+
+#### Several repositories
+
+A folder may hold more than one repository: a folder of checkouts side by
+side, a repository with submodules, or one with another cloned inside it.
+The strip then has **5 Repos**, the heading names the focused one
+(`platform › api`), and the other views are its:
+
+```
+ ● api        main        ±5 ↑1        ⠋ 2     │ ~/w/platform/api
+   └ vendor/lib  main ±1  submodule · changed  │ on main, tracking origin/main
+   libs/shared  main      clean                │ 1 staged · 3 changed · 1 untracked
+   web        feat/login  ±12          ⠋ 1     │ 2 agents at work in it
+```
+
+- **Which repositories**: the one holding the folder, if any; those inside
+  it where its sub-projects, its chats, the running agents and the files they
+  changed are; each one's submodules, and the repositories git lists as
+  untracked folders in it; and, when the folder is in no repository itself,
+  every one in it and one level further down (hidden folders and
+  `node_modules` aside). A `.git` git finds no repository in is passed over.
+  A work tree `git worktree add` made is listed with its repository, not as
+  one of its own. Each is drawn under the one it is inside of, with its
+  branch, state, and the mark and count of the agents at work in it.
+- **Which is focused**: the one `Enter` chose (which shows its Changes), else
+  the one holding the selected chat's folder, else the selected folder's own,
+  else the first with something uncommitted.
+- **Agents** belong to the repository where they work (see Trees above): one
+  that runs in the folder above the checkouts and works in `api` is counted
+  on `api`'s row and listed under its work tree, with `runs in ./`.
+- **Changes**: a submodule, or a repository git lists as an untracked folder,
+  is one row, marked `submodule` or `repository`; `Enter` on it focuses it.
+  `g` lists every repository's changes instead of the focused one's, each
+  under its name, and `g` again goes back.
+- **Log**: `◆` marks the commits any chat that ran in the folder, above it,
+  or in one of the repository's work trees announced, once git confirms the
+  repository has them.
 
 ## Continuing a chat
 

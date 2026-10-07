@@ -4287,6 +4287,14 @@ int run_selftest() {
     check(!makes_commits("grep -rn 'git commit' ."), "only mentioning a commit is none");
     check(!makes_commits("git log --oneline"), "git log commits nothing");
     check(!makes_commits("echo git commit"), "echo is not git");
+    check(command_dir("cd ../kin-wt/shipping && make -j8", "/w/kin") == "/w/kin-wt/shipping",
+          "command_dir: a cd before the work, made absolute");
+    check(command_dir("cd api && make && cd ..", "/w") == "/w/api", "command_dir: where the work ran, not a cd after it");
+    check(command_dir("cd a; cd b && npm test", "/w") == "/w/a/b", "command_dir: cds add up");
+    check(command_dir("git -C ../web status", "/w/api") == "/w/web", "command_dir: git -C");
+    check(command_dir("cd $WT && make", "/w").empty() && command_dir("make", "/w").empty() &&
+              command_dir("cd - && make", "/w").empty(),
+          "command_dir: none named, or named through a variable");
     const std::vector<ChatCommit> c = commits_announced(
         "[main 777c513] The view is remembered\n 2 files changed\n"
         "[feature/x (root-commit) 0a1b2c3d] First\r\n[detached HEAD 1234567] Loose\n"
