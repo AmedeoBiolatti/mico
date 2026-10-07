@@ -251,6 +251,12 @@ add_test(NAME selftest COMMAND mico-test --selftest)
 set_tests_properties(selftest PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 add_test(NAME api COMMAND mico-test --api-test)
 set_tests_properties(api PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
+# A word mico does not know is refused, not taken for a plain `mico` that
+# opens the interface: without a terminal that fails too, so the message is
+# what tells them apart.
+add_test(NAME cli-unknown COMMAND mico updat)
+set_tests_properties(cli-unknown PROPERTIES PASS_REGULAR_EXPRESSION "unknown command or option 'updat'"
+                                            ENVIRONMENT "${MICO_TEST_ENV}")
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)

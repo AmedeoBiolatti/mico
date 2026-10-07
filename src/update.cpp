@@ -26,6 +26,8 @@ constexpr const char* kRepo = "AmedeoBiolatti/mico";
 // Runs argv (looked up on PATH). Output goes to `out` when given, else is
 // discarded; stderr stays visible. Returns the exit status, or -1.
 int run(const std::vector<std::string>& args, std::string* out = nullptr, const std::string& cwd = "") {
+  // What was printed comes before what the child prints (curl's progress).
+  fflush(stdout);
   int pipefd[2] = {-1, -1};
   if (out && pipe(pipefd) < 0) return -1;
   const pid_t pid = fork();
