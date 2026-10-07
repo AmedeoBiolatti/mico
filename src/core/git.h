@@ -32,16 +32,27 @@ struct GitStatus {
   std::string top;    // the work tree's top, absolute; empty until known
   // Each file that differs: git's two letters for it, the index's then the
   // work tree's ('.' unchanged, '?' untracked, 'U' in conflict), and its
-  // path from the top.
+  // path from the top. An untracked folder's path ends in '/'.
   struct Entry {
     char x = '.', y = '.';
     std::string path;
     std::string orig;  // a rename's old path
+    // A submodule's three marks: its commit moved ('C'), its files changed
+    // ('M'), it has untracked files ('U'), each '.' when not. Empty for a file.
+    std::string sub;
   };
   std::vector<Entry> entries;
 };
 // `git status --porcelain=v2 --branch -z`. False when it is not that.
 bool parse_status(std::string_view porcelain, GitStatus& out);
+
+// The repositories a folder has to do with: the one holding it, if any, then
+// every one found inside it, each after the one it is inside of.
+struct GitRepos {
+  std::vector<std::string> tops;  // their work trees' tops, absolute
+  bool held = false;     // tops[0] holds the folder: it is the folder's own, or one above it
+  bool looking = false;  // the folder is still being looked through for more
+};
 
 // A work tree of a repository: the main one, or one `git worktree add` made.
 struct GitWorktree {
@@ -74,6 +85,15 @@ struct GitLogEntry {
 // git log with kLogFormat.
 extern const char* const kLogFormat;
 std::vector<GitLogEntry> parse_log(std::string_view out);
+// `git log --graph` with kGraphFormat: each line's graph, and the commit on
+// it, if any (an index into `commits`); a line of graph alone joins or
+// splits branches between two commits.
+struct GitGraphRow {
+  std::string graph;  // git's own: '*', '|', '/', '\\', '_' and spaces
+  int commit = -1;
+};
+extern const char* const kGraphFormat;
+void parse_graph_log(std::string_view out, std::vector<GitGraphRow>& rows, std::vector<GitLogEntry>& commits);
 
 // The lines each file gained and lost, from `git diff --numstat -z`, by
 // path from the top; -1 for a binary file.
@@ -116,6 +136,21 @@ class GitIndex {
   // Read `dir` again soon: an agent there has just finished a turn.
   void refresh(const std::string& dir);
 
+  // The top of the work tree holding `dir`: the nearest folder, `dir` or one
+  // above it, with a .git in it. Empty when there is none. Found by looking,
+  // not by asking git, and remembered until refresh_all().
+  const std::string& top_of(const std::string& dir);
+  // The main work tree of the repository work tree `top` belongs to: `top`
+  // itself unless `git worktree add` made it. Remembered until refresh_all().
+  const std::string& main_of(const std::string& top);
+  // The work trees in `dir` and one level further down, not looking inside
+  // one once found, nor in hidden folders or node_modules. Read off this
+  // thread: null until it has been; read again a minute on, while asked.
+  const std::vector<std::string>* tops_below(const std::string& dir);
+  // The states of the work trees at `tops` added up: files, conflicts,
+  // ahead, behind. One not read yet counts for nothing.
+  GitStatus total(const std::vector<std::string>& tops);
+
   // Commit `hash` (in full or abbreviated) of the repository holding `dir`.
   // Null while it is being read.
   const GitCommit* commit(const std::string& dir, const std::string& hash);
@@ -155,7 +190,7 @@ class GitIndex {
   bool waiting() const { return outstanding_ > 0; }
 
  private:
-  enum class Kind { Status, Commit, Blame, Query };
+  enum class Kind { Status, Commit, Blame, Query, Scan };
   struct Job {
     Kind kind;
     std::string dir, arg;
@@ -170,6 +205,7 @@ class GitIndex {
     GitCommit commit;
     Blame blame;
     Query query;
+    std::vector<std::string> scan;
   };
   struct StatusEntry {
     GitStatus st;
@@ -191,6 +227,13 @@ class GitIndex {
   void work();
   static void run(Job& job, Done& d);
 
+  struct ScanEntry {
+    std::vector<std::string> tops;
+    bool have = false, queued = false, again = false;
+    int64_t read_ms = 0;
+  };
+  std::map<std::string, ScanEntry> scans_;
+  std::map<std::string, std::string> top_of_, main_of_;
   std::map<std::string, StatusEntry> status_;
   std::map<std::string, GitCommit> commits_;   // dir + "\n" + hash
   std::map<std::string, bool> commit_queued_;  // the same keys, while being read

@@ -77,6 +77,8 @@ std::string view_unescape(std::string_view s) {
 }
 
 constexpr size_t kViewHistory = 100;  // command lines kept
+// The Git tab's views as the view file names them.
+constexpr const char* kGitViews[GitTabState::kViews] = {"changes", "log", "branches", "trees", "repos"};
 
 }  // namespace
 
@@ -99,6 +101,7 @@ std::string App::view_state() const {
   s += "diff-span " + std::to_string(diff_.span) + "\n";
   s += "diff-by " + std::string(diff_.group == 2 ? "commit" : diff_.group == 1 ? "chat" : "file") + "\n";
   s += "diff-selected " + view_escape(diff_.sel_key) + "\n";
+  s += "git-view " + std::string(kGitViews[std::clamp(git_.view, 0, GitTabState::kViews - 1)]) + "\n";
   const size_t from = cmd_history_.size() > kViewHistory ? cmd_history_.size() - kViewHistory : 0;
   for (size_t i = from; i < cmd_history_.size(); i++) s += "command " + view_escape(cmd_history_[i]) + "\n";
   return s;
@@ -142,6 +145,9 @@ void App::load_view() {
       diff_.group = value == "commit" ? 2 : value == "chat" ? 1 : 0;
     } else if (key == "diff-selected") {
       diff_.sel_key = value;
+    } else if (key == "git-view") {
+      for (int v = 0; v < GitTabState::kViews; v++)
+        if (value == kGitViews[v]) git_.view = v;
     } else if (key == "command" && !value.empty()) {
       cmd_history_.push_back(value);
     }

@@ -4,6 +4,7 @@
 #include <utility>
 #include <string>
 #include <vector>
+#include <set>
 
 #include "core/workspace.h"
 #include "term/term.h"
@@ -27,9 +28,17 @@ enum class AppAction { None, Detach, Shutdown };
 
 // What the Git tab has focused, kept while its pane comes and goes.
 struct GitTabState {
+  // Its views, in the order of their keys 1-5. `view` is kept across restarts.
+  enum View : int { Changes, Log, Branches, Trees, Repos, kViews };
+  int view = Changes;
   std::string scope;    // the folder it was showing
+  std::string repo;     // the repository focused, when the folder has several
   std::string wt, ref;  // the work tree, and the branch whose commits it lists
-  std::string sel_key;  // the row selected
+  std::string sel[kViews];  // the row selected in each view
+  // Folders, sections and branch groups folded or unfolded from how they
+  // start: most start unfolded, remote branches folded.
+  std::set<std::string> toggled;
+  bool all_changes = false;  // Changes lists every repository's, not the focused one's
 };
 
 // The Diff tab's choices, kept while its pane comes and goes.

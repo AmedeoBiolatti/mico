@@ -22,6 +22,20 @@ int64_t now_ms() {
   return int64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 
+bool under(const std::string& path, const std::string& dir) {
+  return path == dir || (path.size() > dir.size() && path.compare(0, dir.size(), dir) == 0 &&
+                         (dir == "/" || path[dir.size()] == '/'));
+}
+
+// Paths in a tree's order: a folder, then what is in it, then the next one
+// whose name only begins the same ("api", "api/v1", "api-old").
+bool tree_less(const std::string& a, const std::string& b) {
+  return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), [](char x, char y) {
+    const auto rank = [](char c) { return c == '/' ? 0 : int(uint8_t(c)) + 1; };
+    return rank(x) < rank(y);
+  });
+}
+
 }  // namespace
 
 Workspace::Workspace() { store_.scan(); }
@@ -33,6 +47,162 @@ std::vector<LiveSession*> Workspace::live_sessions() const {
   out.reserve(live_.size());
   for (const auto& s : live_) out.push_back(s.get());
   return out;
+}
+
+const GitRepos& Workspace::repos_in(const std::string& dir) {
+  RepoCache& c = repos_[dir];
+  const uint64_t stamp[4] = {git_.version(), activity_version_, sessions_version_, store_.version()};
+  if (std::equal(stamp, stamp + 4, c.stamp)) return c.repos;
+  std::copy(stamp, stamp + 4, c.stamp);
+  GitRepos& r = c.repos;
+  r = GitRepos{};
+  // The work tree holding `path` as git has it: a .git git finds no
+  // repository in (an empty folder left behind) is passed over. One not
+  // read yet counts until it has been.
+  const auto repo_top = [&](const std::string& path) {
+    std::string t = git_.top_of(path);
+    while (!t.empty()) {
+      const GitStatus* st = git_.status(t);
+      if (!st || st->repo) break;
+      if (t == "/") return std::string();
+      t = git_.top_of(t.substr(0, std::max<size_t>(1, t.rfind('/'))));
+    }
+    return t;
+  };
+  const std::string own = repo_top(dir);
+  std::vector<std::string> found;
+  const auto add = [&](const std::string& top) {
+    if (top.empty() || top == own || !under(top, dir)) return false;
+    if (std::find(found.begin(), found.end(), top) != found.end()) return false;
+    found.push_back(top);
+    return true;
+  };
+  const auto at = [&](const std::string& path) {
+    if (under(path, dir)) add(repo_top(path));
+  };
+
+  // Where work is known to happen: sub-projects, agents, chats, and the
+  // folders of the files they changed.
+  for (const Project& p : store_.projects())
+    for (const SubProject& sp : p.subs) at(sp.path);
+  for (const auto& s : live_)
+    for (const std::string& d : work_dirs(*s)) at(d);
+  std::string last;  // a chat's edits come in runs in one folder
+  for (const ChatActivity* ch : activity_.chats()) {
+    if (!under(ch->cwd, dir) && !under(dir, ch->cwd)) continue;
+    at(ch->cwd);
+    for (const FileEdit& e : ch->edits) {
+      const size_t slash = e.file.rfind('/');
+      if (slash == std::string::npos || !under(e.file, dir)) continue;
+      if (slash == last.size() && e.file.compare(0, slash, last) == 0) continue;
+      last = e.file.substr(0, slash);
+      at(last);
+    }
+  }
+  // A folder in no repository is looked through, two levels deep.
+  if (own.empty()) {
+    if (const std::vector<std::string>* below = git_.tops_below(dir)) {
+      for (const std::string& t : *below)
+        if (repo_top(t) == t) add(t);
+    } else {
+      r.looking = true;
+    }
+  }
+  // In each repository found, and in those found that way: its submodules,
+  // and the repositories git lists as untracked folders.
+  std::vector<std::string> queue = found;
+  if (!own.empty()) queue.push_back(own);
+  for (size_t i = 0; i < queue.size(); i++) {
+    const std::string top = queue[i];
+    const GitStatus* st = git_.status(top);
+    if (!st) continue;
+    for (const GitStatus::Entry& e : st->entries) {
+      if (e.sub.empty() && !(e.x == '?' && e.path.ends_with('/'))) continue;
+      std::string path = top + "/" + e.path;
+      if (path.ends_with('/')) path.pop_back();
+      if (repo_top(path) == path && add(path)) queue.push_back(path);
+    }
+  }
+  // A work tree `git worktree add` made goes with its repository, when that
+  // is listed: the Git tab lists it among the repository's work trees.
+  std::vector<std::string> linked;
+  for (const std::string& t : found) {
+    const std::string& m = git_.main_of(t);
+    if (m != t && (m == own || std::find(found.begin(), found.end(), m) != found.end())) linked.push_back(t);
+  }
+  std::erase_if(found, [&](const std::string& t) { return std::find(linked.begin(), linked.end(), t) != linked.end(); });
+  std::sort(found.begin(), found.end(), tree_less);
+  r.held = !own.empty();
+  if (r.held) r.tops.push_back(own);
+  r.tops.insert(r.tops.end(), found.begin(), found.end());
+  return r;
+}
+
+const GitCommit* Workspace::find_commit(const std::string& cwd, const std::string& hash) {
+  std::vector<std::string> dirs;
+  const std::string own = git_.top_of(cwd);
+  dirs.push_back(own.empty() ? cwd : own);
+  bool looking = false;
+  const auto add_all = [&](const std::string& d) {
+    const GitRepos& r = repos_in(d);
+    looking |= r.looking;
+    for (const std::string& t : r.tops)
+      if (std::find(dirs.begin(), dirs.end(), t) == dirs.end()) dirs.push_back(t);
+  };
+  add_all(cwd);
+  // The tracked folder the chat ran in, for one that committed in a
+  // repository beside its own.
+  const Project* home = nullptr;
+  for (const Project& p : store_.projects())
+    if (under(cwd, p.path) && (!home || p.path.size() > home->path.size())) home = &p;
+  if (home && home->path != cwd) add_all(home->path);
+  const GitCommit* first = nullptr;
+  for (const std::string& d : dirs) {
+    const GitCommit* c = git_.commit(d, hash);
+    if (!c) return nullptr;
+    if (c->found) return c;
+    if (!first) first = c;
+  }
+  return looking ? nullptr : first;
+}
+
+const std::vector<std::string>& Workspace::work_dirs(const LiveSession& s) {
+  if (work_sessions_ != sessions_version_) {
+    work_sessions_ = sessions_version_;
+    work_.clear();  // drops the sessions gone, whose addresses may come again
+  }
+  WorkCache& c = work_[&s];
+  if (c.stamp == activity_version_ && c.id == s.session_id() && c.cwd == s.cwd()) return c.dirs;
+  c.stamp = activity_version_;
+  c.id = s.session_id();
+  c.cwd = s.cwd();
+  c.dirs.clear();
+  const ChatActivity* chat = nullptr;
+  if (!s.session_id().empty())
+    for (const ChatActivity* ch : activity_.chats())
+      if (ch->id == s.session_id() && ch->agent == s.agent()) {
+        chat = ch;
+        break;
+      }
+  if (chat) {
+    // The latest few of each, newest first.
+    std::vector<std::pair<int64_t, std::string>> recent;
+    int n = 0;
+    for (auto e = chat->edits.rbegin(); e != chat->edits.rend() && n < 16; ++e, ++n) {
+      const size_t slash = e->file.rfind('/');
+      if (slash != std::string::npos) recent.push_back({e->at_ms, e->file.substr(0, std::max<size_t>(1, slash))});
+    }
+    n = 0;
+    for (auto r = chat->runs.rbegin(); r != chat->runs.rend() && n < 64; ++r, ++n)
+      if (!r->dir.empty()) recent.push_back({r->start_ms, r->dir});
+    std::stable_sort(recent.begin(), recent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (auto& [at, d] : recent) {
+      if (c.dirs.size() >= 8) break;
+      if (std::find(c.dirs.begin(), c.dirs.end(), d) == c.dirs.end()) c.dirs.push_back(std::move(d));
+    }
+  }
+  if (std::find(c.dirs.begin(), c.dirs.end(), s.cwd()) == c.dirs.end()) c.dirs.push_back(s.cwd());
+  return c.dirs;
 }
 
 std::string Workspace::usable_cwd(const std::string& want, const std::string& prefer) const {
@@ -369,6 +539,7 @@ unsigned Workspace::service(bool usage_wanted) {
   if (!activity_.complete()) {
     // Read on worker threads: this only merges what has finished.
     activity_.step(0);
+    activity_version_++;
     changed |= kActivity;
   }
   if (usage_wanted && !usage_.complete()) {

@@ -172,19 +172,32 @@ with tempfile.TemporaryDirectory(prefix='mico-git-') as directory:
         if os.environ.get('SHOW'):
             print(screen())
 
-        # The Git tab: both work trees, what is uncommitted and who wrote it,
-        # and the commits, the agent's marked with its chat.
+        # The Git tab opens on Changes: what is uncommitted, by section and
+        # folder, and the chat that wrote each file.
         send(2, b':git\r')
-        s = wait_screen('the Git tab', lambda s: 'Work trees' in s and 'Start' in s and 'new.txt' in s)
+        s = wait_screen('the Git tab', lambda s: '1 Changes 2' in s and 'Untracked 2' in s and 'new.txt' in s)
         if os.environ.get('SHOW'):
             print(s)
-        assert 'feature' in s and 'proj-wt' in s, 'the second work tree is missing'
-        assert 'Changes \u00b7 proj \u00b7 2 files' in s, 'the uncommitted files are not counted'
-        new_line = next(l for l in s.splitlines() if 'new.txt' in l)
+        # The file's row alone: the sidebar and the detail share the screen row.
+        def row(name):
+            l = next(l for l in s.splitlines() if name in l)
+            l = l[l.index(name):]
+            return l[:l.index('\u2502')] if '\u2502' in l else l
         # The list is narrow: the chat's name is cut short.
-        assert 'Claude \u00b7 Commit' in new_line, 'the file the chat wrote is not credited to it'
-        scratch_line = next(l for l in s.splitlines() if 'scratch.txt' in l)
-        assert 'Claude' not in scratch_line, 'a file no chat wrote was credited to one'
+        assert 'Claude \u00b7 Commit' in row('new.txt'), 'the file the chat wrote is not credited to it'
+        assert 'Claude' not in row('scratch.txt'), 'a file no chat wrote was credited to one'
+
+        # 4: the work trees, both.
+        send(2, b'4')
+        s = wait_screen('the work trees', lambda s: 'proj-wt' in s and 'feature' in s)
+        if os.environ.get('SHOW'):
+            print(s)
+
+        # 2: the log, the agent's commit marked with its chat.
+        send(2, b'2')
+        s = wait_screen('the log', lambda s: 'Start' in s and f' {short} ' in s)
+        if os.environ.get('SHOW'):
+            print(s)
         # From the commit's mark on: the sidebar shares the screen row.
         agent_line = next(l for l in s.splitlines() if f' {short} ' in l)
         agent_line = agent_line[agent_line.index(f' {short} ') - 2:]

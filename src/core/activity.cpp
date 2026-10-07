@@ -374,6 +374,37 @@ bool makes_commits(std::string_view command) {
   return false;
 }
 
+std::string command_dir(std::string_view command, std::string_view cwd) {
+  if (command.find("cd") == std::string_view::npos && command.find("-C") == std::string_view::npos) return {};
+  std::string dir(cwd);
+  bool moved = false;
+  for (const Step& st : lex(command)) {
+    const std::vector<std::string_view> w = core_words(st);
+    if (w.empty()) continue;
+    const std::string_view prog = basename(w[0]);
+    if (prog == "cd" || prog == "pushd") {
+      // A target named through a variable, or "cd -", says nothing here.
+      if (w.size() < 2 || w[1].find('$') != std::string_view::npos || w[1] == "-") return {};
+      dir = resolve_path(dir, w[1] == "~" ? std::string_view("~/") : w[1]);
+      moved = true;
+      continue;
+    }
+    if (setup_step(prog)) continue;
+    // The first step that does the work: git -C names its own folder.
+    if (prog == "git")
+      for (size_t i = 1; i + 1 < w.size(); i++) {
+        if (w[i] == "-C") {
+          if (w[i + 1].find('$') != std::string_view::npos) return {};
+          return resolve_path(dir, w[i + 1]);
+        }
+        if (w[i] == "-c") i++;
+        else if (!w[i].starts_with("-")) break;
+      }
+    break;
+  }
+  return moved ? dir : std::string();
+}
+
 std::vector<ChatCommit> commits_announced(std::string_view output) {
   std::vector<ChatCommit> out;
   size_t i = 0;
@@ -494,6 +525,8 @@ struct Reader final : ToolSink {
     tr.tool = std::move(tool);
     // Shown from the step that said what it is for, not from `S=/tmp/x; cd y &&`.
     tr.command = tools::one_line(std::string_view(command).substr(std::min(from, command.size())));
+    // Where it worked is in the part not shown: `cd ../wt && make`.
+    if (tr.kind != ToolKind::Read) tr.dir = command_dir(command, out.cwd);
     out.runs.push_back(std::move(tr));
   }
 

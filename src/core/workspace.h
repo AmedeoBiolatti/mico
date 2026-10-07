@@ -53,6 +53,21 @@ class Workspace {
   FileIndex& files() { return files_; }
   // What git says about the folders and the commits agents made in them.
   GitIndex& git() { return git_; }
+  // The repositories folder `dir` has to do with: the one holding it, then
+  // those inside it that its sub-projects, chats, agents and their edits are
+  // in, the submodules of each and the ones git lists as untracked folders,
+  // and, when the folder is in none, those in it and one level down.
+  const GitRepos& repos_in(const std::string& dir);
+  // Commit `hash`, announced by a chat that ran in `cwd`: from the repository
+  // holding cwd when git has it there, else from the first repository in cwd
+  // or in its tracked folder that has it. Null while git is still being
+  // asked; when none has it, what the first said.
+  const GitCommit* find_commit(const std::string& cwd, const std::string& hash);
+  // Where agent `s` has been working, newest first: the folders of its
+  // latest edits and of the commands that named one (`cd`, `git -C`),
+  // reading aside, then the folder it runs in. An agent started in a main
+  // checkout often works in another work tree, and only this says so.
+  const std::vector<std::string>& work_dirs(const LiveSession& s);
 
   // --- Running agents ------------------------------------------------------
 
@@ -162,6 +177,21 @@ class Workspace {
   CommandCatalog commands_;
   FileIndex files_;
   GitIndex git_;
+  // repos_in()'s answers, each worked out again once anything it rests on moves.
+  struct RepoCache {
+    GitRepos repos;
+    uint64_t stamp[4] = {};
+  };
+  std::map<std::string, RepoCache> repos_;
+  uint64_t activity_version_ = 1;  // moves as the activity index reads
+  // work_dirs()'s answers, for the index as it last read.
+  struct WorkCache {
+    std::vector<std::string> dirs;
+    std::string id, cwd;
+    uint64_t stamp = 0;
+  };
+  std::map<const LiveSession*, WorkCache> work_;
+  uint64_t work_sessions_ = 0;  // the sessions_version_ work_ was kept for
   // Whether each agent was working when last looked at: when one stops, its
   // folder's git status is read again, since that is when it changes.
   std::map<LiveSession*, bool> was_busy_;

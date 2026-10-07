@@ -53,6 +53,7 @@ struct ToolRun {
   std::string tool;      // Bash, Edit, exec_command…
   std::string command;   // the command line or the file, on one line
   std::string group;
+  std::string dir;       // the folder it says it worked in (command_dir()); empty when none
 };
 
 // A change a chat made to a file: how big, and where in the transcript its
@@ -82,6 +83,11 @@ struct ChatCommit {
 // True when `command` runs a git command that makes a commit and says so:
 // commit, cherry-pick, revert. Not one that only mentions them.
 bool makes_commits(std::string_view command);
+// The folder a shell command line works in, when it says: where its `cd`s
+// (or `pushd`s) lead before the step that does the work, or that step's
+// `git -C`, made absolute against `cwd`. Empty when it names none, or names
+// one through a variable.
+std::string command_dir(std::string_view command, std::string_view cwd);
 // The commits a command's output announces, one "[branch hash] subject"
 // line each, in order.
 std::vector<ChatCommit> commits_announced(std::string_view output);

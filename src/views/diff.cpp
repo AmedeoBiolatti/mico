@@ -178,7 +178,7 @@ class DiffView final : public Pane {
       const bool sel = i == sel_;
       // A commit's counts are git's: asked for as its row comes into view.
       if (group_ == kByCommit && !g.git) {
-        g.git = app_->workspace().git().commit(g.chats[0]->cwd, g.commit->hash);
+        g.git = app_->workspace().find_commit(g.chats[0]->cwd, g.commit->hash);
         if (g.git) {
           g.added = g.git->added;
           g.removed = g.git->removed;
@@ -403,14 +403,14 @@ class DiffView final : public Pane {
   bool commit_detail(Group& g, Painter& p, int rule) {
     const Theme& th = app_->theme();
     const int W = p.width();
-    if (!g.git) g.git = app_->workspace().git().commit(g.chats[0]->cwd, g.commit->hash);
+    if (!g.git) g.git = app_->workspace().find_commit(g.chats[0]->cwd, g.commit->hash);
     std::string note;
     if (!g.git) note = "reading " + g.commit->hash + " from git\xE2\x80\xA6";
     else if (!g.git->repo)
-      note = g.chats[0]->cwd + " is not a git repository now, or is gone";
+      note = g.chats[0]->cwd + " is no git work tree now (or is gone), and no repository around it has " + g.commit->hash;
     else if (!g.git->found)
-      note = "git has no " + g.commit->hash + " in " + g.chats[0]->cwd +
-             ": rewritten since (an amend or a rebase), or made in another repository";
+      note = "git has no " + g.commit->hash + " in any repository in or around " + g.chats[0]->cwd +
+             ": rewritten since (an amend or a rebase), or made somewhere else";
     if (note.empty()) {
       CommitDiff& d = commit_diffs_[g.key];
       if (d.from != g.git) {
