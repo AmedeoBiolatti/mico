@@ -95,7 +95,14 @@ int show_keys() {
 int main(int argc, char** argv) {
   // The MCP server agents start: nothing else of mico, and only JSON on stdout.
   if (argc > 1 && !strcmp(argv[1], "--mcp")) return mico::run_mcp_server();
-  if (argc > 1 && !strcmp(argv[1], "update")) return mico::run_update(argc > 2 && !strcmp(argv[2], "--check"));
+  if (argc > 1 && !strcmp(argv[1], "update")) {
+    const bool check = argc == 3 && !strcmp(argv[2], "--check");
+    if (argc > 2 && !check) {
+      fprintf(stderr, "mico update: unknown option '%s' (mico update [--check])\n", argv[2]);
+      return 2;
+    }
+    return mico::run_update(check);
+  }
   if (argc > 1 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-V"))) {
     printf("mico %s\n", mico::version());
     return 0;
@@ -239,14 +246,24 @@ int main(int argc, char** argv) {
     } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
       printf(
           "mico — a view over your coding agents' sessions\n\n"
-          "  mico                 interactive\n"
+          "  mico                 attach, starting a daemon if needed\n"
+          "  mico --attach        attach only; fail if no daemon is running\n"
+          "  mico kill            stop the daemon and its agents (the next daemon resumes them)\n"
+          "  mico --local         single process; agents stop when it exits\n"
           "  mico update          install the latest release (--check only looks)\n"
           "  mico --version       print the version\n"
+          "  mico --keys          what this terminal sends for each key\n"
           "  mico --dump [w h]    render one frame as text (for testing)\n"
           "  mico --dump --usage  render the usage tab instead\n"
           "  --project N --session N --density 0|1|2\n\n"
           "keys: tab focus · arrows/jk move · d density · right-click menu · q quit\n");
       return 0;
+    } else {
+      // Not mistaken for a plain `mico`: a misspelt command, or one this
+      // version lacks (`update` before 0.1.3), opening the interface instead
+      // says nothing about what went wrong.
+      fprintf(stderr, "mico: unknown command or option '%s' (try mico --help)\n", argv[i]);
+      return 2;
     }
   }
 
