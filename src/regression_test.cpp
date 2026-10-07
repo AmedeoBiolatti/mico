@@ -21,6 +21,7 @@
 #include "base/text.h"
 #include "ui/app.h"
 #include "term/input.h"
+#include "term/links.h"
 #include "views/chat_render.h"
 #include "views/views.h"
 #include "vt/vt.h"
@@ -1331,6 +1332,45 @@ int run_regression_tests() {
   }
 
   {
+    // File links must show the command's terminal, not an empty chat. Use a
+    // reader that stays alive after displaying the actual file, without
+    // requiring an editor to be installed in the test environment.
+    const std::string file = project + "/file-link.txt";
+    const std::string path = base + "/.claude/projects/file-link/file-link.jsonl";
+    put(file, "FILE_LINK_VISIBLE_CONTENT\n");
+    put(path, "{\"type\":\"user\",\"cwd\":" + js::quote(project) +
+              ",\"sessionId\":\"file-link\",\"message\":{\"content\":\"open the file\"}}\n" +
+              R"({"type":"assistant","message":{"content":[{"type":"text","text":"See file-link.txt:1"}]}})" "\n");
+    EnvScope visual("VISUAL", "/bin/sh -c 'shift; cat \"$@\"; exec sleep 60' file-reader");
+    App app;
+    app.select_stored(path);
+    Surface sf; sf.resize(120, 32);
+    app.draw(sf);
+    Point link{-1, -1};
+    const std::string target = "file://" + file + "#L1";
+    for (int y = 0; y < sf.height() && link.x < 0; ++y)
+      for (int x = 0; x < sf.width(); ++x)
+        if (links::url(sf.at(x, y).link) == target) { link = {x, y}; break; }
+    check(link.x >= 0, "the existing file is clickable in the chat");
+    if (link.x >= 0) {
+      for (MouseKind kind : {MouseKind::Press, MouseKind::Release})
+        app.feed(InputEvent{InputEvent::Type::Mouse, {}, MouseEvent{kind, MouseButton::Left, link}, {}});
+      bool visible = false;
+      for (int i = 0; i < 200 && !visible; ++i) {
+        app.service(); app.draw(sf); usleep(5000);
+        visible = screen(sf).find("FILE_LINK_VISIBLE_CONTENT") != std::string::npos;
+      }
+      check(visible, "clicking a file shows its contents in the command's terminal");
+      app.feed(InputEvent{InputEvent::Type::Key, KeyEvent{Key::F2}, {}, {}});
+      app.draw(sf);
+      check(screen(sf).find("FILE_LINK_VISIBLE_CONTENT") != std::string::npos,
+            "F2 does not hide a file command behind an unsupported chat view");
+    }
+    for (auto* s : app.live_sessions()) s->pty().terminate();
+    std::filesystem::remove_all(base + "/.claude/projects/file-link");
+  }
+
+  {
     // Ctrl+C with text highlighted copies it. It must not reach the agent as
     // an interrupt, or detach mico.
     const std::string got = base + "/ctrl-c-received";
@@ -1375,9 +1415,13 @@ int run_regression_tests() {
     // reach the agent: Ctrl+Backspace deletes a word, Ctrl+Z brings it back,
     // Ctrl+A then Ctrl+X cuts the whole draft to the clipboard.
     const std::string got = base + "/edit-keys-received";
+    put(base + "/edit-bin/claude", "#!/bin/sh\nstty raw -echo\nexec cat > '" + got + "'\n");
+    chmod((base + "/edit-bin/claude").c_str(), 0755);
+    const char* path_env = getenv("PATH");
+    EnvScope search_path("PATH", base + "/edit-bin:" + (path_env ? path_env : "/bin"));
     App app;
     Surface sf; sf.resize(120, 32);
-    app.spawn_raw({"/bin/sh", "-c", "stty raw -echo; exec cat > '" + got + "'"}, project);
+    app.spawn_agent("claude", project);
     for (int i = 0; i < 20; i++) { app.service(); app.draw(sf); usleep(2000); }
     app.focus_session(app.selected_live());
     const auto keys = [&](const char* bytes) {
@@ -1421,13 +1465,17 @@ int run_regression_tests() {
   }
 
   {
+    put(base + "/draft-bin/claude", "#!/bin/sh\nexec cat\n");
+    chmod((base + "/draft-bin/claude").c_str(), 0755);
+    const char* path_env = getenv("PATH");
+    EnvScope search_path("PATH", base + "/draft-bin:" + (path_env ? path_env : "/bin"));
     App app;
     Surface sf; sf.resize(120, 32);
-    app.spawn_raw({"/bin/cat"}, project); app.draw(sf);
+    app.spawn_agent("claude", project); app.draw(sf);
     LiveSession* a = app.selected_live();
     app.focus_session(a);
     app.feed(InputEvent{InputEvent::Type::Paste, {}, {}, "ALPHA_DRAFT"});
-    app.spawn_raw({"/bin/cat"}, other); app.draw(sf);
+    app.spawn_agent("claude", other); app.draw(sf);
     LiveSession* b = app.selected_live();
     app.focus_session(b);
     app.feed(InputEvent{InputEvent::Type::Paste, {}, {}, "BETA_DRAFT"});

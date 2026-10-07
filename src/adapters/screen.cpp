@@ -111,11 +111,19 @@ bool screen_awaits_input(const Vt& vt) {
     // And its dialogs take the input box's place: with the box on screen,
     // "Do you want to" above it is Claude's reply asking, not a dialog.
     if (input_box && row_lead(vt.row(y)) == 0x276F) return false;
-    for (const Cell& c : vt.row(y)) {
+    const VtRow& r = vt.row(y);
+    for (size_t i = 0; i < r.size(); i++) {
+      const Cell& c = r[i];
       if (c.width == 0) continue;
       text.push_back(c.cp >= 0x20 && c.cp < 0x7f ? char(c.cp) : ' ');
-      // A selection cursor (❯ / ▶) directly before an option is a live menu.
-      if (!input_box && (c.cp == 0x276F || c.cp == 0x25B6 || c.cp == 0x25BA)) text += "<CURSOR>";
+      // A selection cursor (❯ / ▶) a space before an option is a live menu.
+      // One run into other glyphs is not: omp's status bar draws its context
+      // gauge as "▶─2%───", and that made every idle omp read as waiting.
+      if (!input_box && (c.cp == 0x276F || c.cp == 0x25B6 || c.cp == 0x25BA)) {
+        size_t j = i + 1;
+        while (j < r.size() && r[j].width == 0) j++;  // a wide glyph's other half
+        if (j + 1 < r.size() && r[j].cp == U' ' && r[j + 1].cp != U' ' && r[j + 1].cp != 0) text += "<CURSOR>";
+      }
     }
     text.push_back('\n');
   }
