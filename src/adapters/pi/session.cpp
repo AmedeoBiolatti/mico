@@ -110,6 +110,65 @@ void PiFamilyAdapter::for_each_subagent(const std::string& path,
   });
 }
 
+// omp's task call names each subagent it starts ("tasks": [{"name":
+// "MarketReview", "agent": "reviewer", …}], the agent given once for all of
+// them or per task), and each writes <transcript minus .jsonl>/<name>.jsonl.
+void PiFamilyAdapter::call_subagents(const std::string& path, std::string_view line, uint64_t tool_id,
+                                     std::vector<SubagentRun>& out) const {
+  if (!fs::has_suffix(path, ".jsonl") || line.find("\"task\"") == std::string_view::npos) return;
+  const std::string dir = path.substr(0, path.size() - 6) + "/";
+  js::Value message{};
+  js::scan_object(line, [&](std::string_view k, const js::Value& v) {
+    if (k == "message") { message = v; return false; }
+    return true;
+  });
+  js::Value content{};
+  if (message.is_object())
+    js::scan_object(message.raw, [&](std::string_view k, const js::Value& v) {
+      if (k == "content") content = v;
+      return true;
+    });
+  if (!content.is_array()) return;
+  js::scan_array(content.raw, [&](const js::Value& item) {
+    if (!item.is_object()) return true;
+    std::string_view name, id;
+    js::Value args{};
+    js::scan_object(item.raw, [&](std::string_view k, const js::Value& v) {
+      if (k == "name") name = v.body();
+      else if (k == "id") id = v.body();
+      else if (k == "arguments") args = v;
+      return true;
+    });
+    if (name != "task" || hash_id(id) != tool_id || !args.is_object()) return true;
+    std::string agent;
+    js::Value tasks{};
+    js::scan_object(args.raw, [&](std::string_view k, const js::Value& v) {
+      if (k == "agent" && v.is_string()) js::unescape_append(v.body(), agent);
+      else if (k == "tasks") tasks = v;
+      return true;
+    });
+    if (tasks.is_array())
+      js::scan_array(tasks.raw, [&](const js::Value& t) {
+        if (!t.is_object()) return true;
+        SubagentRun r;
+        js::scan_object(t.raw, [&](std::string_view k, const js::Value& v) {
+          if (k == "name" && v.is_string()) js::unescape_append(v.body(), r.name);
+          else if (k == "agent" && v.is_string()) js::unescape_append(v.body(), r.kind);
+          return true;
+        });
+        // A name is how its transcript is found; one that would leave the
+        // folder is not a name.
+        if (r.name.empty() || r.name.find('/') != std::string::npos || r.name.starts_with('.')) return true;
+        if (r.kind.empty()) r.kind = agent;
+        r.id = r.name;
+        r.path = dir + r.name + ".jsonl";
+        out.push_back(std::move(r));
+        return true;
+      });
+    return false;
+  });
+}
+
 // --- pi ----------------------------------------------------------------------
 
 std::string PiAdapter::agent_dir(const std::string& home) const {

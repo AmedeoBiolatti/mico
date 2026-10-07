@@ -111,7 +111,9 @@ void PiFamilyAdapter::list_sessions(const std::function<void(SessionRef&&)>& add
       r.path = sub;
       read_ref(r, buf);
       const size_t slash = sub.rfind('/');
-      r.title = "↳ " + sub.substr(slash + 1, sub.size() - slash - 7);
+      r.parent = path;
+      r.subagent = sub.substr(slash + 1, sub.size() - slash - 7);
+      r.title = "↳ " + r.subagent;
       if (!parent.empty()) r.title += " · " + parent;
       add(std::move(r));
     });

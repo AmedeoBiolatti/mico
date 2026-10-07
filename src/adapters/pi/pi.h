@@ -31,6 +31,9 @@ class PiFamilyAdapter : public Adapter {
 
   // list.cpp
   void list_sessions(const std::function<void(SessionRef&&)>& add) const override;
+  // session.cpp: omp's task calls. pi starts no subagents, and finds none.
+  void call_subagents(const std::string& path, std::string_view line, uint64_t tool_id,
+                      std::vector<SubagentRun>& out) const override;
 
   // commands.cpp
   void file_commands(const std::string& cwd, const std::string& home,
@@ -109,6 +112,7 @@ class OmpAdapter final : public PiFamilyAdapter {
   std::string sessions_dir() const override;
   std::vector<SlashCommand> builtin_commands() const override;
   ChipControl chip_control(std::string_view key) const override;
+  bool resumes_subagents() const override { return true; }
 
   // background.cpp
   void read_background(std::string_view raw, uint64_t offset, BackgroundTasks& t) const override;

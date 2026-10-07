@@ -15,6 +15,11 @@ struct SessionRef {
   int64_t mtime = 0;
   uint64_t bytes = 0;
   std::string sub{};  // the sub-project it belongs to, empty for none
+  // A subagent's run: the transcript of the session that started it, and the
+  // short name the list shows it by under that session ("MarketReview",
+  // "Survey the engine"). Both empty for a session of its own.
+  std::string parent{};
+  std::string subagent{};
 };
 
 }  // namespace mico

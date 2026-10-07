@@ -37,6 +37,8 @@ class ClaudeAdapter final : public Adapter {
 
   // list.cpp
   void list_sessions(const std::function<void(SessionRef&&)>& add) const override;
+  void call_subagents(const std::string& path, std::string_view line, uint64_t tool_id,
+                      std::vector<SubagentRun>& out) const override;
   void trust_folder(const std::string& path) const override;
 
   // session.cpp

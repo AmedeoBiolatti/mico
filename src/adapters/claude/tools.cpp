@@ -112,7 +112,7 @@ std::string tag(std::string_view env, std::string_view name) {
 }  // namespace
 
 // Calls that start background work (Monitor; Bash, which may be moved to the
-// background or run there from the start) or stop it (TaskStop, and the
+// background or run there from the start; Agent, launched to run there) or stop it (TaskStop, and the
 // KillShell before it); the results that say a task began (toolUseResult's
 // taskId or backgroundTaskId); and <task-notification> envelopes, wherever
 // the line holds one — a user turn, a queued command, the queue itself —
@@ -142,7 +142,8 @@ void ClaudeAdapter::read_background(std::string_view raw, uint64_t offset, Backg
         if (!block.is_object()) return true;
         const auto [type, id, name, use_id, input, said, error] = read_block(block.raw);
         if (type == "tool_use" && !id.empty() &&
-            (name == "Monitor" || name == "Bash" || name == "TaskStop" || name == "KillShell" || name == "KillBash")) {
+            (name == "Monitor" || name == "Bash" || name == "TaskStop" || name == "KillShell" || name == "KillBash" ||
+             name == "Agent" || name == "Task")) {
           BackgroundTasks::Call c;
           c.at_ms = at;
           c.offset = offset;
@@ -163,6 +164,8 @@ void ClaudeAdapter::read_background(std::string_view raw, uint64_t offset, Backg
             c.timeout_ms = persistent ? 0 : timeout > 0 ? timeout : 300000;
           } else if (name == "Bash") {
             c.kind = "shell";
+          } else if (name == "Agent" || name == "Task") {
+            c.kind = "agent";
           } else {
             c.kind = "stop";
           }
@@ -178,11 +181,17 @@ void ClaudeAdapter::read_background(std::string_view raw, uint64_t offset, Backg
             return true;
           }
           std::string task;
+          bool async = false;
           if (result.is_object())
             js::scan_object(result.raw, [&](std::string_view k, const js::Value& v) {
               if ((k == "taskId" || k == "backgroundTaskId") && v.is_string()) task = text_of(v);
+              else if (k == "agentId" && v.is_string() && c.kind == "agent") task = text_of(v);
+              else if (k == "isAsync") async = v.is_true();
               return true;
             });
+          // A subagent runs in the background only when launched to: one that
+          // ran in the foreground has finished by the time its result is in.
+          if (c.kind == "agent" && !async) return true;
           // "… Output is being written to: /tmp/claude-1000/…/tasks/<id>.output."
           std::string output;
           if (!task.empty() && !error) {

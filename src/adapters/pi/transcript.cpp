@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <functional>
 
 #include "adapters/pi/pi.h"
 #include "adapters/user_text.h"
@@ -177,11 +178,64 @@ Str edit_diff(Arena& arena, const js::Value& message) {
   return diff.is_string() ? arena.add_json(diff) : Str{};
 }
 
+// The value of attribute `name` in an XML-ish tag's text (`from="parent"`).
+std::string_view attr_of(std::string_view tag, std::string_view name) {
+  for (size_t at = tag.find(name); at != std::string_view::npos; at = tag.find(name, at + 1)) {
+    if (at > 0 && tag[at - 1] != ' ') continue;
+    const size_t eq = at + name.size();
+    if (tag.compare(eq, 2, "=\"") != 0) continue;
+    const size_t end = tag.find('"', eq + 2);
+    if (end == std::string_view::npos) return {};
+    return tag.substr(eq + 2, end - eq - 2);
+  }
+  return {};
+}
+
+// Each <tag …>body</tag> in `text`, with the opening tag's text and the body,
+// trimmed of blank lines.
+void for_each_element(std::string_view text, std::string_view tag,
+                      const std::function<void(std::string_view open, std::string_view body)>& fn) {
+  const std::string open = "<" + std::string(tag), close = "</" + std::string(tag) + ">";
+  for (size_t at = text.find(open); at != std::string_view::npos; at = text.find(open, at + 1)) {
+    const size_t gt = text.find('>', at);
+    if (gt == std::string_view::npos) return;
+    const size_t end = text.find(close, gt);
+    if (end == std::string_view::npos) return;
+    std::string_view body = text.substr(gt + 1, end - gt - 1);
+    while (!body.empty() && (body.front() == '\n' || body.front() == '\r')) body.remove_prefix(1);
+    while (!body.empty() && (body.back() == '\n' || body.back() == '\r')) body.remove_suffix(1);
+    fn(text.substr(at, gt - at), body);
+    at = end;
+  }
+}
+
+// What a subagent's session said to it while it worked, as omp hands the
+// message over: a user turn attributed to an agent, "[Wait interrupted by
+// message]" and then <irc from="parent" agent="Main">…</irc>. One message
+// for each, or nothing when the turn holds none.
+bool irc_turn(Arena& arena, std::string_view text, std::vector<Event>& out) {
+  bool any = false;
+  for_each_element(text, "irc", [&](std::string_view open, std::string_view body) {
+    if (body.empty()) return;
+    std::string_view from = attr_of(open, "agent");
+    if (from.empty()) from = attr_of(open, "from");
+    Event e;
+    e.kind = EventKind::Peer;
+    if (!from.empty()) e.name = arena.add(from);
+    e.text = arena.add(body);
+    out.push_back(e);
+    any = true;
+  });
+  return any;
+}
+
 // The one line a displayed omp custom_message gets, or false when it is not
 // one mico shows: background jobs finishing (async-result), and other agents'
 // messages (irc:incoming). A guest's prompt (collab-prompt, attributed to
-// the user) is a user turn.
-bool custom_message(Arena& arena, std::string_view raw, Event& e) {
+// the user) is a user turn. A subagent finishing is a message from it: its
+// name, how it ended and how long it took, then what it reported.
+bool custom_message(Arena& arena, std::string_view raw, std::vector<Event>& out) {
+  Event e;
   std::string_view kind, attribution;
   bool display = false;
   js::Value content{}, details{};
@@ -198,15 +252,35 @@ bool custom_message(Arena& arena, std::string_view raw, Event& e) {
     e.text = add_content(arena, content);
     if (e.text.empty()) return false;
     e.kind = EventKind::User;
+    out.push_back(e);
     return true;
   }
   thread_local std::string text;
   text.clear();
   if (kind == "async-result") {
-    // "<system-notice>\nBackground job X has completed. Resume your work …":
-    // the sentence before the instructions.
     if (!content.is_string()) return false;
     js::unescape_append(content.body(), text);
+    bool reported = false;
+    for_each_element(text, "task-result", [&](std::string_view open, std::string_view body) {
+      const std::string_view id = attr_of(open, "id"), status = attr_of(open, "status"),
+                             took = attr_of(open, "duration");
+      if (id.empty()) return;
+      std::string_view output;
+      for_each_element(body, "output", [&](std::string_view, std::string_view o) { output = o; });
+      Event r;
+      r.kind = EventKind::Peer;
+      std::string who(id);
+      if (!status.empty()) who += " \xC2\xB7 " + std::string(status);
+      if (!took.empty()) who += " \xC2\xB7 " + std::string(took);
+      r.name = arena.add(who);
+      r.text = arena.add(output.empty() ? body : output);
+      r.ok = status.empty() || status == "completed";
+      out.push_back(r);
+      reported = true;
+    });
+    if (reported) return true;
+    // "<system-notice>\nBackground job X has completed. Resume your work …":
+    // the sentence before the instructions.
     size_t at = text.find("<system-notice>");
     at = at == std::string::npos ? 0 : at + 15;
     while (at < text.size() && text[at] == '\n') at++;
@@ -226,13 +300,39 @@ bool custom_message(Arena& arena, std::string_view raw, Event& e) {
       return true;
     });
     if (text.empty()) return false;
-    e.ok = true;
-    e.text = arena.add((from.empty() ? std::string("agent") : from) + ": " + text);
+    e.kind = EventKind::Peer;
+    if (!from.empty()) e.name = arena.add(from);
+    e.text = arena.add(text);
+    out.push_back(e);
+    return true;
   } else {
     return false;
   }
   e.kind = EventKind::TaskStatus;
+  out.push_back(e);
   return true;
+}
+
+// A write to "agent://<name>" is omp's way of messaging another agent: shown
+// as who it goes to and what it says, not as a path.
+Str agent_write_summary(Arena& arena, std::string_view name, const js::Value& args) {
+  if (name != "write" || !args.is_object()) return {};
+  std::string_view path;
+  js::Value content{};
+  js::scan_object(args.raw, [&](std::string_view k, const js::Value& v) {
+    if (k == "path") path = v.body();
+    else if (k == "content") content = v;
+    return true;
+  });
+  if (!path.starts_with("agent://")) return {};
+  const uint32_t at = arena.open();
+  arena.put("\xE2\x86\x92 ");  // →
+  arena.put(path.substr(8) == "all" ? std::string_view("all agents") : path.substr(8));
+  if (content.is_string()) {
+    arena.put(": ");
+    arena.put_json(content, 400);
+  }
+  return arena.close(at);
 }
 
 }  // namespace
@@ -317,18 +417,18 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
     return;
   }
   if (type == "custom_message") {
-    Event e;
-    if (custom_message(arena, raw, e)) out.push_back(e);
+    custom_message(arena, raw, out);
     return;
   }
   if (type != "message" || !message.is_object()) return;
 
-  std::string_view role, stop_reason;
+  std::string_view role, stop_reason, attribution;
   js::Value content{};
   js::scan_object(message.raw, [&](std::string_view k, const js::Value& v) {
     if (k == "role") role = v.body();
     else if (k == "stopReason") stop_reason = v.body();
     else if (k == "content") content = v;
+    else if (k == "attribution") attribution = v.body();
     return true;
   });
 
@@ -337,6 +437,11 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
     Event e;
     e.text = add_content(arena, content);
     if (e.text.empty()) return;
+    // Another agent's message, handed to this one as a turn.
+    if (attribution == "agent") {
+      const std::string text(arena.view(e.text));
+      if (irc_turn(arena, text, out)) return;
+    }
     e.kind = EventKind::User;
     e.text = unwrap_pasted_content(arena, e.text);
     out.push_back(e);
@@ -397,8 +502,11 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
       if (std::string chart; plot_args(arena.view(e.name), args, chart)) {
         make_chart_event(e, arena, chart);
       } else if (!(is_question_tool(arena.view(e.name)) && build_question(e, arena, args))) {
-        e.summary = tool_arg_summary(arena, args);
-        e.detail = build_detail(arena, arena.view(e.name), args, e.summary);
+        e.summary = agent_write_summary(arena, arena.view(e.name), args);
+        if (e.summary.empty()) {
+          e.summary = tool_arg_summary(arena, args);
+          e.detail = build_detail(arena, arena.view(e.name), args, e.summary);
+        }
         // An edit script's first line is a marker; the files it edits say more.
         if (arena.view(e.name) == "edit" && !e.detail.empty())
           if (const std::string paths = edit_script_paths(arena.view(e.detail)); !paths.empty())

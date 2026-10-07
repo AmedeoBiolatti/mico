@@ -129,6 +129,12 @@ class App {
   // Explicit opening resumes stopped/stored chats and focuses existing runs.
   // Selection alone remains a read-only preview.
   bool open_selected_chat();
+  // The session that started the subagent whose run is on screen: its live
+  // pane when it runs, else its transcript. False for no subagent's run.
+  bool open_parent_chat();
+  // The chat whose transcript is `transcript`: its live pane, else the stored
+  // one. A subagent's row in a chat opens its run this way.
+  void open_chat_at(const std::string& transcript);
   std::string session_title(const LiveSession& session) const;
   LiveSession* selected_live() const { return selected_live_; }
 

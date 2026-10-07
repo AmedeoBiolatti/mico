@@ -169,7 +169,8 @@ void Store::scan() {
 
 size_t Store::session_count() const {
   size_t n = 0;
-  for (const auto& p : projects_) n += p.sessions.size();
+  for (const auto& p : projects_)
+    for (const auto& s : p.sessions) n += s.parent.empty();
   return n;
 }
 
