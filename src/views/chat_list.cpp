@@ -21,6 +21,7 @@ namespace {
 struct Row {
   LiveSession* live = nullptr;  // null -> stored
   const SessionRef* stored = nullptr;
+  const Project* project = nullptr;  // the folder it belongs to
   std::string name;
   std::string key;  // agent\tid, stable across rebuilds and used for marks
   // When you last used it: a live chat's last message or (re)start, a stored
@@ -70,61 +71,76 @@ void split_key(const std::string& key, std::string* agent, std::string* id) {
 // the store.
 void build_rows(App* app, std::vector<Row>& out, bool show_archived, bool held) {
   out.clear();
-  const Project* pr = app->current_project();
-  if (!pr) return;
+  const Project* cur = app->current_project();
+  const bool every = app->all_folders();
+  if (!cur && !every) return;
 
   Store& store = app->store();
-  // A sub-project narrows the list to its own chats.
-  const SubProject* sub = app->current_sub();
-  // The project's chats run in its folder, or in a sub-project folder of it.
-  const auto in_project = [&](const std::string& cwd) {
-    if (cwd == pr->path) return true;
-    for (const auto& sp : pr->subs)
-      if (sp.path != pr->path && (cwd == sp.path || cwd.starts_with(sp.path + "/"))) return true;
-    return false;
-  };
+  // With every folder in the list, nothing narrows it to a sub-project.
+  const SubProject* sub = every ? nullptr : app->current_sub();
+  std::vector<const Project*> folders;
+  if (every)
+    for (const auto& p : store.projects()) folders.push_back(&p);
+  else folders.push_back(cur);
+
   std::vector<std::string> live_ids;
-  for (LiveSession* s : app->live_sessions()) {
-    if (!in_project(s->cwd())) continue;
-    if (sub && app->live_sub(*s) != sub->name) {
-      live_ids.push_back(key_of(s->agent(), s->session_id()));  // nor its stored row
-      continue;
+  for (const Project* pr : folders) {
+    // The project's chats run in its folder, or in a sub-project folder of it.
+    const auto in_project = [&](const std::string& cwd) {
+      if (cwd == pr->path) return true;
+      for (const auto& sp : pr->subs)
+        if (sp.path != pr->path && (cwd == sp.path || cwd.starts_with(sp.path + "/"))) return true;
+      return false;
+    };
+    for (LiveSession* s : app->live_sessions()) {
+      if (!in_project(s->cwd())) continue;
+      if (every && std::find(live_ids.begin(), live_ids.end(), key_of(s->agent(), s->session_id())) != live_ids.end() &&
+          !s->session_id().empty())
+        continue;  // already listed under a folder that holds its cwd
+      if (sub && app->live_sub(*s) != sub->name) {
+        live_ids.push_back(key_of(s->agent(), s->session_id()));  // nor its stored row
+        continue;
+      }
+      // A running agent is never hidden by archive: the pane still exists, and
+      // hiding the row would orphan it. Archiving stops an idle agent for that
+      // reason, and one that has exited is as good as a stored transcript.
+      const bool archived = store.archived(s->agent(), s->session_id());
+      if (archived && !show_archived && s->exited()) {
+        live_ids.push_back(key_of(s->agent(), s->session_id()));  // hide its stored row too
+        continue;
+      }
+      Row r;
+      r.live = s;
+      r.project = pr;
+      r.key = key_of(s->agent(), s->session_id());
+      r.archived = archived;
+      r.name = app->session_title(*s);
+      // Not its state, which changes with every turn: rows would move under
+      // the pointer all the time.
+      r.updated = s->used_at();
+      live_ids.push_back(key_of(s->agent(), s->session_id()));
+      out.push_back(std::move(r));
     }
-    // A running agent is never hidden by archive: the pane still exists, and
-    // hiding the row would orphan it. Archiving stops an idle agent for that
-    // reason, and one that has exited is as good as a stored transcript.
-    const bool archived = store.archived(s->agent(), s->session_id());
-    if (archived && !show_archived && s->exited()) {
-      live_ids.push_back(key_of(s->agent(), s->session_id()));  // hide its stored row too
-      continue;
-    }
-    Row r;
-    r.live = s;
-    r.key = key_of(s->agent(), s->session_id());
-    r.archived = archived;
-    r.name = app->session_title(*s);
-    // Not its state, which changes with every turn: rows would move under
-    // the pointer all the time.
-    r.updated = s->used_at();
-    live_ids.push_back(key_of(s->agent(), s->session_id()));
-    out.push_back(std::move(r));
   }
-  for (const auto& sr : pr->sessions) {
-    if (std::find(live_ids.begin(), live_ids.end(), key_of(sr.agent, sr.id)) != live_ids.end()) continue;
-    if (sub && sr.sub != sub->name) continue;
-    // A subagent's run is not a chat of the list's: it opens from the call
-    // that started it, in its session's chat.
-    if (!sr.parent.empty()) continue;
-    const bool archived = store.archived(sr.agent, sr.id);
-    if (archived && !show_archived) continue;
-    Row r;
-    r.stored = &sr;
-    r.key = key_of(sr.agent, sr.id);
-    r.archived = archived;
-    r.name = sr.title.empty() ? sr.id : text::oneline(sr.title, 0);
-    if (const std::string* n = store.custom_name(sr.agent, sr.id)) r.name = *n;
-    r.updated = sr.mtime;
-    out.push_back(std::move(r));
+  for (const Project* pr : folders) {
+    for (const auto& sr : pr->sessions) {
+      if (std::find(live_ids.begin(), live_ids.end(), key_of(sr.agent, sr.id)) != live_ids.end()) continue;
+      if (sub && sr.sub != sub->name) continue;
+      // A subagent's run is not a chat of the list's: it opens from the call
+      // that started it, in its session's chat.
+      if (!sr.parent.empty()) continue;
+      const bool archived = store.archived(sr.agent, sr.id);
+      if (archived && !show_archived) continue;
+      Row r;
+      r.stored = &sr;
+      r.project = pr;
+      r.key = key_of(sr.agent, sr.id);
+      r.archived = archived;
+      r.name = sr.title.empty() ? sr.id : text::oneline(sr.title, 0);
+      if (const std::string* n = store.custom_name(sr.agent, sr.id)) r.name = *n;
+      r.updated = sr.mtime;
+      out.push_back(std::move(r));
+    }
   }
   std::stable_sort(out.begin(), out.end(), [](const Row& a, const Row& b) { return a.updated > b.updated; });
 
@@ -132,7 +148,8 @@ void build_rows(App* app, std::vector<Row>& out, bool show_archived, bool held) 
   // not there before, one just started, goes on top.
   App::ChatOrder& order = app->chat_order();
   const std::string scope =
-      pr->path + "\n" + (sub ? sub->name : std::string()) + "\n" + (show_archived ? "a" : "");
+      (every ? std::string("*") : cur->path) + "\n" + (sub ? sub->name : std::string()) + "\n" +
+      (show_archived ? "a" : "");
   if (held && order.scope == scope) {
     std::unordered_map<std::string, size_t> was;
     for (size_t i = 0; i < order.ids.size(); i++) was.emplace(order.ids[i], i);
@@ -158,8 +175,8 @@ class ChatList final : public Pane {
  public:
   std::string title() const override {
     const Project* p = app_->current_project();
-    std::string t = p ? "Chats · " + p->name : "Chats";
-    if (const SubProject* sp = app_->current_sub()) t += " \xE2\x80\xBA " + sp->name;  // ›
+    std::string t = app_->all_folders() ? "Chats · all folders" : p ? "Chats · " + p->name : "Chats";
+    if (const SubProject* sp = app_->all_folders() ? nullptr : app_->current_sub()) t += " \xE2\x80\xBA " + sp->name;  // ›
     if (marked_shown_ > 0) t += " · " + std::to_string(marked_shown_) + " selected";
     else if (show_archived_) t += " · archived";
     return t;
@@ -231,7 +248,8 @@ class ChatList final : public Pane {
     int x = 3;
     const int limit = p.width() - (ww ? ww + 2 : 1);
     x += p.text_clipped(x, y + 1, word, Style{c, base.bg}, std::max(0, limit - x));
-    const std::string agent = " · " + agent_label(agent_of(r));
+    std::string agent = " · " + agent_label(agent_of(r));
+    if (app_->all_folders() && r.project) agent += " · " + r.project->name;
     if (x + text::str_width(agent) <= limit) x += p.text(x, y + 1, agent, meta);
     // Work it left running in the background, as its footer would say.
     if (r.live && !r.live->exited() && !r.live->background().empty()) {
@@ -351,7 +369,7 @@ class ChatList final : public Pane {
     if (!on_row)
       return {MenuItem{"New chat\xE2\x80\xA6", "new_chat"},
               MenuItem{show_archived_ ? "Hide archived" : "Show archived", "toggle_archived", true, false, false, "", "a"}};
-    const bool has_subs = app_->current_project() && !app_->current_project()->subs.empty();
+    const bool has_subs = !app_->all_folders() && app_->current_project() && !app_->current_project()->subs.empty();
     const std::string path = r->live ? r->live->transcript() : menu_path_;
     std::vector<MenuItem> items{MenuItem{"Open", "open"}};
     if (named) {
@@ -554,6 +572,11 @@ class ChatList final : public Pane {
     sel_ = i;
     if (i < 0 || i >= int(rows_.size())) return;
     const Row& r = rows_[i];
+    // With every folder listed, a chat of another folder brings its folder along.
+    if (app_->all_folders() && r.project && r.project != app_->current_project()) {
+      const auto& ps = app_->store().projects();
+      app_->select_project(int(r.project - ps.data()));
+    }
     if (r.live) app_->select_live(r.live);
     else if (r.stored) app_->select_stored(r.stored->path);
   }
