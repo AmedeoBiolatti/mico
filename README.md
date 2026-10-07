@@ -76,6 +76,10 @@ gh attestation verify mico-*.tar.gz -R AmedeoBiolatti/mico
 tar -xzf mico-*.tar.gz && install -Dm755 mico-*/bin/mico ~/.local/bin/mico
 ```
 
+From then on, `mico update` fetches the latest release, checks its checksum and
+replaces the binary in place (`mico update --check` only looks); `mico kill`
+then switches the daemon over. Releases before 0.1.3 lack the command.
+
 `gh attestation` needs gh 2.49 or newer. Ubuntu 24.04's own `gh` package is
 older; GitHub's apt repository at [cli.github.com](https://cli.github.com) has
 the current one.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(mico CXX)
+project(mico VERSION 0.1.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -197,6 +197,7 @@ target_link_libraries(mico_net PUBLIC mico_tui mico_api)
 add_executable(mico
   src/main.cpp
   src/mcp.cpp
+  src/update.cpp
 )
 # The self-tests and the benchmark are a binary of their own, so the mico that
 # ships carries none of them. Both use the same libraries; `ctest` runs both.
@@ -214,6 +215,7 @@ foreach(exe mico mico-test)
   # samples in a profile dominated by short-lived hot loops.
   target_link_options(${exe} PRIVATE -Wl,-z,now -static-libstdc++ -static-libgcc)
 endforeach()
+set_source_files_properties(src/update.cpp PROPERTIES COMPILE_DEFINITIONS MICO_VERSION="${PROJECT_VERSION}")
 
 # `cmake --install build` puts mico in ~/.local/bin: no root needed. Agents
 # start mico as their MCP server by the path it runs from, so once installed,
