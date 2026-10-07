@@ -65,8 +65,9 @@ void split_key(const std::string& key, std::string* agent, std::string* id) {
 }
 
 // Every chat for the selected project: live sessions in it, plus stored
-// transcripts that are not already open live. Archived chats are hidden unless
-// the list is showing them, and never dropped from the store.
+// transcripts that are not already open live, subagents' runs aside. Archived
+// chats are hidden unless the list is showing them, and never dropped from
+// the store.
 void build_rows(App* app, std::vector<Row>& out, bool show_archived, bool held) {
   out.clear();
   const Project* pr = app->current_project();
@@ -111,6 +112,9 @@ void build_rows(App* app, std::vector<Row>& out, bool show_archived, bool held) 
   for (const auto& sr : pr->sessions) {
     if (std::find(live_ids.begin(), live_ids.end(), key_of(sr.agent, sr.id)) != live_ids.end()) continue;
     if (sub && sr.sub != sub->name) continue;
+    // A subagent's run is not a chat of the list's: it opens from the call
+    // that started it, in its session's chat.
+    if (!sr.parent.empty()) continue;
     const bool archived = store.archived(sr.agent, sr.id);
     if (archived && !show_archived) continue;
     Row r;

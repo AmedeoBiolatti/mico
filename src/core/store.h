@@ -47,6 +47,7 @@ class Store {
   // compares it to know when to read again.
   uint64_t version() const { return version_; }
   const std::vector<Project>& projects() const { return projects_; }
+  // Chats, subagents' runs aside.
   size_t session_count() const;
 
   // The tracked-folder list, herdr-style: mico shows only these, not every

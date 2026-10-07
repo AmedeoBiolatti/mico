@@ -49,6 +49,12 @@ enum class EventKind : uint8_t {
   // image of its line it is, and the chat reads them from the line when it
   // draws it. A tool's image carries the tool's id.
   Image,
+  // A message between agents: one a subagent's session sent it, or one it
+  // sent its session. `name` is who sent it, `summary` who it went to when
+  // the transcript says (empty: this chat's agent), `text` the message. Not a
+  // turn of yours, and said in the open: shown at every density, never
+  // folded away with the steps around it.
+  Peer,
 };
 
 // One normalized turn element: 40 bytes, trivially copyable, no owned memory.

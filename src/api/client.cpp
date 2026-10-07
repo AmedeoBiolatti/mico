@@ -32,6 +32,7 @@ const char* kind_name(EventKind k) {
     case EventKind::QueueTake: return "queue_take";
     case EventKind::Chart: return "chart";
     case EventKind::Image: return "image";
+    case EventKind::Peer: return "peer";
   }
   return "meta";
 }

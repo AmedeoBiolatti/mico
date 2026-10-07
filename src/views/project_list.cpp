@@ -172,11 +172,12 @@ class ProjectList final : public Pane {
     // Second line: git's branch and state, then the path, on the left;
     // "12 chats · 3h" on the right. The path gives way first on a narrow
     // pane, then the git state.
-    // Archived chats are hidden from the chat list, so they don't count.
+    // Archived chats and subagents' runs are not in the chat list, so they
+    // don't count.
     size_t n = 0;
     int64_t newest = 0;
     for (const auto& s : pr.sessions)
-      if (!app_->store().archived(s.agent, s.id)) {
+      if (s.parent.empty() && !app_->store().archived(s.agent, s.id)) {
         n++;
         newest = std::max(newest, s.mtime);
       }
@@ -212,7 +213,7 @@ class ProjectList final : public Pane {
     size_t n = 0;
     int64_t newest = 0;
     for (const auto& s : pr.sessions)
-      if (s.sub == sp.name && !app_->store().archived(s.agent, s.id)) {
+      if (s.sub == sp.name && s.parent.empty() && !app_->store().archived(s.agent, s.id)) {
         n++;
         newest = std::max(newest, s.mtime);
       }

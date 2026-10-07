@@ -750,7 +750,46 @@ bool App::open_selected_chat() {
   }
   const SessionRef* s = current_session();
   if (!s) return false;
+  // A subagent's run its agent cannot resume on its own is only read.
+  if (!s->parent.empty()) {
+    const Adapter* a = Store::adapter_for(*s);
+    if (!a || !a->resumes_subagents()) return true;
+  }
   return spawn_continuation(s->agent, s->id, s->cwd, false);
+}
+
+void App::open_chat_at(const std::string& transcript) {
+  for (LiveSession* live : live_sessions())
+    if (live->transcript() == transcript) {
+      select_live(live);
+      focus_session(live);
+      return;
+    }
+  // A subagent that has not written its transcript yet has no chat to show.
+  if (!fs::exists(transcript)) {
+    set_status("that subagent has not started yet");
+    return;
+  }
+  // Its session's folder holds it; a rescan finds a run that began a moment ago.
+  const Project* pr = current_project();
+  const bool known = pr && std::any_of(pr->sessions.begin(), pr->sessions.end(),
+                                       [&](const SessionRef& sr) { return sr.path == transcript; });
+  if (!known) ws_.store().scan();
+  select_stored(transcript);
+  if (compact_) show_tab(0);
+}
+
+bool App::open_parent_chat() {
+  const SessionRef* s = selected_live_ ? nullptr : current_session();
+  if (!s || s->parent.empty()) return false;
+  for (LiveSession* live : live_sessions())
+    if (live->transcript() == s->parent) {
+      select_live(live);
+      focus_session(live);
+      return true;
+    }
+  select_stored(s->parent);
+  return true;
 }
 
 std::string App::session_title(const LiveSession& session) const { return ws_.title_of(session); }
@@ -1756,6 +1795,7 @@ void App::handle_mouse(const MouseEvent& m) {
     // A file opens in the editor, beside the chat, on the machine the file is
     // on: the daemon's. A web link opens where the user is.
     if (url.starts_with("file://")) open_in_editor(url);
+    else if (url.starts_with("mico-chat:")) open_chat_at(url.substr(10));
     else open_url_ = std::move(url);
   }
 

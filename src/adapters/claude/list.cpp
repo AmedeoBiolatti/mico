@@ -13,6 +13,50 @@
 
 namespace mico {
 
+namespace {
+
+// A subagent's run, as Claude keeps it beside the session that started it:
+// <session>/subagents/agent-<id>.jsonl, and agent-<id>.meta.json naming the
+// call that started it, what it was asked to do and the agent it runs as.
+struct ClaudeSubagent {
+  std::string path, agent_id, tool_use, description, type;
+};
+
+void for_each_claude_subagent(const std::string& transcript, const std::function<void(ClaudeSubagent&&)>& fn) {
+  if (!fs::has_suffix(transcript, ".jsonl")) return;
+  const std::string dir = transcript.substr(0, transcript.size() - 6) + "/subagents";
+  std::string buf;
+  fs::list_dir(dir, false, [&](const std::string& name) {
+    if (!name.starts_with("agent-") || !fs::has_suffix(name, ".jsonl")) return;
+    ClaudeSubagent a;
+    a.path = dir + "/" + name;
+    a.agent_id = name.substr(6, name.size() - 12);
+    const std::string_view meta = fs::read_prefix(a.path.substr(0, a.path.size() - 6) + ".meta.json", 8 << 10, buf);
+    js::scan_object(meta, [&](std::string_view k, const js::Value& v) {
+      if (k == "toolUseId") a.tool_use = std::string(v.body());
+      else if (k == "description") js::unescape_append(v.body(), a.description);
+      else if (k == "agentType") js::unescape_append(v.body(), a.type);
+      return true;
+    });
+    fn(std::move(a));
+  });
+}
+
+}  // namespace
+
+void ClaudeAdapter::call_subagents(const std::string& path, std::string_view, uint64_t tool_id,
+                                   std::vector<SubagentRun>& out) const {
+  for_each_claude_subagent(path, [&](ClaudeSubagent&& a) {
+    if (a.tool_use.empty() || hash_id(a.tool_use) != tool_id) return;
+    SubagentRun r;
+    r.id = a.agent_id;
+    r.name = !a.description.empty() ? a.description : !a.type.empty() ? a.type : a.agent_id;
+    r.kind = std::move(a.type);
+    r.path = std::move(a.path);
+    out.push_back(std::move(r));
+  });
+}
+
 void ClaudeAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) const {
   std::string buf;
   const std::string root = claude_home() + "/projects";
@@ -84,6 +128,20 @@ void ClaudeAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) 
         for (char& c : s.cwd)
           if (c == '-') c = '/';
       }
+      // Its subagents' runs, each a chat of its own under it.
+      for_each_claude_subagent(s.path, [&](ClaudeSubagent&& a) {
+        SessionRef r;
+        r.agent = s.agent;
+        r.path = std::move(a.path);
+        r.id = std::move(a.agent_id);
+        r.cwd = s.cwd;
+        r.mtime = fs::mtime(r.path, &r.bytes);
+        r.parent = s.path;
+        r.subagent = !a.description.empty() ? a.description : !a.type.empty() ? a.type : r.id;
+        r.title = "\xE2\x86\xB3 " + r.subagent;  // ↳
+        if (!s.title.empty()) r.title += " \xC2\xB7 " + text::oneline(s.title, 0);
+        add(std::move(r));
+      });
       add(std::move(s));
     });
   });

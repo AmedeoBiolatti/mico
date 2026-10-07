@@ -432,10 +432,15 @@ one small file rather than scraping two hundred rollouts, so the chat list shows
 `ai-title` record inside its transcript; omp writes its own `title`/
 `title_change` records straight into the session. Where none of that exists
 (plain pi), the first real user turn is used, and a bare id is the last resort.
-omp's subagents each write a transcript of their own beside the session that
-spawned them (`<session>/<AgentName>.jsonl`); each is listed as a chat named
-`↳ <AgentName> · <the parent's title>`, and resuming one resumes it by its path,
-since omp looks ids up among top-level sessions only.
+Subagents write transcripts of their own beside the session that spawned them:
+omp's `<session>/<AgentName>.jsonl`, Claude's
+`<session>/subagents/agent-<id>.jsonl`, with an `agent-<id>.meta.json` naming
+the `Agent` call, its description and the agent type. Each is a chat of its
+own, opened from its session's chat rather than the chat list (see
+[Subagents](#subagents)); a search or a picker names it
+`↳ <name> · <the parent's title>`. Resuming an omp run resumes
+it by its path, since omp looks ids up among top-level sessions only; Claude
+cannot resume a subagent's run alone, so its chat is read-only.
 
 ## Design constraints that shaped the code
 
@@ -542,6 +547,11 @@ end, and `TaskStop`. A resumed chat is followed from where it was resumed —
 what an earlier Claude process left running went with it — and nothing
 shows once the agent has exited. `mico --background FILE` replays a
 transcript's starts and ends.
+
+Claude's subagents launched to run in the background are in the same list,
+under **Agents**: from the `Agent` call whose result says `isAsync` (named by
+its `agentId`) to the `<task-notification>` that ends it. A subagent run in
+the foreground is not background work: its call is simply still running.
 
 omp and codex leave work running too, and the same list follows it. omp's
 come from its tool results: a `bash` call run with `async` and a `task`'s
@@ -1004,6 +1014,28 @@ and a tint, and the pane title names the count. With more than one gathered, the
 context menu switches to bulk actions (archive / unarchive the set). Ctrl-click
 toggles a row, shift-click extends.
 
+### Subagents
+
+Subagents' runs (omp's `task`, Claude's `Agent`) are not in the chat list:
+each belongs to the chat of the session that started it, and opens from
+there. An omp run resumed on its own is a running agent like any other, and
+listed while it runs.
+
+In the session's chat, the call that started them stays in view at every
+density but Minimal, even when the rest of the turn's steps fold away, with a
+row for each subagent under it: its name and the agent it runs as (`↳
+MarketReview  reviewer`), a spinner while it runs. A click on one opens its
+chat. What passes between the agents is drawn as messages rather than as
+tool output or as turns of yours: a session's message to a subagent (omp's
+`<irc>` envelope), a subagent's message back, and an omp subagent's result
+when it finishes (`✉ MarketReview · completed · 4m49s`, then its report).
+Each is shown whole up to eight lines; a click opens a longer one. omp's
+`write` to `agent://<name>` reads as `→ <name>: <message>`.
+
+A subagent's chat has a **Parent chat** button where a saved chat has
+**Open chat**; Enter goes there too, to the session's live pane if it runs.
+An omp run can still be resumed on its own from the right-click menu.
+
 **Rename and archive** are mico's own marks, kept beside the folder list in
 `$XDG_CONFIG_HOME/mico` — they never rewrite an agent's transcript. A rename
 overrides the title mico shows; an archive hides the row. `a` shows archived
@@ -1153,10 +1185,12 @@ came from, which runs `xdg-open` (or `open`), detached, with no shell. Only
 http, https, file and mailto links open. File paths are links too, when the
 file exists (relative to the agent's folder): `src/app.py`, `app.py:42`,
 `app.py:42:7`, `app.py#L42`. A click opens `$VISUAL`/`$EDITOR` at that line in
-a new pane, on the daemon's machine, where the file is. The cells are also written as OSC 8
-hyperlinks, so the terminal itself knows them: it underlines a whole wrapped
-link on hover, and its own modifier-click works in selection mode (F8) and
-over ssh.
+a terminal pane, on the daemon's machine, where the file is; `vi` is used if
+neither variable is set. The editor is shown immediately, without a chat
+prompt box, and F2 leaves it in terminal view. The cells are also written as
+OSC 8 hyperlinks, so the terminal itself knows them: it underlines a whole
+wrapped link on hover, and its own modifier-click works in selection mode
+(F8) and over ssh.
 
 **Code.** A fenced block sits on its own surface, coloured by a small lexer
 per language family — C/C++, Rust, Go, JS/TS, Java/Kotlin/C#/Swift, Python,
@@ -1306,12 +1340,14 @@ a fold reads them again. Scrolling back past a long autonomous turn then costs
 a few bytes per step instead of filling the window with text that is never
 drawn.
 
-**Chat is the default view**, even for a brand-new session. A recognised startup
-trust dialog before the transcript exists temporarily shows the agent's
-terminal; an agent that exits without a transcript also shows its terminal
-output. Normal messages and prompt-like output never switch an ongoing chat
-to raw. F2 toggles the view and pins that choice. Prompts needing the agent's
-terminal show a `Needs you · F2 terminal` hint.
+**Chat is the default view for supported agents**, even for a brand-new
+session. A recognised startup trust dialog before the transcript exists
+temporarily shows the agent's terminal; an agent that exits without a
+transcript also shows its terminal output. Normal messages and prompt-like
+output never switch an ongoing chat to raw. F2 toggles the view and pins that
+choice. Prompts needing the agent's terminal show a `Needs you · F2 terminal`
+hint. Editors and commands without a chat adapter always use terminal view;
+F2 does not switch them to an empty chat.
 
 **The prompt box** is a real single-field text editor, not an append-only
 line: Left/Right/Home/End move the cursor by codepoint (never splitting a

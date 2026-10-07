@@ -79,6 +79,19 @@ class ChatView final : public Pane {
     }
     if (resume_row_ >= 0 && find_.active()) {
       find_.render(p.sub(Rect{0, resume_row_, p.width(), 1}), th, chat_);
+    } else if (resume_row_ >= 0 && !s->parent.empty()) {
+      // A subagent's run: the way out is up, to the session that started it.
+      Painter action = p.sub(Rect{0, resume_row_, p.width(), 1});
+      action.clear(Style{th.dim, th.strip_bg});
+      action.text(2, 0, " Parent chat  ↵ ", Style{th.bg, th.accent, attr::kBold});
+      std::string parent;
+      for (const auto& sr : app_->current_project()->sessions)
+        if (sr.path == s->parent) {
+          const std::string* n = app_->store().custom_name(sr.agent, sr.id);
+          parent = n ? *n : text::oneline(sr.title, 0);
+        }
+      if (!parent.empty())
+        action.text_clipped(21, 0, parent, Style{th.dim, th.strip_bg}, std::max(0, p.width() - 23));
     } else if (resume_row_ >= 0) {
       Painter action = p.sub(Rect{0, resume_row_, p.width(), 1});
       action.clear(Style{th.dim, th.strip_bg});
@@ -98,7 +111,7 @@ class ChatView final : public Pane {
       find_.open(chat_);
       return true;
     }
-    if (k.key == Key::Enter) return app_->open_selected_chat();
+    if (k.key == Key::Enter) return app_->open_parent_chat() || app_->open_selected_chat();
     if (k.is_ctrl('g')) {
       open_outline(app_, this, chat_);
       return true;
@@ -114,7 +127,7 @@ class ChatView final : public Pane {
 
   bool on_mouse(const MouseEvent& m, Point local) override {
     if (resume_row_ >= 0 && local.y == resume_row_ && m.kind == MouseKind::Press &&
-        m.button == MouseButton::Left) return app_->open_selected_chat();
+        m.button == MouseButton::Left) return app_->open_parent_chat() || app_->open_selected_chat();
     if (chip_row_ >= 0 && local.y == chip_row_ && m.kind == MouseKind::Press) {
       for (const auto& c : chips_)
         if (local.x >= c.rect.x && local.x < c.rect.x + c.rect.w) {
@@ -135,7 +148,13 @@ class ChatView final : public Pane {
         if (local.x >= c.rect.x && local.x < c.rect.x + c.rect.w)
           return chip_menu(chat_.state(), c.key, false, "");
     std::vector<MenuItem> items;
-    if (app_->current_session()) items.push_back(MenuItem{"Open chat", "open_chat"});
+    if (const SessionRef* s = app_->current_session(); s && !s->parent.empty()) {
+      items.push_back(MenuItem{"Parent chat", "parent_chat"});
+      if (const Adapter* a = Store::adapter_for(*s); a && a->resumes_subagents())
+        items.push_back(MenuItem{"Resume subagent", "open_chat"});
+    } else if (s) {
+      items.push_back(MenuItem{"Open chat", "open_chat"});
+    }
     for (auto& it : chat_.context_menu(local)) items.push_back(std::move(it));
     if (!items.empty()) items.push_back(MenuItem::sep());
     items.push_back(MenuItem{"Outline\xE2\x80\xA6", "outline", true, false, false, "", "Ctrl+G"});
@@ -143,6 +162,7 @@ class ChatView final : public Pane {
   }
   void on_action(const std::string& a) override {
     if (a == "open_chat") { app_->open_selected_chat(); return; }
+    if (a == "parent_chat") { app_->open_parent_chat(); return; }
     if (a == "outline") { open_outline(app_, this, chat_); return; }
     if (handle_outline_action(app_, this, chat_, a)) return;
     chat_action(*app_, chat_, a);

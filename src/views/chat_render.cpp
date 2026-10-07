@@ -32,6 +32,8 @@ constexpr size_t kChunkLines = 512;
 // pathological tool result cannot cost a second of layout.
 constexpr size_t kMaxRowsPerEvent = 200;
 constexpr size_t kCollapsedResultRows = 3;
+// An agent's message to another, before it is opened.
+constexpr size_t kCollapsedPeerRows = 8;
 // Ceiling on retained transcript text. Scrolling back through a 200 MB rollout
 // used to keep every byte it had walked past.
 constexpr size_t kArenaBudget = 32u << 20;
@@ -244,6 +246,8 @@ void ChatRenderer::invalidate_rows() {
   segs_.clear();
   scratch_.clear();
   cards_.clear();  // re-parsed as each Question is laid out again
+  runs_.clear();
+  awaiting_runs_.clear();
   rows_from_event_ = rows_to_event_ = conv_.events().size();
 }
 
@@ -344,6 +348,7 @@ bool ChatRenderer::visible(size_t i, const Filters& f) const {
     case EventKind::ToolCall: return f.show_tools() && (!activity_tool_ || e.tool_id != activity_tool_);
     case EventKind::TaskStatus: return f.show_tools() || !e.ok;
     case EventKind::Question: return true;
+    case EventKind::Peer: return true;
     // A tool's image (a screenshot) shows with tool calls; the user's always.
     case EventKind::Image: return !e.tool_id || f.show_tools();
     case EventKind::ToolResult:
@@ -544,6 +549,45 @@ void ChatRenderer::layout_image(const Event& e, int w) {
   flush_lines(tool ? RowStyle::Dim : RowStyle::Assistant, indent, 0, Gutter::None);
 }
 
+bool ChatRenderer::spawns_agents(const Event& e) const {
+  if (e.kind != EventKind::ToolCall || !conv_.adapter()) return false;
+  const std::string_view name = conv_.arena().view(e.name);
+  // omp's hub runs services, not agents.
+  return name != "hub" && classify_tool(name, conv_.arena().view(e.summary), nullptr, nullptr) == ToolKind::Agent;
+}
+
+// One row per subagent: its name, then the agent it runs as. The mark before
+// it is drawn with the frame, a spinner while it runs.
+void ChatRenderer::layout_runs(const Event& e) {
+  thread_local std::vector<SubagentRun> found;
+  found.clear();
+  conv_.adapter()->call_subagents(conv_.path(), conv_.file().line(e.src_line), e.tool_id, found);
+  if (found.empty()) {
+    if (tool_pending(e.tool_id)) awaiting_runs_.push_back(e.tool_id);
+    return;
+  }
+  const std::string_view said = conv_.arena().view(e.summary);
+  for (SubagentRun& r : found) {
+    if (runs_.size() >= 0xFFFF) break;
+    // Named by what the call already says (Claude's description), it goes by
+    // the agent it runs as.
+    const bool repeats = r.name == said && !r.kind.empty();
+    const Str name = scratch_.add(repeats ? r.kind : r.name);
+    const uint32_t first = uint32_t(segs_.size());
+    segs_.push_back(md::Seg{name.off | kScratch, name.len, md::Ink::Link});
+    uint16_t count = 1;
+    if (!repeats && !r.kind.empty() && r.kind != r.name) {
+      const Str kind = scratch_.add("  " + r.kind);
+      segs_.push_back(md::Seg{kind.off | kScratch, kind.len, md::Ink::Text});
+      count++;
+    }
+    runs_.push_back(std::move(r));
+    Row row{e.tool_id, first, cur_line_, count, 4, RowStyle::Dim, Gutter::None};
+    row.run = uint16_t(runs_.size());
+    rows_.push_back(row);
+  }
+}
+
 void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
   const Event& e = conv_.events()[index];
   cur_line_ = e.src_line;
@@ -619,6 +663,7 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
                   e.tool_id, false, diff);
         output_lang_ = nullptr;
       }
+      if (spawns_agents(e)) layout_runs(e);
       break;
     }
 
@@ -634,6 +679,25 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
       put_oneline(scratch_, conv_.arena().view(e.text), std::max(4, w - 8));
       scratch_.put(" \xE2\x94\x80\xE2\x94\x80");
       emit_scratch(scratch_.close(off), RowStyle::Dim, 0, 0, 0, 0xFF);
+      break;
+    }
+
+    // Another agent's message: who sent it, to whom, then what it says,
+    // quieter than a turn of yours and set in behind a plain rule.
+    // A long one opens like a tool's output, by its line in the file.
+    case EventKind::Peer: {
+      gap();
+      const uint64_t id = kPeerBit | uint64_t(conv_.file().line_offset(e.src_line));
+      uint32_t off = scratch_.open();
+      scratch_.put("\xE2\x9C\x89 ");  // ✉
+      scratch_.put(e.name.empty() ? std::string_view("agent") : conv_.arena().view(e.name));
+      if (!e.summary.empty()) {
+        scratch_.put(" \xE2\x86\x92 ");  // →
+        scratch_.put(conv_.arena().view(e.summary));
+      }
+      emit_scratch(scratch_.close(off), RowStyle::Tool, 2, id, 0, 0xFF);
+      emit_text(e.text, RowStyle::Work, 4, w, expanded(id) ? kMaxRowsPerEvent : kCollapsedPeerRows, id, true,
+                false);
       break;
     }
 
@@ -1237,9 +1301,11 @@ void ChatRenderer::classify(size_t prepended) {
     if (answered)
       for (size_t i = s; i < a; i++) {
         const Event& ev = conv_.events()[i];
-        // A question, a chart and a notice are said to the user: they stay.
+        // A question, a chart, a notice and agents' messages are said in
+        // the open: they stay.
         if (ev.kind == EventKind::Question || ev.kind == EventKind::Chart || ev.kind == EventKind::Notice ||
-            (ev.kind == EventKind::Image && !ev.tool_id) || silent(ev))
+            ev.kind == EventKind::Peer || spawns_agents(ev) || (ev.kind == EventKind::Image && !ev.tool_id) ||
+            silent(ev))
           continue;
         head = i;
         // Named by where its first step is in the file, which outlives the window.
@@ -1254,7 +1320,8 @@ void ChatRenderer::classify(size_t prepended) {
       }
       uint8_t role = ev.kind == EventKind::Assistant ? kWork : 0;
       const bool folds = head != SIZE_MAX && i >= head && ev.kind != EventKind::Question &&
-                         ev.kind != EventKind::Chart && ev.kind != EventKind::Notice &&
+                         ev.kind != EventKind::Chart && ev.kind != EventKind::Notice && ev.kind != EventKind::Peer &&
+                         !spawns_agents(ev) &&
                          !(ev.kind == EventKind::Image && !ev.tool_id) && !silent(ev);
       if (folds) role |= kFolded | (i == head ? kFoldHead : 0);
       set(i, role, folds ? id : 0);
@@ -1705,6 +1772,25 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
     return;
   }
 
+  // A call whose subagents had not shown yet, looked at once a second while
+  // it runs: once they have, the chat is laid out again with them.
+  if (!awaiting_runs_.empty()) {
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now - runs_checked_ms_ >= 1000) {
+      runs_checked_ms_ = now;
+      thread_local std::vector<SubagentRun> found;
+      bool appeared = false;
+      std::erase_if(awaiting_runs_, [&](uint64_t id) {
+        found.clear();
+        conv_.adapter()->call_subagents(conv_.path(), {}, id, found);
+        appeared |= !found.empty();
+        return !found.empty() || !tool_pending(id);
+      });
+      if (appeared) invalidate_rows();
+    }
+  }
+
   const int w = std::max(4, p.width() - 3);
   // Last frame's draft comes off before anything lays out: new rows go under
   // the transcript, and the draft goes back under them.
@@ -1784,6 +1870,15 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
     // result, otherwise the expand/collapse marker. Keeping it out of the
     // laid-out text lets the animation run without re-laying-out anything.
     const bool in_flight = working_ && r.base == RowStyle::Tool && tool_pending(r.tool_id);
+    // A subagent's row: a spinner while it runs — its call still waiting on
+    // it, or the agent's background work naming it — and an arrow after.
+    if (r.run) {
+      const SubagentRun& run = runs_[r.run - 1];
+      const bool running =
+          (working_ && tool_pending(r.tool_id)) ||
+          std::find(running_agents_.begin(), running_agents_.end(), run.id) != running_agents_.end();
+      p.put(4, ry, running ? spin_ : U'\u21B3', Style{running ? th.working : th.dim, bg, attr::kBold});  // ↳
+    }
     if (r.base == RowStyle::Tool && r.tool_id) {
       const char32_t mark =
           in_flight ? spin_ : (expanded(r.tool_id) ? U'\u25BE' : U'\u25B8');
@@ -2112,6 +2207,16 @@ bool ChatRenderer::on_mouse(const MouseEvent& m, Point local) {
       press_tool_ = 0;
       press_y_ = -1;
       return true;
+    }
+    // A subagent's row opens its chat.
+    if (local.y == press_y_ && local.y >= last_pad_) {
+      const size_t i = size_t(std::max(0, int(rows_.size()) - last_h_ - scroll_) + local.y - last_pad_);
+      if (i < rows_.size() && rows_[i].run) {
+        open_url_ = "mico-chat:" + runs_[rows_[i].run - 1].path;
+        press_tool_ = 0;
+        press_y_ = -1;
+        return true;
+      }
     }
     const uint64_t t = tool_at(local.y);
     if (t && t == press_tool_ && local.y == press_y_) {

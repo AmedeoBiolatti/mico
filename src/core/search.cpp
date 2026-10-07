@@ -17,7 +17,7 @@ namespace mico {
 bool in_scope(EventKind k, const SearchScope& s) {
   switch (k) {
     case EventKind::User: case EventKind::Assistant: case EventKind::Question:
-    case EventKind::Notice:
+    case EventKind::Notice: case EventKind::Peer:
       return true;
     case EventKind::Thinking: return s.thinking;
     // A tool's output counts while tools are shown: opening the call shows it.

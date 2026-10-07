@@ -65,11 +65,11 @@ class SessionPane final : public Pane {
            (effective_view() == View::Raw ? " · terminal" : "");
   }
 
-  // Chat is always the default. A brand-new session has no transcript yet, so
-  // the chat body shows an empty state ("no messages yet") with the prompt box
-  // and the state chips — never the pty. F2 switches to raw when the agent's
-  // own screen is genuinely needed (an interactive startup prompt).
+  // Supported agents default to chat, even before their transcript exists.
+  // Editors and other commands have no chat adapter: their terminal is the
+  // only view. F2 switches planes only for supported agents.
   View effective_view() const {
+    if (!s_->adapter()) return View::Raw;
     if (view_chosen_) return view_;
     // An exited session put its reason on its own screen; a session waiting on
     // a startup prompt (a trust dialog) needs that screen to be answerable.
@@ -110,6 +110,7 @@ class SessionPane final : public Pane {
     chat_.seed_agent(s_->adapter());
     chat_.set_questions_interactive(!s_->exited());
     chat_.set_working(working, spinner_glyph(app_->anim()));
+    chat_.set_background(s_->exited() ? std::vector<BackgroundTask>{} : s_->background());
     // The reply being written, read off the agent's screen: its transcript
     // gets a block only once the block is complete. Kept a moment past the
     // end of the work, until the last block has landed in the transcript.
@@ -153,11 +154,6 @@ class SessionPane final : public Pane {
       return;
     }
 
-    // Chat activity uses one fixed row. Variable-height terminal hints would
-    // otherwise resize the transcript whenever the agent starts or stops.
-    // An adapter-less pane retains its verbatim terminal tail.
-    const int live_h = working && !s_->adapter() ? live_range() : 0;
-
     // Bottom rows, outermost first: the prompt box — grown to fit a multi-line
     // message, up to a cap — then the state strip, then — room permitting —
     // a rule marking where the conversation actually ends. Without it the
@@ -199,7 +195,7 @@ class SessionPane final : public Pane {
     body_top_ = 0;
     const int act_h = s_->adapter() && p.height() - footer_rows - body_top_ > 1 ? 1 : 0;
     chat_.set_activity_bar(act_h > 0);
-    int ch = std::max(1, p.height() - footer_rows - act_h - live_h - body_top_);
+    int ch = std::max(1, p.height() - footer_rows - act_h - body_top_);
     Painter body = p.sub(Rect{0, body_top_, p.width(), ch});
     if (s_->transcript().empty()) {
       body.clear(Style{th.text, th.panel});
@@ -208,8 +204,6 @@ class SessionPane final : public Pane {
       if (!s_->start_error().empty()) {
         msg = s_->start_error();
         err = true;
-      } else if (!s_->adapter()) {
-        msg = "no chat view for this agent — F2 for the raw terminal";
       } else if (s_->exited()) {
         char b[80];
         snprintf(b, sizeof b, "the agent exited (code %d) before writing anything",
@@ -235,7 +229,6 @@ class SessionPane final : public Pane {
     }
 
     if (act_h) render_activity(p.sub(Rect{0, body_top_ + ch, p.width(), act_h}), th, working);
-    if (working && live_h) render_vt_rows(p.sub(Rect{0, body_top_ + ch + act_h, p.width(), live_h}), th);
 
     if (chip_sep) {
       Painter sep = p.sub(Rect{0, chip_row_ - 1, p.width(), 1});
@@ -1387,6 +1380,7 @@ class SessionPane final : public Pane {
 
  private:
   void toggle_view() {
+    if (!s_->adapter()) return;
     if (s_->answer_sending()) {
       s_->cancel_answer();
       app_->set_status("finish answering in the terminal");
@@ -1405,22 +1399,6 @@ class SessionPane final : public Pane {
       s_->driver().live_rows(s_->vt(), live_, 4);
     }
     return int(live_.size());
-  }
-
-  void render_vt_rows(Painter p, const Theme& th) const {
-    p.clear(Style{th.text, th.panel});
-    const Vt& vt = s_->vt();
-    for (int y = 0; y < int(live_.size()) && y < p.height(); y++) {
-      const VtRow& r = vt.row(live_[size_t(y)]);
-      for (int x = 0; x < p.width() && size_t(x) < r.size(); x++) {
-        const Cell& c = r[size_t(x)];
-        if (c.width == 0) continue;
-        Style st = c.st;
-        if (st.bg == kDefaultColor) st.bg = th.panel;
-        if (st.fg == kDefaultColor) st.fg = th.dim;
-        p.put(x, y, c.cp, st, c.width);
-      }
-    }
   }
 
   // One line saying what the agent is actually doing, with a turning spinner:

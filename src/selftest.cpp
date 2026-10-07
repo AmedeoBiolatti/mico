@@ -1298,8 +1298,40 @@ int run_selftest() {
           R"({"type":"custom_message","customType":"irc:incoming","content":"<irc>\n…</irc>","display":true,)"
           R"("details":{"id":"1","from":"Fixer","message":"Done.\nNo tests run."},"attribution":"agent"})",
           a, ev);
-      check(ev.size() == 1 && ev[0].kind == EventKind::TaskStatus, "omp agent message");
-      if (ev.size() == 1) check_str(a.view(ev[0].text), "Fixer: Done.\nNo tests run.", "omp agent message text");
+      check(ev.size() == 1 && ev[0].kind == EventKind::Peer && a.view(ev[0].name) == "Fixer", "omp agent message");
+      if (ev.size() == 1) check_str(a.view(ev[0].text), "Done.\nNo tests run.", "omp agent message text");
+      // In a subagent's own transcript, its session's messages arrive as
+      // turns: a message each, not the envelope.
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"message","message":{"role":"user","content":"[Wait interrupted by message]\n<irc from=\"parent\" )"
+          R"(agent=\"Main\">\nSend what you have.\n</irc>","attribution":"agent","steering":true}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Peer && a.view(ev[0].name) == "Main" &&
+                a.view(ev[0].text) == "Send what you have.",
+            "omp: a session's message to its subagent");
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"message","message":{"role":"user","content":"<irc> is a protocol","attribution":"user"}})", a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::User, "omp: your own turn naming irc stays yours");
+      // A subagent finishing: what it reported, under its name.
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":"async-result","content":"<system-notice>\nBackground job Fix )"
+          R"(has completed. Resume your work using the result below.\n<task-result id=\"Fix\" agent=\"task\" )"
+          R"(status=\"completed\" duration=\"4m49s\">\n<meta lines=\"1\" />\n<output>\nAll fixed.\n</output>\n)"
+          R"(</task-result>\n</system-notice>","display":true,"attribution":"agent"})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Peer && ev[0].ok &&
+                a.view(ev[0].name) == "Fix \xC2\xB7 completed \xC2\xB7 4m49s" && a.view(ev[0].text) == "All fixed.",
+            "omp: a subagent's result is its message");
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"w1","name":"write",)"
+          R"("arguments":{"path":"agent://Fix","content":"Stop editing."}}]}})",
+          a, ev);
+      check(ev.size() == 1 && a.view(ev[0].summary) == "\xE2\x86\x92 Fix: Stop editing." && ev[0].detail.empty(),
+            "omp: a write to an agent reads as a message to it");
       ev.clear();
       omp_adapter().parse(
           R"({"type":"custom_message","customType":"collab-prompt","content":"How is training going?",)"
@@ -1356,8 +1388,28 @@ int run_selftest() {
                R"({"type":"session","version":3,"id":"s1","cwd":"/work","parentSession":")" + parent + "\"}\n" +
                R"({"type":"message","message":{"role":"user","content":[{"type":"text","text":"Complete assignment"}]}})" "\n");
       std::map<std::string, std::string> titles;
-      omp.list_sessions([&](SessionRef&& r) { titles[r.id] = r.title; });
+      std::map<std::string, SessionRef> refs;
+      omp.list_sessions([&](SessionRef&& r) {
+        titles[r.id] = r.title;
+        refs[r.id] = std::move(r);
+      });
       check(titles.size() == 2, "omp lists a session and its subagent run");
+      check(refs["s1"].parent == parent && refs["s1"].subagent == "MarketReview" && refs["p1"].parent.empty(),
+            "omp: a subagent run knows its session");
+      // The task call that started it names it, and so where it writes.
+      std::vector<SubagentRun> runs;
+      const std::string call =
+          R"({"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"task",)"
+          R"("arguments":{"agent":"task","tasks":[{"name":"MarketReview","agent":"reviewer"},{"name":"Audit"},)"
+          R"({"name":"../escape"}]}}]}})";
+      omp.call_subagents(parent, call, hash_id("t1"), runs);
+      check(runs.size() == 2 && runs[0].name == "MarketReview" && runs[0].kind == "reviewer" &&
+                runs[0].path == slug + "/2026-09-30T17-21-31-812Z_p1/MarketReview.jsonl" && runs[1].kind == "task" &&
+                runs[1].id == "Audit",
+            "omp: a task call's subagents and their transcripts");
+      runs.clear();
+      omp.call_subagents(parent, call, hash_id("other"), runs);
+      check(runs.empty(), "omp: another call starts none of them");
       check_str(titles["p1"], "Review the strategy", "omp session title");
       check_str(titles["s1"], "↳ MarketReview · Review the strategy", "omp subagent run named for its agent and parent");
       Launch l;
@@ -3557,6 +3609,13 @@ int run_selftest() {
     asks.write("\xE2\x97\x8F Done. Do you want to deploy it too? (y/n)\r\n\r\n" + rule + "\r\n\xE2\x9D\xAF \r\n" + rule +
                "\r\n  auto mode on\r\n");
     check(!screen_awaits_input(asks), "Claude's reply asking a question above its input box is not a dialog");
+    // omp's status bar, as 18.4 draws it: its context gauge leads with ▶.
+    Vt omp; omp.resize(80, 12);
+    omp.write(" \xCF\x80 > GPT-6.1-Sol > ~/src/app > (sub) \xE2\x96\xB6\xE2\x94\x80" "2%\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80 272K\r\n");
+    check(!screen_awaits_input(omp), "omp's context gauge is not a selection cursor");
+    Vt pick; pick.resize(80, 12);
+    pick.write("Pick one\r\n\xE2\x96\xB6 First\r\n  Second\r\n");
+    check(screen_awaits_input(pick), "a \xE2\x96\xB6 before an option still reads as a menu");
   }
 
   // Codex, as 0.159 draws it: its dialogs replace the input box, and its
@@ -4055,6 +4114,53 @@ int run_selftest() {
     check(App::announce(shown, true, false), "an unfocused terminal is told even of the chat it shows");
     check(App::announce(hidden, false, true) && !App::announce(shown, false, true),
           "without focus reports, only a chat not shown is announced");
+  }
+
+  // Claude's subagents: each run beside its session, listed under it and
+  // found from the call that started it; one launched to the background runs
+  // until its notice.
+  {
+    const std::string root = "/tmp/mico-selftest-claude-sub-" + std::to_string(getpid());
+    const char* had = getenv("CLAUDE_CONFIG_DIR");
+    const std::string saved = had ? had : "";
+    setenv("CLAUDE_CONFIG_DIR", root.c_str(), 1);
+    const std::string dir = root + "/projects/-w";
+    fs::make_dirs(dir + "/s1/subagents");
+    put_file(dir + "/s1.jsonl", R"({"type":"ai-title","aiTitle":"Fix the build","cwd":"/w"})" "\n");
+    put_file(dir + "/s1/subagents/agent-a1.jsonl", R"({"isSidechain":true,"agentId":"a1","type":"user","cwd":"/w"})" "\n");
+    put_file(dir + "/s1/subagents/agent-a1.meta.json",
+             R"({"agentType":"Explore","description":"Survey the engine","toolUseId":"toolu_1"})");
+    std::map<std::string, SessionRef> refs;
+    claude_adapter().list_sessions([&](SessionRef&& r) { refs[r.id] = std::move(r); });
+    check(refs.size() == 2 && refs["a1"].parent == dir + "/s1.jsonl" && refs["a1"].subagent == "Survey the engine" &&
+              refs["a1"].cwd == "/w" && refs["a1"].title == "\xE2\x86\xB3 Survey the engine \xC2\xB7 Fix the build",
+          "claude: a subagent's run, listed under its session");
+    std::vector<SubagentRun> runs;
+    claude_adapter().call_subagents(dir + "/s1.jsonl", {}, hash_id("toolu_1"), runs);
+    check(runs.size() == 1 && runs[0].id == "a1" && runs[0].kind == "Explore" &&
+              runs[0].path == dir + "/s1/subagents/agent-a1.jsonl",
+          "claude: the Agent call's subagent");
+    check(!claude_adapter().resumes_subagents() && omp_adapter().resumes_subagents(),
+          "only omp resumes a subagent's run on its own");
+    if (system(("rm -rf '" + root + "'").c_str()) != 0) {}
+    if (had) setenv("CLAUDE_CONFIG_DIR", saved.c_str(), 1);
+    else unsetenv("CLAUDE_CONFIG_DIR");
+
+    BackgroundTasks t;
+    const auto feed = [&](const std::string& line) { claude_adapter().read_background(line, 0, t); };
+    feed(R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"g1","name":"Agent",)"
+         R"("input":{"description":"Survey","subagent_type":"Explore","run_in_background":true}},)"
+         R"({"type":"tool_use","id":"g2","name":"Agent","input":{"description":"Quick look"}}]}})");
+    feed(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g1","content":"launched"}]},)"
+         R"("toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a7"}})");
+    feed(R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g2","content":"done"}]},)"
+         R"("toolUseResult":{"status":"completed","agentId":"a8"}})");
+    check(t.running.size() == 1 && t.running[0].id == "a7" && t.running[0].kind == "agent" &&
+              t.running[0].what == "Survey",
+          "claude: a subagent launched to the background runs; one that ran in the foreground does not");
+    feed(R"({"type":"user","message":{"content":"<task-notification>\n<task-id>a7</task-id>\n<status>completed</status>)"
+         R"(\n</task-notification>"}})");
+    check(t.running.empty(), "claude: a subagent's notice ends it");
   }
 
   // Claude's background work, from the lines it writes: what is running now.
@@ -5449,6 +5555,39 @@ int run_selftest() {
     const std::string open = "\x1b]8;id=" + std::to_string(id) + ";https://ok.example/x\x1b\\";
     check(out1.find(open) != std::string::npos && out1.find("\x1b]8;;\x1b\\") > out1.find(open) && out2.empty(),
           "links: OSC 8 around a link's cells, closed after, nothing for an unchanged frame");
+  }
+
+  // A call that started subagents: a row for each under it, its name lit,
+  // and a click on one hands back that subagent's chat to open.
+  {
+    const std::string path = "/tmp/mico_runs_chat_" + std::to_string(getpid()) + ".jsonl";
+    put_file(path,
+             R"({"type":"session","version":3,"id":"p1","cwd":"/tmp"})" "\n"
+             R"({"type":"message","message":{"role":"user","content":"review it"}})" "\n"
+             R"({"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"task",)"
+             R"("arguments":{"i":"Reviewing in parallel","tasks":[{"name":"MarketReview","agent":"reviewer"}]}}]}})" "\n");
+    ChatRenderer c;
+    check(c.open(path, &omp_adapter()), "runs: a chat with a task call opens");
+    Theme theme;
+    Filters filters;
+    Surface sf;
+    sf.resize(60, 10);
+    {
+      Painter p(sf, Rect{0, 0, 60, 10});
+      c.render(p, theme, filters);
+    }
+    Point at{-1, -1};
+    for (int y = 0; y < 10 && at.x < 0; y++) {
+      std::string row;
+      for (int x = 0; x < 60; x++) row += char(sf.at(x, y).cp < 128 ? sf.at(x, y).cp : '?');
+      if (const size_t k = row.find("MarketReview  reviewer"); k != std::string::npos) at = Point{int(k), y};
+    }
+    check(at.x >= 0, "runs: the subagent's row under its call");
+    c.on_mouse(MouseEvent{MouseKind::Press, MouseButton::Left, at}, at);
+    c.on_mouse(MouseEvent{MouseKind::Release, MouseButton::Left, at}, at);
+    check_str(c.take_url(), "mico-chat:" + path.substr(0, path.size() - 6) + "/MarketReview.jsonl",
+              "runs: a click opens the subagent's chat");
+    std::remove(path.c_str());
   }
 
   // Clicking a link in a chat: the renderer stamps link ids on the cells it

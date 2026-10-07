@@ -972,6 +972,12 @@ function buildEvents(events, last) {
       }
       case "question": n = questionNode(ev); break;
       case "notice": case "task": n = notice(ev.text || "", ev.ok === false); break;
+      case "peer": {
+        n = el("div", "ev peer");
+        n.append(el("div", "from", (ev.name || "agent") + (ev.summary ? " \u2192 " + ev.summary : "")));
+        n.append(markdown(ev.text || ""));
+        break;
+      }
       case "chart": n = el("div", "ev assistant"); n.append(markdown(ev.text || "")); break;
       case "image": n = notice("image"); break;
       default: break;

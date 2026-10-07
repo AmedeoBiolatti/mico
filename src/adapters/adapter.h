@@ -52,6 +52,14 @@ struct MenuKeys {
   bool paced = false;
 };
 
+// A subagent a tool call started, and the transcript it writes.
+struct SubagentRun {
+  std::string id;    // as the agent's background list names it: omp's name, Claude's agentId
+  std::string name;  // what to call it: "MarketReview", "Survey the engine"
+  std::string kind;  // the agent it runs as: "reviewer", "Explore"; may be empty
+  std::string path;  // its transcript; it may not exist yet
+};
+
 // What is known when looking for a running session's transcript.
 struct TranscriptQuery {
   std::string session_id;  // known up front, or empty
@@ -129,6 +137,19 @@ class Adapter {
   // chip bar appear before the first turn, so model/effort can be set on a
   // fresh session the way omp's harness does it.
   virtual void seed_state(SessionState& st) const {}
+
+  // --- Subagents -----------------------------------------------------------
+
+  // The subagents the tool call `tool_id` started, in the session whose
+  // transcript is `path`; `line` is the transcript line holding the call.
+  // Nothing for a call that starts none. Read when the call is laid out, so
+  // it may be asked again while the call runs and its subagents appear.
+  virtual void call_subagents(const std::string& path, std::string_view line, uint64_t tool_id,
+                              std::vector<SubagentRun>& out) const {}
+  // True when a subagent's run can be resumed as a session of its own (omp,
+  // by its transcript). Otherwise its chat is read-only, a part of its
+  // session's.
+  virtual bool resumes_subagents() const { return false; }
 
   // --- Tool runs -----------------------------------------------------------
 

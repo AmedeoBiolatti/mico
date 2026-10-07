@@ -107,6 +107,13 @@ class ChatRenderer {
   // command there. Stored views retain every tool in the transcript.
   void set_activity_bar(bool on) { activity_bar_ = on; }
   bool in_flight_tool(std::string_view* name, std::string_view* summary, uint64_t* id = nullptr) const;
+  // The work the agent runs in the background: a subagent among it is drawn
+  // running under the call that started it. Stored views leave it empty.
+  void set_background(const std::vector<BackgroundTask>& tasks) {
+    running_agents_.clear();
+    for (const BackgroundTask& t : tasks)
+      if (t.kind == "agent") running_agents_.push_back(t.id);
+  }
   // The reply the agent is still writing, as markdown (screen_reply()). It is
   // drawn under the chat as it grows, until the transcript holds a message
   // that reads the same; empty clears it.
@@ -253,6 +260,7 @@ class ChatRenderer {
     bool code = false;   // a row of a fenced code block: on the code background
     uint8_t tint = 0;    // a diff's row: 1 added, 2 removed
     uint16_t node = 0;   // a JSON result's row that opens a container: its id + 1
+    uint16_t run = 0;    // a subagent's row under its call: its runs_ index + 1
   };
   static constexpr uint32_t kScratch = md::kScratchBit;
 
@@ -283,6 +291,17 @@ class ChatRenderer {
   const code::Lang* result_lang(size_t index) const;
   const code::Lang* output_lang_ = nullptr;  // the tool output being laid out, when it is a file
   void layout_image(const Event& e, int w);
+  // --- subagents ---------------------------------------------------------
+  // A call that starts subagents gets a row for each under it, opening its
+  // chat when clicked. Such a call stays out of a finished turn's fold.
+  bool spawns_agents(const Event& e) const;
+  void layout_runs(const Event& e);
+  std::vector<SubagentRun> runs_;  // by Row::run - 1; dropped with the rows
+  std::vector<std::string> running_agents_;
+  // Calls laid out before their subagents were known, looked at again now and
+  // then while they run.
+  std::vector<uint64_t> awaiting_runs_;
+  int64_t runs_checked_ms_ = 0;
   bool visible(size_t i, const Filters& f) const;
   // visible(), or the first of a folded turn's steps, which carries the fold.
   bool laid_out(size_t i, const Filters& f) const;
@@ -294,6 +313,8 @@ class ChatRenderer {
   // into one line above the answer, opened by a click.
   enum : uint8_t { kWork = 1, kAnswer = 2, kFolded = 4, kFoldHead = 8 };
   static constexpr uint64_t kFoldBit = 1ull << 63;
+  // An agent's message, named by where its line is in the file.
+  static constexpr uint64_t kPeerBit = 1ull << 62;
   FrontVec<uint8_t> roles_;     // per event of the window
   FrontVec<uint64_t> fold_of_;  // per event: the fold it is in, 0 for none
   size_t open_from_ = 0;        // where the last turn starts, still open to new events
