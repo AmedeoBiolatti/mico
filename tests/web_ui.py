@@ -392,6 +392,15 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
         check(page.eval("!document.querySelector('#events details.tools').open && getComputedStyle(document.querySelector('#events .ev.thinking')).display === 'none'"),
               'the minimal view folds the steps and hides the thinking')
         check(page.eval("document.querySelector('#views button[aria-pressed=true]').dataset.view") == 'minimal', 'the choice is marked')
+        check(page.eval("getComputedStyle(document.body).backgroundColor") in ('rgb(250, 249, 247)', 'rgb(20, 20, 22)'),
+              'a theme of the system\'s own to begin with')
+        page.eval("(() => { const s = document.getElementById('theme'); s.value = 'dracula'; s.dispatchEvent(new Event('change')); })()")
+        check(page.eval("getComputedStyle(document.body).backgroundColor") == 'rgb(40, 42, 54)', 'Dracula is chosen from the list')
+        check(page.eval("document.documentElement.dataset.theme") == 'dracula', 'and kept on the page')
+        page.eval("(() => { const s = document.getElementById('theme'); s.value = 'light'; s.dispatchEvent(new Event('change')); })()")
+        check(page.eval("getComputedStyle(document.body).backgroundColor") == 'rgb(250, 249, 247)', 'Light overrides a dark system')
+        page.eval("(() => { const s = document.getElementById('theme'); s.value = 'auto'; s.dispatchEvent(new Event('change')); })()")
+        check(page.eval("document.documentElement.dataset.theme") is None, 'Auto goes back to the system')
         page.call('Page.close')
 
         if not failures:
