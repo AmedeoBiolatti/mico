@@ -192,6 +192,7 @@ class LiveSession {
   void discover_transcript();
   void follow_turns();
   bool follow_background();
+  void go_on_in(const std::string& id);
   bool read_background_progress();
   std::string find_task_output(const std::string& id);
 
@@ -270,6 +271,8 @@ class LiveSession {
   std::string crumb_, crumb_id_;
   BackgroundTasks bg_;
   std::string bg_file_;   // the transcript being followed
+  std::string continued_to_;  // the chat its last record hands on to
+  bool continued_ = false;    // the file followed now is where the chat went on
   uint64_t bg_read_ = 0;  // how far
   std::string bg_line_;   // a line not yet ended
   bool bg_skip_ = false;  // the rest of a line too long to hold

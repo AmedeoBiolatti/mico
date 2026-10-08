@@ -414,6 +414,23 @@ void LiveSession::follow_turns() {
   close(fd);
 }
 
+// The chat went on in another file of its folder: followed there, if it is
+// there and no other session has it.
+void LiveSession::go_on_in(const std::string& id) {
+  const size_t slash = transcript_.rfind('/');
+  if (slash == std::string::npos) return;
+  const std::string next = transcript_.substr(0, slash + 1) + id + ".jsonl";
+  if (next == transcript_ || !fs::exists(next) || claimed_transcripts().count(next)) return;
+  if (auto it = claimed_transcripts().find(transcript_); it != claimed_transcripts().end() && it->second == this)
+    claimed_transcripts().erase(it);
+  transcript_ = next;
+  session_id_ = id;
+  continued_ = true;
+  claimed_transcripts()[transcript_] = this;
+  ++generation_;
+  MLOG("transcript continued: %s -> %s", agent_.c_str(), transcript_.c_str());
+}
+
 bool LiveSession::follow_background() {
   if (!adapter_ || transcript_.empty()) return false;
   const uint64_t before = bg_.version;
@@ -434,7 +451,9 @@ bool LiveSession::follow_background() {
     bg_.clear();
     bg_line_.clear();
     bg_skip_ = false;
-    bg_read_ = origin_.empty() ? 0 : size;
+    // Unless the chat went on in this file: its tasks are the same agent's.
+    bg_read_ = origin_.empty() || continued_ ? 0 : size;
+    continued_ = false;
   }
   if (size < bg_read_) bg_read_ = size;  // rewritten
   if (size > bg_read_) {
@@ -461,7 +480,10 @@ bool LiveSession::follow_background() {
           }
         }
         if (nl == std::string_view::npos) break;
-        if (!bg_skip_) adapter_->read_background(bg_line_, at + nl - bg_line_.size(), bg_);
+        if (!bg_skip_) {
+          adapter_->read_background(bg_line_, at + nl - bg_line_.size(), bg_);
+          if (std::string id = adapter_->continued_in(bg_line_); !id.empty()) continued_to_ = std::move(id);
+        }
         bg_line_.clear();
         bg_skip_ = false;
         chunk.remove_prefix(nl + 1);
@@ -471,6 +493,7 @@ bool LiveSession::follow_background() {
     close(fd);
   }
   bg_.expire(int64_t(time(nullptr)) * 1000);
+  if (!continued_to_.empty()) go_on_in(std::exchange(continued_to_, {}));
   return bg_.version != before;
 }
 
