@@ -25,6 +25,7 @@ namespace mico {
 int run_daemon();
 int run_client(bool allow_spawn);
 int kill_daemon();
+int reset_daemon();
 int run_mcp_server();
 int run_update(bool check_only);
 const char* version();
@@ -113,7 +114,7 @@ int main(int argc, char** argv) {
   const char* vt_file = nullptr;
   const char* spawn_cmd = nullptr;
   const char* spawn_agent = nullptr;
-  bool local = false, daemon = false, attach_only = false, kill = false, usage = false;
+  bool local = false, daemon = false, attach_only = false, kill = false, reset = false, usage = false;
   // Draws one equation to a PNG: how the renderer is looked at and tuned.
   //   mico --math 'TEX' out.png [--inline] [--cell W H]
   if (argc > 3 && !strcmp(argv[1], "--math")) {
@@ -205,6 +206,8 @@ int main(int argc, char** argv) {
       attach_only = true;
     } else if (!strcmp(argv[i], "kill") || !strcmp(argv[i], "--kill")) {
       kill = true;
+    } else if (!strcmp(argv[i], "reset")) {
+      reset = true;
     } else if (!strcmp(argv[i], "--spawn-agent") && i + 1 < argc) {
       spawn_agent = argv[++i];
     } else if (!strcmp(argv[i], "--keys")) {
@@ -249,6 +252,7 @@ int main(int argc, char** argv) {
           "  mico                 attach, starting a daemon if needed\n"
           "  mico --attach        attach only; fail if no daemon is running\n"
           "  mico kill            stop the daemon and its agents (the next daemon resumes them)\n"
+          "  mico reset           restart the daemon and reattach; its agents resume\n"
           "  mico --local         single process; agents stop when it exits\n"
           "  mico update          install the latest release (--check only looks)\n"
           "  mico --version       print the version\n"
@@ -294,6 +298,7 @@ int main(int argc, char** argv) {
   mico::logs::init(daemon ? "daemon" : local ? "local" : attach_only ? "attach" : "client");
   mico::logs::install_crash_handler();
   if (kill) return mico::kill_daemon();
+  if (reset) return mico::reset_daemon();
   if (daemon) return mico::run_daemon();
 
   // Attaching is the default: agents belong to the daemon, so closing this

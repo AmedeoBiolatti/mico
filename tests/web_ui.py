@@ -237,6 +237,42 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
     ]
     chat.write_text(''.join(json.dumps(r, separators=(',', ':')) + '\n' for r in records))
 
+    # A sub-project, and a chat in it with a picture, a chart, a picture file and an equation.
+    inner = project / 'inner'
+    inner.mkdir()
+    (root / 'mico/subprojects').write_text(f'sub\t{project}\tinner\t{inner}\n')
+    SESSION2 = '5e4d3c2b-0a9f-4e8d-9c7b-2b3c4d5e6f70'
+    import zlib
+
+    def png(w, h):
+        def chunk(t, d):
+            return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+        rows = b''.join(b'\x00' + bytes([200, 60, 60, 255]) * w for _ in range(h))
+        return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)) +
+                chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+    (inner / 'pic.png').write_bytes(png(8, 8))
+    shot = base64.b64encode(png(6, 6)).decode()
+    chart = json.dumps({'type': 'line', 'title': 'loss', 'x': [0, 1, 2], 'series': [{'name': 'a', 'y': [3, 2, 1]},
+                                                                                       {'name': 'b', 'y': [2, 2, 2]}]})
+    cwd2 = str(inner)
+    rec2 = lambda kind, content, **kw: {'type': kind, 'cwd': cwd2, 'sessionId': SESSION2, 'timestamp': ts,
+                                        'message': content, **kw}
+    chat2 = root / '.claude/projects/-project-inner' / f'{SESSION2}.jsonl'
+    chat2.parent.mkdir(parents=True)
+    pics = [
+        {'type': 'ai-title', 'aiTitle': 'Pictures fixture', 'sessionId': SESSION2},
+        rec2('user', {'role': 'user', 'content': 'show me'}),
+        rec2('assistant', {'role': 'assistant', 'content': [{'type': 'thinking', 'thinking': 'let me think'}]}),
+        rec2('assistant', {'role': 'assistant', 'content': [
+            {'type': 'tool_use', 'id': 'u1', 'name': 'Bash', 'input': {'command': 'ls'}}]}),
+        rec2('user', {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'u1', 'content': 'out'}]}),
+        rec2('user', {'role': 'user', 'content': [{'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png',
+                                                                                'data': shot}}]}),
+        rec2('assistant', {'role': 'assistant', 'content': [{'type': 'text', 'text':
+            f'A file:\n\n![the file]({inner}/pic.png)\n\nA chart:\n\n```chart\n{chart}\n```\n\n$$x^2 + y^2$$\n\nDone.'}]}),
+    ]
+    chat2.write_text(''.join(json.dumps(r, separators=(',', ':')) + '\n' for r in pics))
+
     env = dict(os.environ, HOME=directory, XDG_CONFIG_HOME=directory, XDG_STATE_HOME=directory,
                XDG_RUNTIME_DIR=directory)
     env.pop('DISPLAY', None)
@@ -323,6 +359,9 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
               'a question is a card with its options')
         check(len(find(tree, 'div', 'folder')) == 1 and any('current' in r.classes() for r in find(tree, 'button', 'row')),
               'the folder lists its chat, this one marked')
+        subs = find(tree, 'div', 'subfolder')
+        check(len(subs) == 1 and 'inner' in subs[0].all_text() and 'Pictures fixture' in subs[0].all_text(),
+              'a sub-project is listed under its folder, with its chat')
         check(find(tree, 'div', 'app') == [] and any(n.attrs.get('id') == 'app' for n in tree.walk()),
               'the page is its app')
 
@@ -332,8 +371,28 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
         check(app.attrs.get('data-screen') == 'chat', 'a phone opened on a chat shows the chat')
         phone = parse(dom_of(base, 390, 800, True))
         app = next(n for n in phone.walk() if n.attrs.get('id') == 'app')
-        check(app.attrs.get('data-screen') == 'list' and len(find(phone, 'button', 'row')) == 1,
+        check(app.attrs.get('data-screen') == 'list' and len(find(phone, 'button', 'row')) == 2,
               'a phone opened on nothing shows the list')
+
+        # Pictures, a chart, an equation, and how much of the work shows.
+        page = Page(debug_port, '')
+        page.open(f'{base}&chat={chat2}', 1200, 900, False)
+        check(page.wait("document.querySelectorAll('#events figure.pic img').length >= 2"),
+              'a transcript image and a picture file are drawn as images')
+        check(page.eval("[...document.querySelectorAll('#events img')].every(i => i.src.startsWith('data:image/png;base64,') && i.naturalWidth > 0)"),
+              'and they decode')
+        check(page.eval("document.querySelectorAll('#events svg.chart-svg polyline').length") == 2, 'a chart is drawn, a line per series')
+        check(page.eval("!!document.querySelector('#events .chart-legend')"), 'with its legend')
+        check(page.eval("document.querySelector('#events .math')?.textContent") == 'x^2 + y^2', 'an equation keeps its LaTeX')
+        check(page.eval("document.querySelector('#events details.thinking')?.open") is False, 'normal view: thinking is folded')
+        page.eval("document.querySelector('#views button[data-view=full]').click()")
+        check(page.eval("document.querySelector('#events details.thinking').open && document.querySelector('#events details.tool').open"),
+              'the full view opens thinking and every step')
+        page.eval("document.querySelector('#views button[data-view=minimal]').click()")
+        check(page.eval("!document.querySelector('#events details.tools').open && getComputedStyle(document.querySelector('#events .ev.thinking')).display === 'none'"),
+              'the minimal view folds the steps and hides the thinking')
+        check(page.eval("document.querySelector('#views button[aria-pressed=true]').dataset.view") == 'minimal', 'the choice is marked')
+        page.call('Page.close')
 
         if not failures:
             print('web ui: markdown, tool groups, questions, phone screens and inert transcripts passed')
