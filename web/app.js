@@ -53,6 +53,8 @@ const st = {
   atBottom: true,
   unread: 0,
   loadingOlder: false,
+  view: store.get("view", "normal"),  // minimal | normal | full
+  pics: new Map(),      // what an image asked for waits on, until it arrives
 };
 
 const STATUS = { working: "working", waiting: "needs you", idle: "ready", exited: "stopped" };
@@ -123,6 +125,7 @@ function receive(m) {
       else if (then) then(m);
       break;
     }
+    case "image": case "file_image": gotPicture(m); break;
     case "error": toast(m.message, true); break;
   }
 }
@@ -267,6 +270,23 @@ function isCurrent(path, key) {
   return (key && st.chat.key === key) || (path && st.chat.path === path);
 }
 
+// The "start an agent" row of a folder or sub-project.
+function newRow(path, name) {
+  const row = el("div", "newrow");
+  for (const a of st.adapters) {
+    const b = el("button", "", a.name || a.id);
+    b.type = "button";
+    b.onclick = () => command({ type: "start", agent: a.id, cwd: path }, (r) => {
+      toast(`Started ${a.id} in ${name}`);
+      st.newFor = null;
+      st.openKey = r.key;  // opened once the agents list names it
+      agentsChanged();
+    });
+    row.append(b);
+  }
+  return row;
+}
+
 function renderFolders() {
   const box = $("folders");
   box.replaceChildren();
@@ -298,31 +318,60 @@ function renderFolders() {
     head.append(plus);
     div.append(head);
 
-    if (st.newFor === f.path) {
-      const row = el("div", "newrow");
-      for (const a of st.adapters) {
-        const b = el("button", "", a.name || a.id);
-        b.type = "button";
-        b.onclick = () => command({ type: "start", agent: a.id, cwd: f.path }, (r) => {
-          toast(`Started ${a.id} in ${f.name}`);
-          st.newFor = null;
-          st.openKey = r.key;  // opened once the agents list names it
-          agentsChanged();
-        });
-        row.append(b);
-      }
-      div.append(row);
-    }
+    if (st.newFor === f.path) div.append(newRow(f.path, f.name));
     if (open) {
+      const subs = (f.subs || []).filter((sp) => sp.path !== f.path);
+      const known = new Set(subs.map((sp) => sp.name));
       const limit = st.showAll.has(f.path) || st.filter ? Infinity : 8;
-      for (const c of hits.slice(0, limit)) div.append(chatRow(c));
-      if (hits.length > limit) {
-        const more = el("button", "more", `Show ${hits.length - limit} more`);
+      // Chats of the folder itself, then each sub-project with its own.
+      const own = hits.filter((c) => !c.sub || !known.has(c.sub));
+      for (const c of own.slice(0, limit)) div.append(chatRow(c));
+      if (own.length > limit) {
+        const more = el("button", "more", `Show ${own.length - limit} more`);
         more.type = "button";
         more.onclick = () => { st.showAll.add(f.path); renderFolders(); };
         div.append(more);
       }
-      if (!hits.length && !st.filter) div.append(el("div", "dim-note", "No chats yet."));
+      for (const sp of subs) {
+        const mine = chats.filter((c) => c.sub === sp.name);
+        const shownHere = hits.filter((c) => c.sub === sp.name);
+        if (st.filter && !shownHere.length && !matches(sp.name)) continue;
+        const sk = `${f.path}\u0000${sp.name}`;
+        const sopen = st.filter ? true : !st.collapsed.has(sk);
+        const sdiv = el("div", "subfolder" + (sopen ? " open" : ""));
+        const shead = el("div", "folder-head sub-head");
+        const stoggle = el("button", "folder-toggle");
+        stoggle.type = "button";
+        stoggle.append(el("span", "chev", "▶"), el("span", "name", sp.name), el("span", "n", String(mine.length)));
+        stoggle.title = sp.path;
+        stoggle.setAttribute("aria-expanded", String(sopen));
+        stoggle.onclick = () => {
+          if (st.collapsed.has(sk)) st.collapsed.delete(sk); else st.collapsed.add(sk);
+          store.set("collapsed", [...st.collapsed]);
+          renderFolders();
+        };
+        const splus = el("button", "icon-btn", "+");
+        splus.type = "button";
+        splus.title = `Start an agent in ${sp.name}`;
+        splus.setAttribute("aria-label", splus.title);
+        splus.onclick = () => { st.newFor = st.newFor === sp.path ? null : sp.path; renderFolders(); };
+        shead.append(stoggle, splus);
+        sdiv.append(shead);
+        if (st.newFor === sp.path) sdiv.append(newRow(sp.path, sp.name));
+        if (sopen) {
+          const slimit = st.showAll.has(sk) || st.filter ? Infinity : 8;
+          for (const c of shownHere.slice(0, slimit)) sdiv.append(chatRow(c));
+          if (shownHere.length > slimit) {
+            const more = el("button", "more", `Show ${shownHere.length - slimit} more`);
+            more.type = "button";
+            more.onclick = () => { st.showAll.add(sk); renderFolders(); };
+            sdiv.append(more);
+          }
+          if (!shownHere.length && !st.filter) sdiv.append(el("div", "dim-note", "No chats yet."));
+        }
+        div.append(sdiv);
+      }
+      if (!hits.length && !subs.length && !st.filter) div.append(el("div", "dim-note", "No chats yet."));
     }
     box.append(div);
   }
@@ -342,6 +391,9 @@ function chatRow(c) {
   b.onclick = () => openChat(c.path, c.title);
   return b;
 }
+
+for (const b of document.querySelectorAll("#views button")) b.onclick = () => setView(b.dataset.view);
+setView(["minimal", "normal", "full"].includes(st.view) ? st.view : "normal");
 
 $("filter").addEventListener("input", (e) => { st.filter = e.target.value.trim().toLowerCase(); renderSide(); });
 $("filter").addEventListener("keydown", (e) => {
@@ -379,6 +431,7 @@ function openChat(path, title, key) {
   st.atBottom = true;
   st.loadingOlder = false;
   st.calls.clear();
+  st.pics.clear();
   $("events").replaceChildren();
   $("older").hidden = true;
   $("latest").hidden = true;
@@ -634,6 +687,10 @@ async function copyText(text) {
 }
 
 function codeBlock(lang, code) {
+  if (lang === "chart") {
+    const c = chartNode(code);
+    if (c) return c;
+  }
   const box = el("div", "code");
   const bar = el("div", "code-bar");
   const btn = el("button", "", "Copy");
@@ -741,6 +798,20 @@ function markdown(text) {
         i++;
       }
       root.append(codeBlock(m[2], body.join("\n")));
+    } else if ((m = /^\s*!\[([^\]]*)\]\(\s*([^)\s]+)[^)]*\)\s*$/.exec(line))) {
+      root.append(markdownImage(m[1], m[2]));
+      i++;
+    } else if ((m = /^\s*\$\$(.*)$/.exec(line))) {
+      // A display equation: its LaTeX, set apart; there is no typesetter here.
+      let tex = m[1];
+      i++;
+      if (!/\$\$\s*$/.test(tex)) {
+        const body = [tex];
+        while (i < lines.length && !/\$\$\s*$/.test(lines[i])) { body.push(lines[i]); i++; }
+        if (i < lines.length) body.push(lines[i++]);
+        tex = body.join("\n");
+      }
+      root.append(el("div", "math", tex.replace(/\$\$\s*$/, "").trim()));
     } else if ((m = HEAD.exec(line))) {
       const h = el("h" + m[1].length);
       inline(h, m[2]);
@@ -774,7 +845,218 @@ function markdown(text) {
   return root;
 }
 
+// ------------------------------------------------------------------ pictures
+
+const MEDIA = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function picture(alt) {
+  const fig = el("figure", "pic loading");
+  fig.append(el("span", "cap", alt ? `${alt} …` : "Loading image…"));
+  return fig;
+}
+
+function showPicture(fig, alt, media, data) {
+  fig.classList.remove("loading");
+  fig.replaceChildren();
+  if (!MEDIA.has(media)) { fig.append(el("span", "cap", alt || "image")); return; }
+  const img = el("img");
+  img.alt = alt || "image";
+  img.src = `data:${media};base64,${data}`;
+  img.onclick = () => fig.classList.toggle("zoom");
+  img.title = "Click to enlarge";
+  fig.append(img);
+  if (alt) fig.append(el("figcaption", "", alt));
+}
+
+function ask(key, fig, alt, msg) {
+  if (!st.chat || !st.chat.path) { fig.firstChild.textContent = alt || "image"; return; }
+  const list = st.pics.get(key) || [];
+  list.push({ fig, alt });
+  st.pics.set(key, list);
+  if (list.length === 1) send({ ...msg, path: st.chat.path });
+}
+
+// An image the transcript holds: asked for when it is drawn, kept off the
+// wire until then.
+function pictureNode(ev) {
+  const n = el("div", "ev assistant");
+  const [, off, len] = (ev.summary || "").split(" ");
+  const fig = picture("");
+  n.append(fig);
+  if (off === undefined || len === undefined) { fig.firstChild.textContent = "image"; return n; }
+  ask(`t:${ev.at}:${off}`, fig, "", { type: "image", at: ev.at, off: Number(off), len: Number(len) });
+  return n;
+}
+
+// ![alt](file) in a message: a file on the machine, or only its link.
+function markdownImage(alt, target) {
+  let file = null;
+  if (target.startsWith("file://")) { try { file = decodeURIComponent(new URL(target).pathname); } catch (_) { /* odd */ } }
+  else if (target.startsWith("/")) file = target;
+  if (!file) {
+    const p = el("p");
+    p.append(link(alt || target, target));
+    return p;
+  }
+  const fig = picture(alt);
+  ask(`f:${file}`, fig, alt, { type: "file_image", file });
+  return fig;
+}
+
+function gotPicture(m) {
+  if (!st.chat || m.path !== st.chat.path) return;
+  const key = m.type === "image" ? `t:${m.at}:${m.off}` : `f:${m.file}`;
+  const list = st.pics.get(key) || [];
+  st.pics.delete(key);
+  for (const { fig, alt } of list) {
+    if (m.error) { fig.classList.remove("loading"); fig.replaceChildren(el("span", "cap", `${alt || "image"} (${m.error})`)); }
+    else showPicture(fig, alt, m.media, m.data);
+  }
+  if (st.atBottom) scrollToBottom();
+}
+
+// ------------------------------------------------------------------- charts
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const svg = (tag, attrs, text) => {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  return e;
+};
+const PALETTE = ["#2d6cb5", "#d9822b", "#3d8b4f", "#b23b3b", "#7b5ea7", "#2a9d9d", "#a67c00", "#d6578c"];
+
+function niceTicks(lo, hi, n) {
+  if (!(hi > lo)) { hi = lo + 1; }
+  const step0 = (hi - lo) / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 5, 10].map((k) => k * mag).find((v) => v >= step0) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) out.push(+v.toPrecision(12));
+  return out;
+}
+const fmt = (v) => (Math.abs(v) >= 1e5 || (v !== 0 && Math.abs(v) < 1e-3) ? v.toExponential(1) : String(+v.toPrecision(4)));
+
+function chartNode(code) {
+  let spec;
+  try { spec = JSON.parse(code); } catch (_) { return null; }
+  if (!spec || typeof spec !== "object") return null;
+  const box = el("div", "chart");
+  if (Array.isArray(spec.subplots)) {
+    const cols = Math.max(1, Math.min(4, spec.columns | 0 || 1));
+    box.style.display = "grid";
+    box.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+    for (const sp of spec.subplots) box.append(chartOne(sp));
+  } else box.append(chartOne(spec));
+  return box;
+}
+
+function chartOne(spec) {
+  const wrap = el("div", "chart-one");
+  if (spec.title) wrap.append(el("div", "chart-title", String(spec.title)));
+  if (spec.file) { wrap.append(el("div", "dim-note", `Chart of ${spec.file}: drawn from a file in the terminal view.`)); return wrap; }
+  const W = 560, H = Math.max(120, Math.min(480, (spec.height | 0 || 12) * 20)), L = 48, R = 12, T = 8, B = 30;
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart-svg", role: "img", "aria-label": spec.title || "chart" });
+  const type = spec.type || "line";
+  const num = (a) => (Array.isArray(a) ? a.map(Number).filter(Number.isFinite) : []);
+  const frame = (xlo, xhi, ylo, yhi, xl, yl) => {
+    const X = (v) => L + ((v - xlo) / (xhi - xlo || 1)) * (W - L - R);
+    const logy = spec.log_y && ylo > 0;
+    const Y = (v) => T + (1 - ((logy ? Math.log10(v) : v) - (logy ? Math.log10(ylo) : ylo)) / ((logy ? Math.log10(yhi) - Math.log10(ylo) : yhi - ylo) || 1)) * (H - T - B);
+    for (const t of niceTicks(ylo, yhi, 4)) {
+      if (t < ylo || t > yhi) continue;
+      root.append(svg("line", { x1: L, x2: W - R, y1: Y(t), y2: Y(t), stroke: "currentColor", "stroke-opacity": ".12" }));
+      root.append(svg("text", { x: L - 6, y: Y(t) + 4, "text-anchor": "end", "font-size": 11, fill: "currentColor", "fill-opacity": ".7" }, fmt(t)));
+    }
+    if (xl !== null) for (const t of niceTicks(xlo, xhi, 5)) {
+      if (t < xlo || t > xhi) continue;
+      root.append(svg("text", { x: X(t), y: H - B + 15, "text-anchor": "middle", "font-size": 11, fill: "currentColor", "fill-opacity": ".7" }, fmt(t)));
+    }
+    root.append(svg("line", { x1: L, x2: L, y1: T, y2: H - B, stroke: "currentColor", "stroke-opacity": ".4" }));
+    root.append(svg("line", { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: "currentColor", "stroke-opacity": ".4" }));
+    if (spec.xlabel) root.append(svg("text", { x: (L + W - R) / 2, y: H - 3, "text-anchor": "middle", "font-size": 11, fill: "currentColor" }, String(spec.xlabel)));
+    if (spec.ylabel) root.append(svg("text", { x: 4, y: T + 8, "font-size": 11, fill: "currentColor" }, String(spec.ylabel)));
+    return { X, Y };
+  };
+  const series = (Array.isArray(spec.series) ? spec.series : []).map((s) => ({ name: s.name || "", y: num(s.y), x: s.x ? num(s.x) : null }));
+  let legend = series.length > 1;
+  if (type === "heatmap" && Array.isArray(spec.z)) {
+    const z = spec.z.map(num), rows = z.length, cols = Math.max(1, ...z.map((r) => r.length));
+    const flat = z.flat(), lo = Math.min(...flat), hi = Math.max(...flat);
+    const cw = (W - L - R) / cols, ch = (H - T - B) / rows;
+    z.forEach((r, i) => r.forEach((v, j) => {
+      const t = (v - lo) / (hi - lo || 1);
+      root.append(svg("rect", { x: L + j * cw, y: T + i * ch, width: cw + .5, height: ch + .5, fill: `hsl(${220 - 200 * t} 70% ${35 + 25 * t}%)` }));
+    }));
+    root.append(svg("rect", { x: L, y: T, width: W - L - R, height: H - T - B, fill: "none", stroke: "currentColor", "stroke-opacity": ".4" }));
+    legend = false;
+  } else if (type === "bar") {
+    const labels = (spec.labels || []).map(String), all = series.flatMap((s) => s.y);
+    const hi = Math.max(0, ...all), lo = Math.min(0, ...all), n = Math.max(labels.length, ...series.map((s) => s.y.length), 1);
+    const { X, Y } = frame(0, n, lo, hi === lo ? lo + 1 : hi, null);
+    const slot = (W - L - R) / n, bw = slot * 0.8 / Math.max(1, series.length);
+    series.forEach((s, k) => s.y.forEach((v, i) => {
+      root.append(svg("rect", { x: L + i * slot + slot * 0.1 + k * bw, y: Math.min(Y(v), Y(0)), width: bw, height: Math.abs(Y(v) - Y(0)), fill: PALETTE[k % PALETTE.length] }));
+    }));
+    labels.slice(0, n).forEach((t, i) => root.append(svg("text", { x: L + (i + .5) * slot, y: H - B + 15, "text-anchor": "middle", "font-size": 11, fill: "currentColor", "fill-opacity": ".7" }, t.length > 12 ? t.slice(0, 11) + "…" : t)));
+  } else if (type === "hist") {
+    const v = num(spec.values);
+    if (!v.length) return wrap;
+    const lo = Math.min(...v), hi = Math.max(...v), bins = Math.max(5, Math.min(40, Math.ceil(Math.sqrt(v.length) * 1.5)));
+    const counts = new Array(bins).fill(0);
+    for (const x of v) counts[Math.min(bins - 1, Math.floor(((x - lo) / (hi - lo || 1)) * bins))]++;
+    const { X, Y } = frame(lo, hi === lo ? lo + 1 : hi, 0, Math.max(...counts), 1);
+    counts.forEach((c, i) => root.append(svg("rect", { x: X(lo + (i / bins) * (hi - lo)), y: Y(c), width: (W - L - R) / bins - 1, height: H - B - Y(c), fill: PALETTE[0] })));
+  } else {
+    // line, scatter, spark: the series against x, or their index.
+    const pts = series.map((s) => s.y.map((y, i) => [s.x && s.x.length > i ? s.x[i] : (spec.x && num(spec.x).length > i ? num(spec.x)[i] : i), y]));
+    const xs = pts.flat().map((p) => p[0]), ys = pts.flat().map((p) => p[1]).filter((y) => !spec.log_y || y > 0);
+    if (!xs.length || !ys.length) return wrap;
+    const ylo = Math.min(...ys), yhi = Math.max(...ys);
+    const { X, Y } = frame(Math.min(...xs), Math.max(...xs), ylo, yhi === ylo ? ylo + 1 : yhi, 1);
+    pts.forEach((p, k) => {
+      const color = PALETTE[k % PALETTE.length];
+      const ok = p.filter((q) => !spec.log_y || q[1] > 0);
+      if (type === "scatter") for (const q of ok) root.append(svg("circle", { cx: X(q[0]), cy: Y(q[1]), r: 2.6, fill: color }));
+      else root.append(svg("polyline", { points: ok.map((q) => `${X(q[0])},${Y(q[1])}`).join(" "), fill: "none", stroke: color, "stroke-width": 1.8, "stroke-linejoin": "round" }));
+    });
+  }
+  wrap.append(root);
+  if (legend) {
+    const lg = el("div", "chart-legend");
+    series.forEach((s, k) => {
+      const item = el("span", "key", s.name || `series ${k + 1}`);
+      item.style.setProperty("--c", PALETTE[k % PALETTE.length]);
+      lg.append(item);
+    });
+    wrap.append(lg);
+  }
+  return wrap;
+}
+
 // ------------------------------------------------------------------- events
+
+// Minimal, normal or full: how much of the work shows. Minimal keeps the
+// conversation and folds every run of steps to its line; normal opens short
+// runs; full opens everything, thinking and tool output too.
+function applyView(root) {
+  const view = st.view;
+  const scope = root || $("events");
+  for (const g of scope.querySelectorAll("details.tools")) {
+    const calls = g.querySelectorAll("details.tool").length;
+    g.open = view === "full" || (view === "normal" && (calls <= 4 || !!g.querySelector(".running")));
+    if (g.querySelector(".running") && view !== "minimal") g.open = true;
+  }
+  for (const d of scope.querySelectorAll("details.tool")) if (view === "full") d.open = true; else if (!d.classList.contains("failed")) d.open = false;
+  for (const d of scope.querySelectorAll("details.thinking")) d.open = view === "full";
+  $("events").dataset.view = view;
+}
+
+function setView(v) {
+  st.view = v;
+  store.set("view", v);
+  for (const b of document.querySelectorAll("#views button")) b.setAttribute("aria-pressed", String(b.dataset.view === v));
+  applyView();
+}
 
 const TOOL_ICON = {
   Bash: "$", Read: "≡", Write: "✎", Edit: "✎", MultiEdit: "✎", NotebookEdit: "✎", Grep: "⌕", Glob: "⌕",
@@ -979,7 +1261,7 @@ function buildEvents(events, last) {
         break;
       }
       case "chart": n = el("div", "ev assistant"); n.append(markdown(ev.text || "")); break;
-      case "image": n = notice("image"); break;
+      case "image": n = pictureNode(ev); break;
       default: break;
     }
     if (n) { frag.append(n); visible++; }
@@ -1008,6 +1290,7 @@ function addEvents(m) {
     }
     // Keep what is on screen where it is as history goes in above it.
     const before = chat.scrollHeight;
+    applyView(frag);
     list.prepend(frag);
     chat.scrollTop += chat.scrollHeight - before;
     st.loadingOlder = false;
@@ -1018,6 +1301,7 @@ function addEvents(m) {
         if (g.querySelectorAll("details.tool").length > 4 && !g.querySelector(".running")) g.open = false;
       }
     }
+    applyView(frag);
     list.append(frag);
     if (m.where === "tail" || wasBottom) { scrollToBottom(); st.atBottom = true; }
     else if (visible) { st.unread += visible; showLatest(); }

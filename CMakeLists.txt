@@ -270,6 +270,8 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_answers.py $<TARGET_FILE:mico>)
   add_test(NAME web-ui
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_ui.py $<TARGET_FILE:mico>)
+  add_test(NAME daemon-reset
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_reset.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-restore
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_restore.py $<TARGET_FILE:mico>)
   add_test(NAME claude-background

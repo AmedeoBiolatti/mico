@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -208,26 +209,45 @@ int run_client(bool allow_spawn) {
   return 0;
 }
 
-// Asks a running daemon to exit. Agents it owns go with it, so this is the
-// deliberate teardown, not something a detaching client ever does.
-int kill_daemon() {
-  const std::string path = proto::socket_path();
-  int fd = dial(path);
-  if (fd < 0) {
-    fprintf(stderr, "mico: no daemon running\n");
-    return 1;
-  }
+// Asks a running daemon to exit, and waits until it has. False if none ran.
+bool stop_daemon() {
+  int fd = dial(proto::socket_path());
+  if (fd < 0) return false;
   signal(SIGPIPE, SIG_IGN);
   std::string out;
   proto::encode(proto::Type::Kill, {}, out);
   tty::write_all(fd, out);
   // Wait for the far end to close, so the caller knows it is actually gone
-  // rather than racing a still-shutting-down daemon.
+  // rather than racing a still-shutting-down daemon. The socket is
+  // non-blocking, so a bare read would return at once.
   char buf[64];
-  while (read(fd, buf, sizeof buf) > 0) {}
+  for (;;) {
+    pollfd p{fd, POLLIN, 0};
+    if (::poll(&p, 1, 15000) <= 0) break;
+    const ssize_t n = read(fd, buf, sizeof buf);
+    if (n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN)) break;
+  }
   close(fd);
+  return true;
+}
+
+// The deliberate teardown: the agents it owns go with it, which is why a
+// detaching client never does this.
+int kill_daemon() {
+  if (!stop_daemon()) {
+    fprintf(stderr, "mico: no daemon running\n");
+    return 1;
+  }
   printf("mico: daemon stopped\n");
   return 0;
+}
+
+// `mico kill` and then `mico` in one step: the next daemon resumes the agents
+// the last one was running, and this terminal attaches to it. With no daemon
+// running it is just `mico`.
+int reset_daemon() {
+  stop_daemon();
+  return run_client(true);
 }
 
 }  // namespace mico

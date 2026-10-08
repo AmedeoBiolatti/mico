@@ -92,6 +92,7 @@ close the terminal to detach: your agents keep running.
 | `mico` | attach, starting a daemon if needed |
 | `mico --attach` | attach only; fail if no daemon is running |
 | `mico kill` | stop the daemon and its agents (the next daemon resumes them) |
+| `mico reset` | restart the daemon and reattach; its agents resume |
 | `mico --local` | single process; agents stop when it exits |
 
 ## Keys

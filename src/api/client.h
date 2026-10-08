@@ -31,6 +31,8 @@
 //               optional: [id], running: [id], held: [text]}
 //   result     {rid, ok, error?, key?}                         answers a command
 //   error      {message}
+//   image      {path, at, off, media, data}                   answers `image`
+//   file_image {path, file, media, data | error}              answers `file_image`
 //   event: {k, at, text?, name?, summary?, detail?, tool?, ok?}
 //     k: "user" | "assistant" | "thinking" | "tool_call" | "tool_result" |
 //        "task" | "question" | "turn_end" | "notice" | "queue_add" |
@@ -44,6 +46,13 @@
 //                                      what is appended as it grows
 //   older  {path}                      the next slab of history before the window
 //   close  {path}                      stop following it
+//   image  {path, at, off, len}        the picture of an "image" event, named by
+//                                      its summary "media off len" and its `at`:
+//                                      answered by image {path, at, off, media, data}
+//                                      (data is base64)
+//   file_image {path, file}            a picture file the chat's text points
+//                                      at: file_image {path, file, media, data}
+//                                      or {path, file, error}
 //   start  {rid, agent, cwd}           an agent mico has an adapter for, in a
 //                                      tracked folder
 //   resume {rid, agent, id, fork}      a stored chat
@@ -83,6 +92,8 @@ class Client {
 
   void open_chat(const std::string& path);
   void older(const std::string& path);
+  void image(const std::string& path, uint64_t at, uint64_t off, uint64_t len);
+  void file_image(const std::string& path, const std::string& file);
   void start(std::string_view rid, const std::string& agent, const std::string& cwd);
   void resume(std::string_view rid, const std::string& agent, const std::string& id, bool fork);
   void stop(std::string_view rid, uint64_t key);

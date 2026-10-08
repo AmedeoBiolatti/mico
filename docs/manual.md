@@ -39,6 +39,7 @@ cmake -S . -B build -G Ninja && cmake --build build
 | `mico update` | install the latest release over this binary, after checking its SHA-256 (`--check` only looks); then `mico kill` to run it |
 | `mico --version` | print the version |
 | `mico kill` | stop the daemon **and every agent it owns** (the next daemon resumes them) |
+| `mico reset` | `mico kill` and then `mico` in one step: restart the daemon, resume its agents, reattach (just `mico` if no daemon runs) |
 | `mico --local` | single process; agents die with it |
 
 Detaching is just closing the client, or pressing `q`. Agents keep running.
@@ -243,6 +244,18 @@ confirms, through the same code (`src/core/answers.cpp`) — and only a question
 that is waiting, read from the agent's own transcript, never as a client says it
 was.
 
+- **Sub-projects** are listed under their folder, each with its own chats and a
+  **+** to start an agent in it.
+- **Minimal, Normal, Full** (beside the chat's title): minimal keeps the
+  conversation and folds every run of steps to its line, normal opens short
+  runs, full opens every step with its output and the thinking. The choice is
+  remembered in the browser.
+- **Pictures** a chat holds (screenshots, an image the agent read) and local
+  files a message shows with `![alt](/path/to/file.png)` are drawn as images,
+  fetched when they scroll into the chat; a click enlarges one. **Charts**
+  (```` ```chart ````) are drawn as SVG: line, scatter, bar, hist, heatmap and
+  several side by side. A chart read from a data file, a Mermaid diagram and
+  typeset equations are terminal-only for now; an equation shows its LaTeX.
 - **A phone gets one screen at a time**, the list and then the chat, with a ‹ that
   is the browser's own back (so the phone's back gesture works), tap targets
   that fit a thumb, and a message box that sits above the keyboard. On a touch

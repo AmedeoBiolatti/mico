@@ -7,6 +7,8 @@
 #include "base/json.h"
 #include "base/json_write.h"
 #include "core/answers.h"
+#include "core/images.h"
+#include "math/picture.h"
 
 namespace mico::api {
 namespace {
@@ -62,7 +64,8 @@ void Client::receive(std::string_view message) {
   std::string type, path, rid, agent, cwd, id, text;
   uint64_t key = 0;
   int index = -1;
-  std::string tool, note;
+  std::string tool, note, file;
+  uint64_t at = 0, off = 0, len = 0;
   std::string_view chosen;
   bool fork = false;
   bool object = false;
@@ -78,6 +81,9 @@ void Client::receive(std::string_view message) {
     else if (k == "key") key = std::strtoull(std::string(v.is_string() ? v.body() : v.raw).c_str(), nullptr, 10);
     else if (k == "fork") fork = v.is_true();
     else if (k == "index" && v.type == js::Type::Number) index = std::atoi(std::string(v.raw).c_str());
+    else if (k == "file") file = text_of(v);
+    else if (k == "at" || k == "off" || k == "len")
+      (k == "at" ? at : k == "off" ? off : len) = std::strtoull(std::string(v.raw).c_str(), nullptr, 10);
     else if (k == "note") note = text_of(v);
     else if (k == "tool") tool = text_of(v);
     else if (k == "chosen" && v.is_array()) chosen = v.raw;
@@ -90,6 +96,8 @@ void Client::receive(std::string_view message) {
     chats_.erase(path);
     return;
   }
+  if (type == "image") return image(path, at, off, len);
+  if (type == "file_image") return file_image(path, file);
   if (type == "start") return start(rid, agent, cwd);
   if (type == "resume") return resume(rid, agent, id, fork);
   if (type == "stop") return stop(rid, key);
@@ -158,6 +166,60 @@ void Client::open_chat(const std::string& path) {
   conv.replay_facts();
   send_events(path, chat, 0, conv.events().size(), "tail", queued_);
   send_facts(path, chat, queued_);
+}
+
+// A picture a chat holds, sent when the page asks: found in the line at byte
+// `at`, as the images of that line list it, never by a client's own offsets.
+void Client::image(const std::string& path, uint64_t at, uint64_t off, uint64_t len) {
+  auto it = chats_.find(path);
+  if (it == chats_.end()) return error("not open: " + path);
+  const Conversation& conv = *it->second.conv;
+  const size_t n = conv.file().line_count();
+  size_t i = n ? conv.file().line_at_byte(size_t(at)) : 0;
+  if (i < n && conv.file().line_offset(i) != at && i > 0 && conv.file().line_offset(i - 1) == at) i--;
+  if (i >= n || conv.file().line_offset(i) != at) return;
+  const std::string_view line = conv.file().line(i);
+  for (const LineImage& im : line_images(line)) {
+    if (im.at != off || im.len != len || im.at + im.len > line.size()) continue;
+    std::string m;
+    jw::Writer w(m);
+    w.begin_object().field("type", "image").field("path", path).field("at", at).field("off", off);
+    w.field("media", im.media).field("data", line.substr(im.at, im.len)).end_object();
+    queued_.push_back(std::move(m));
+    return;
+  }
+}
+
+// A picture file an assistant's markdown points at: only a real image of a
+// sensible size, by its bytes and not its name.
+void Client::file_image(const std::string& path, const std::string& file) {
+  std::string m;
+  jw::Writer w(m);
+  w.begin_object().field("type", "file_image").field("path", path).field("file", file);
+  const auto fail = [&](const char* why) {
+    w.field("error", why).end_object();
+    queued_.push_back(std::move(m));
+  };
+  if (!chats_.count(path)) return error("not open: " + path);
+  if (file.empty() || file[0] != '/' || file.find("/../") != std::string::npos || file.ends_with("/..")) return fail("not a path");
+  constexpr size_t kMax = 12u << 20;
+  FILE* f = fopen(file.c_str(), "rb");
+  if (!f) return fail("cannot read it");
+  std::string bytes;
+  char buf[65536];
+  size_t got;
+  while ((got = fread(buf, 1, sizeof buf, f)) > 0 && bytes.size() <= kMax) bytes.append(buf, got);
+  fclose(f);
+  if (bytes.size() > kMax) return fail("too large");
+  const std::string_view b = bytes;
+  const char* media = b.starts_with("\x89PNG") ? "image/png" : b.starts_with("\xFF\xD8\xFF") ? "image/jpeg"
+                      : b.starts_with("GIF8") ? "image/gif"
+                      : b.size() > 12 && b.substr(0, 4) == "RIFF" && b.substr(8, 4) == "WEBP" ? "image/webp" : nullptr;
+  if (!media) return fail("not an image");
+  std::string data;
+  math::base64_encode(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), data);
+  w.field("media", media).field("data", data).end_object();
+  queued_.push_back(std::move(m));
 }
 
 void Client::older(const std::string& path) {
@@ -320,6 +382,9 @@ LiveSession* Client::session(uint64_t key) const {
 bool Client::tracked_dir(const std::string& dir) const {
   for (const auto& f : ws_.store().folders())
     if (dir == f || dir.starts_with(f + "/")) return true;
+  for (const Project& p : ws_.store().projects())
+    for (const SubProject& sp : p.subs)
+      if (dir == sp.path || dir.starts_with(sp.path + "/")) return true;
   return false;
 }
 

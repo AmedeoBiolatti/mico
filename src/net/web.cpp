@@ -369,7 +369,7 @@ void WebServer::respond(Conn& c, int status, std::string_view type, std::string_
   c.out += "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\nContent-Type: " + std::string(type) +
            "\r\nContent-Length: " + std::to_string(body.size()) +
            "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer"
-           "\r\nContent-Security-Policy: default-src 'self'; connect-src ws://127.0.0.1:" + port +
+           "\r\nContent-Security-Policy: default-src 'self'; img-src 'self' data:; connect-src ws://127.0.0.1:" + port +
            " ws://localhost:" + port + (web_host().empty() ? "" : " wss://" + web_host()) +
            "; frame-ancestors 'none'\r\nConnection: close\r\n\r\n";
   c.out += body;
