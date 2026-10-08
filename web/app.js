@@ -392,7 +392,11 @@ function chatRow(c) {
   return b;
 }
 
-for (const b of document.querySelectorAll("#views button")) b.onclick = () => setView(b.dataset.view);
+const VIEWS = ["minimal", "normal", "full"];
+// On a phone one chip shows the view and a tap goes on to the next.
+for (const b of document.querySelectorAll("#views button")) {
+  b.onclick = () => setView(narrow.matches ? VIEWS[(VIEWS.indexOf(st.view) + 1) % VIEWS.length] : b.dataset.view);
+}
 setView(["minimal", "normal", "full"].includes(st.view) ? st.view : "normal");
 
 $("filter").addEventListener("input", (e) => { st.filter = e.target.value.trim().toLowerCase(); renderSide(); });
@@ -954,7 +958,7 @@ function chartOne(spec) {
   const wrap = el("div", "chart-one");
   if (spec.title) wrap.append(el("div", "chart-title", String(spec.title)));
   if (spec.file) { wrap.append(el("div", "dim-note", `Chart of ${spec.file}: drawn from a file in the terminal view.`)); return wrap; }
-  const W = 560, H = Math.max(120, Math.min(480, (spec.height | 0 || 12) * 20)), L = 48, R = 12, T = 8, B = 30;
+  const W = Math.max(280, Math.min(560, ($("events").clientWidth || 560) - 4)), H = Math.max(120, Math.min(480, (spec.height | 0 || 12) * 20)), L = 48, R = 12, T = 8, B = 30;
   const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart-svg", role: "img", "aria-label": spec.title || "chart" });
   const type = spec.type || "line";
   const num = (a) => (Array.isArray(a) ? a.map(Number).filter(Number.isFinite) : []);
