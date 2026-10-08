@@ -392,6 +392,21 @@ function chatRow(c) {
   return b;
 }
 
+// The theme: Auto follows the system, the rest are the terminal's own.
+const THEMES = ["auto", "light", "dark", "dracula", "warm", "contrast"];
+function setTheme(t) {
+  if (!THEMES.includes(t)) t = "auto";
+  if (t === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  store.set("theme", t);
+  $("theme").value = t;
+  // The browser's own bars take the page's colour.
+  const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+  for (const m of document.querySelectorAll('meta[name="theme-color"]')) { m.content = bg; m.removeAttribute("media"); }
+}
+$("theme").onchange = (e) => setTheme(e.target.value);
+setTheme(store.get("theme", "auto"));
+
 const VIEWS = ["minimal", "normal", "full"];
 // On a phone one chip shows the view and a tap goes on to the next.
 for (const b of document.querySelectorAll("#views button")) {

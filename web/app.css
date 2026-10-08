@@ -50,6 +50,42 @@
     color-scheme: dark;
   }
 }
+/* A chosen theme, whatever the system says; Auto leaves it to the system. */
+:root[data-theme="light"] {
+  --bg: #faf9f7; --panel: #f3f1ed; --surface: #ffffff; --ink: #1c1a17; --dim: #6b665e; --faint: #9a958c; --line: #e3dfd8;
+  --accent: #2d6cb5; --accent-ink: #ffffff; --accent-soft: #e8f0fa; --user: #e9f0f9; --code: #f4f2ee; --working: #2d6cb5;
+  --waiting: #b8780b; --idle: #3d8b4f; --exited: #9a948b; --bad: #b23b3b; --bad-soft: #fbeeee; --warn-soft: #fbf3e0;
+  --shadow: 0 1px 2px rgba(30, 25, 15, .08), 0 4px 14px rgba(30, 25, 15, .08); color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #141416; --panel: #1a1a1e; --surface: #202026; --ink: #e8e5df; --dim: #9b968d; --faint: #6f6b64; --line: #2c2c33;
+  --accent: #82b4ea; --accent-ink: #0e1620; --accent-soft: #1c2736; --user: #1e2a3a; --code: #1d1d22; --working: #82b4ea;
+  --waiting: #e0b84a; --idle: #6fbf7f; --exited: #77736c; --bad: #e88282; --bad-soft: #2d1d1f; --warn-soft: #2b2515;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 14px rgba(0, 0, 0, .35); color-scheme: dark;
+}
+:root[data-theme="dracula"] {
+  --bg: #282a36; --panel: #21222c; --surface: #343746; --ink: #f8f8f2; --dim: #9aa3cc; --faint: #6272a4; --line: #44475a;
+  --accent: #bd93f9; --accent-ink: #282a36; --accent-soft: #3a3a58; --user: #343a52; --code: #21222c; --working: #8be9fd;
+  --waiting: #f1fa8c; --idle: #50fa7b; --exited: #6272a4; --bad: #ff5555; --bad-soft: #3e2631; --warn-soft: #3b3a2a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 14px rgba(0, 0, 0, .35); color-scheme: dark;
+}
+:root[data-theme="warm"] {
+  --bg: #1d2021; --panel: #282828; --surface: #32302f; --ink: #ebdbb2; --dim: #a89984; --faint: #7c6f64; --line: #504945;
+  --accent: #8ec07c; --accent-ink: #1d2021; --accent-soft: #2e3a2c; --user: #2f3b33; --code: #32302f; --working: #83a598;
+  --waiting: #fabd2f; --idle: #b8bb26; --exited: #7c6f64; --bad: #fb4934; --bad-soft: #3c2422; --warn-soft: #3a3320;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 14px rgba(0, 0, 0, .35); color-scheme: dark;
+}
+:root[data-theme="contrast"] {
+  --bg: #000000; --panel: #0a0a0a; --surface: #141414; --ink: #ffffff; --dim: #c4c4c4; --faint: #9e9e9e; --line: #8a8a8a;
+  --accent: #00e8c2; --accent-ink: #000000; --accent-soft: #0d2b2a; --user: #0d2b2a; --code: #141414; --working: #6cc6ff;
+  --waiting: #ffda66; --idle: #6bf08a; --exited: #9e9e9e; --bad: #ff7b86; --bad-soft: #3a0c12; --warn-soft: #332a00;
+  --shadow: none; color-scheme: dark;
+}
+#theme {
+  margin-left: 8px; font: inherit; font-size: 12.5px; color: var(--dim); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; max-width: 8.5em;
+}
+@media (pointer: coarse) { #theme { padding: 8px 6px; font-size: 14px; } }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 /* A display rule below must not bring back what the page hid. */
 [hidden] { display: none !important; }
