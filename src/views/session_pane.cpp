@@ -36,6 +36,12 @@ char32_t spinner_glyph(uint64_t anim) {
   return kFrames[anim % (sizeof(kFrames) / sizeof(kFrames[0]))];
 }
 
+char32_t orbit_glyph(uint64_t anim) {
+  static const char32_t kFrames[] = {U'\u2801', U'\u2802', U'\u2804', U'\u2840',
+                                     U'\u2880', U'\u2820', U'\u2810', U'\u2808'};
+  return kFrames[(anim / 2) % (sizeof(kFrames) / sizeof(kFrames[0]))];
+}
+
 namespace {
 
 std::string spinner_utf8(uint64_t anim) {
