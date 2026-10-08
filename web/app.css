@@ -389,7 +389,20 @@ details.tool .out.err { border-color: var(--bad); }
 #views button:last-child { border-right: 0; }
 #views button:hover { color: var(--accent); }
 #views button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-@media (max-width: 859px) { #views button { padding: 4px 7px; font-size: 12px; } }
+@media (max-width: 859px) {
+  /* One chip showing the view; a tap goes on to the next, so the title keeps its room. */
+  #views button:not([aria-pressed="true"]) { display: none; }
+  #views button { padding: 6px 10px; font-size: 12.5px; border: 0; }
+  #views { border-radius: 999px; }
+  #views button[aria-pressed="true"]::after { content: " ⟳"; color: var(--faint); font-weight: 400; }
+  .subfolder { margin-left: 6px; padding-left: 2px; }
+}
+@media (pointer: coarse) {
+  .icon-btn { width: 44px; height: 44px; }
+  details.tool > summary, details.tools > summary { min-height: 40px; }
+  .newrow button { padding: 9px 16px; font-size: 14px; }
+  .row { min-height: 52px; }
+}
 #events[data-view="minimal"] .ev.thinking, #events[data-view="minimal"] .ev.notice:not(.bad) { display: none; }
 
 /* Pictures, charts and equations */
