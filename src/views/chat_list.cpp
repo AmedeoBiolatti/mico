@@ -614,7 +614,11 @@ ChatState chat_state(const LiveSession* live, const Theme& th, uint64_t anim) {
     case Asking: return {U'!', th.attention, "needs you", 0};
     case Unread: return {U'\u25CF', th.accent, "new reply", 1};       // ●
     case Running: return {spinner_glyph(anim), th.working, "working", 2};
-    case Ready: return {U'\u25CB', th.dim, "ready", 3};               // ○
+    case Ready:
+      // Idle itself, but a command it started still runs: a single dot going
+      // round, slower and calmer than the spinner of an agent at work.
+      if (live && !live->background().empty()) return {orbit_glyph(anim), th.working, "running", 2};
+      return {U'\u25CB', th.dim, "ready", 3};                          // ○
     default: return {U'\u00B7', th.dim, "saved", 4};                 // ·
   }
 }
