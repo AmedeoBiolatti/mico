@@ -244,6 +244,9 @@ class Adapter {
   // +1 for a record that opens a turn, -1 for one that closes it, else 0,
   // judged from the record's first 200 bytes.
   virtual int turn_marker(std::string_view head) const { return 0; }
+  // The id of the chat a record hands the conversation on to, or empty: a
+  // resumed chat may go on in a file of its own, the old one left behind.
+  virtual std::string continued_in(std::string_view line) const { return {}; }
 
   // A dialog the agent opens at startup that mico answers for the user (the
   // folder is on their tracked list, which is trust enough): the next key to

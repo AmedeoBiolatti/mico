@@ -107,6 +107,22 @@ bool ClaudeAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& o
   return !out.path.empty();
 }
 
+// {"type":"continued-in",...,"continuedInSessionId":"<id>"}: claude went on in
+// another file, and wrote nothing more to this one.
+std::string ClaudeAdapter::continued_in(std::string_view line) const {
+  if (line.size() > 400 || !line.starts_with("{\"type\":\"continued-in\"")) return {};
+  constexpr std::string_view key = "\"continuedInSessionId\":\"";
+  const size_t at = line.find(key);
+  if (at == std::string_view::npos) return {};
+  const std::string_view rest = line.substr(at + key.size());
+  const size_t end = rest.find('"');
+  if (end == std::string_view::npos) return {};
+  const std::string_view id = rest.substr(0, end);
+  for (char c : id)
+    if (!isalnum(static_cast<unsigned char>(c)) && c != '-') return {};
+  return std::string(id);
+}
+
 bool ClaudeAdapter::busy(const Liveness& l) const {
   // Claude redraws its prompt, notices and timers even while idle. Output
   // recency is not evidence of work; follow its live spinner instead. This

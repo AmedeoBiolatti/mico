@@ -930,6 +930,33 @@ int run_regression_tests() {
             "simultaneous chats link only to the transcript their own process opened");
       first.pty().terminate(); second.pty().terminate();
     }
+    // A resumed claude may go on in a file of its own: the chat follows it.
+    {
+      const std::string projects = base + "/claude-continued/projects/p/";
+      std::filesystem::create_directories(projects);
+      EnvScope home("CLAUDE_CONFIG_DIR", base + "/claude-continued");
+      const std::string old_file = projects + "old-id.jsonl", next_file = projects + "next-id.jsonl";
+      put(old_file, "{\"type\":\"user\"}\n");
+      LiveSession resumed;
+      LiveSession::Launch launch;
+      launch.agent = "claude"; launch.cwd = project; launch.session_id = "old-id";
+      launch.origin = "old-id";
+      launch.argv = {"/bin/cat"};
+      resumed.start(launch); resumed.set_geometry(80, 24);
+      for (int i = 0; i < 150 && resumed.transcript().empty(); ++i) { resumed.pump(); usleep(10000); }
+      check(resumed.transcript() == old_file, "a resumed claude links its transcript");
+      put(old_file, "{\"type\":\"continued-in\",\"timestamp\":\"2026-10-08T13:18:10.535Z\",\"sessionId\":\"old-id\","
+                    "\"continuedInSessionId\":\"gone-id\"}\n", true);
+      for (int i = 0; i < 20; ++i) { resumed.pump(); usleep(20000); }
+      check(resumed.transcript() == old_file, "a chat handed on to a file that is not there stays");
+      put(next_file, "{\"type\":\"user\"}\n");
+      put(old_file, "{\"type\":\"continued-in\",\"timestamp\":\"2026-10-08T13:18:10.535Z\",\"sessionId\":\"old-id\","
+                    "\"continuedInSessionId\":\"next-id\"}\n", true);
+      for (int i = 0; i < 150 && resumed.transcript() != next_file; ++i) { resumed.pump(); usleep(10000); }
+      check(resumed.transcript() == next_file && resumed.session_id() == "next-id",
+            "a chat handed on to another file is followed there");
+      resumed.pty().terminate();
+    }
     // Keep subsequent UI tests free from auto-selected stored sessions.
     {
       // Open/resume through the actual list and application, with a dummy
