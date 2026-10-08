@@ -309,6 +309,8 @@ void ChatRenderer::sync_cards() {
 void ChatRenderer::shift_rows(size_t count) {
   for (auto& r : rows_) r.src_line += uint32_t(count);
   cur_line_ += uint32_t(count);
+  // Where a zoom will put the view back is a line too: it moves with them.
+  if (zoom_back_.line != UINT32_MAX) zoom_back_.line += uint32_t(count);
   menu_line_ += uint32_t(count);
 }
 
