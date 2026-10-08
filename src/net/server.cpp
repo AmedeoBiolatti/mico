@@ -382,7 +382,9 @@ void read_client(App& app, Client& c) {
         break;
       case proto::Type::Bye: c.dead = true; break;
       // Detaching leaves the agents running; only an explicit Kill ends them.
-      case proto::Type::Kill: c.dead = true; g_stop = kStopKill; break;
+      // The client that asked is let go with the rest, once the address is
+      // gone: it waits for that, to start the next daemon without racing this one.
+      case proto::Type::Kill: g_stop = kStopKill; break;
       default: break;
     }
   }
@@ -584,13 +586,16 @@ int run_daemon() {
        : why == SIGINT ? "SIGINT" : why == SIGHUP ? "SIGHUP" : "the loop ended",
        workspace.live().size());
   unlink(pidfile_path().c_str());
+  // The address goes first: a client told to leave (`mico reset` waits for
+  // exactly that) must find no daemon here, not this one still listening,
+  // or it attaches to a daemon that is on its way out.
+  close(lfd);
+  unlink(path.c_str());
   for (auto& c : clients) {
     proto::encode(proto::Type::Detach, {}, c->out);
     flush_client(*c);
     close(c->fd);
   }
-  close(lfd);
-  unlink(path.c_str());
   return 0;
 }
 
