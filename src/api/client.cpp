@@ -8,7 +8,7 @@
 #include "base/json_write.h"
 #include "core/answers.h"
 #include "core/images.h"
-#include "math/picture.h"
+#include "base/base64.h"
 
 namespace mico::api {
 namespace {
@@ -217,7 +217,7 @@ void Client::file_image(const std::string& path, const std::string& file) {
                       : b.size() > 12 && b.substr(0, 4) == "RIFF" && b.substr(8, 4) == "WEBP" ? "image/webp" : nullptr;
   if (!media) return fail("not an image");
   std::string data;
-  math::base64_encode(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), data);
+  base64_append(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), data);
   w.field("media", media).field("data", data).end_object();
   queued_.push_back(std::move(m));
 }
