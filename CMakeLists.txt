@@ -33,6 +33,7 @@ add_library(mico_base STATIC
   src/base/uuid.cpp
   src/base/path.cpp
   src/base/json_write.cpp
+  src/base/qr.cpp
   src/base/json.cpp
   src/base/jsonl.cpp
   src/base/log.cpp
@@ -280,6 +281,8 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/compact_mode.py $<TARGET_FILE:mico>)
   add_test(NAME chat-images
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/chat_images.py $<TARGET_FILE:mico>)
+  add_test(NAME web-phone
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_phone.py $<TARGET_FILE:mico>)
   add_test(NAME chat-copy
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/chat_copy.py $<TARGET_FILE:mico>)
   add_test(NAME agent-scopes
@@ -294,6 +297,6 @@ if(Python3_FOUND)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(daemon-input web-answers web-ui daemon-restore daemon-postmortem agent-scopes compact-mode chat-images chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
+  set_tests_properties(daemon-input web-answers web-ui daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

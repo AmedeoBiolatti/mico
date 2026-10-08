@@ -295,21 +295,32 @@ can be another client. It is for this machine only:
 - at most 32 connections at once, and a request has ten seconds to arrive.
 
 **From a phone, over Tailscale.** The daemon still listens on 127.0.0.1 only;
-`tailscale serve` puts HTTPS in front of it, inside your tailnet:
+`tailscale serve` puts HTTPS in front of it, inside your tailnet. `:web tailscale`
+(or `:web phone`) does the whole of it:
 
 ```
-:web tailscale                  # in mico: remembers this machine's tailnet name,
-                                # copies https://<name>/#token=…
-tailscale serve --bg 7311       # in a shell: forward it (never `funnel`)
+:web tailscale   # asks tailscale for this machine's name, turns the web view on,
+                 # publishes it with `tailscale serve --bg 7311`, and shows the
+                 # address as a QR code: scan it with the phone (Tailscale connected)
 ```
 
-mico does not run `tailscale serve` itself: what a machine offers its network
-is for you to say. The tailnet name is kept in `web-host`; the daemon then
-answers to that one host as well (any other is refused), accepts a WebSocket
-from that host's https page, and lets the page open its `wss://` socket. The
-token is still required, and still rides in the fragment. `:web host <name>`
-sets the name by hand (another reverse proxy, say), `:web host off` clears
-it. HTTPS also lets a phone install the page and copy from it.
+- The address is also on the clipboard; `c` in the card copies it again, any
+  other key puts the card away.
+- mico runs `tailscale serve` only when nothing else is served on this machine
+  (`tailscale serve status`). Another configuration is never touched: mico says
+  so and leaves it, and you forward to `http://localhost:7311` yourself. Never
+  `funnel`: the web view stays inside the tailnet.
+- What mico put up, `:web off` takes down again (`tailscale serve --https=443
+  off`); what it did not put up, it never removes.
+- If `tailscale serve` waits, Serve is probably not switched on for your tailnet:
+  run `tailscale serve --bg 7311` once by hand to see the link. If it says it needs
+  permission, run `sudo tailscale set --operator=$USER` once.
+- The tailnet name is kept in `web-host`; the daemon then answers to that one
+  host as well (any other is refused), accepts a WebSocket from that host's https
+  page, and lets the page open its `wss://` socket. The token is still required,
+  and still rides in the fragment. `:web host <name>` sets the name by hand
+  (another reverse proxy, say), `:web host off` clears it. HTTPS also lets a
+  phone install the page and copy from it.
 
 ## Three data planes
 

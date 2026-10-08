@@ -9,6 +9,7 @@
 #include "core/workspace.h"
 #include "term/term.h"
 #include "ui/layout.h"
+#include "base/qr.h"
 #include "ui/picker.h"
 #include "ui/theme.h"
 
@@ -514,6 +515,15 @@ class App {
   std::optional<Drag> drag_;
   Pane* mouse_capture_ = nullptr;
   std::optional<Menu> menu_;
+
+  // The web view's address as a QR code, for a phone to scan: modal until a
+  // key or click.
+  struct QrCard {
+    qr::Code code;
+    std::string title, url, note;
+  };
+  std::optional<QrCard> qr_;
+  void render_qr(Surface& s);
 
   struct Prompt {
     std::string label, action, text, carry;

@@ -1117,6 +1117,7 @@ void App::render(Surface& s) {
   render_status(s);
   render_command(s);
   if (menu_) render_menu(s);
+  if (qr_) render_qr(s);
   if (prompt_) render_prompt(s);
   render_selection(s);
 }
@@ -1278,7 +1279,7 @@ constexpr Command kCommands[] = {
     {"blame", "go to the chat that last changed a line: blame <file>:<line>"},
     {"charts", "tell agents they can draw charts: charts on|off"},
     {"mcp", "give agents mico's tools (plot) over MCP: mcp on|off"},
-    {"web", "the web view, served by the daemon: web on [port] | off | tailscale | host <name> | new-token, or web to copy its address"},
+    {"web", "the web view, served by the daemon: web on [port] | off | tailscale (a QR code for your phone) | host <name> | new-token, or web to copy its address"},
     {"sessions", "show the sessions tab"},
     {"redraw", "repaint everything"},
     {"log", "show where the log file is"},
@@ -1290,10 +1291,11 @@ constexpr Command kCommands[] = {
 }  // namespace
 
 void App::web_command(const std::string& arg) {
-  if (arg == "tailscale") {
-    // This machine's name on the tailnet, kept; the address with it is
-    // copied. mico does not start `tailscale serve` itself: what a machine
-    // offers to its network is for its user to say.
+  if (arg == "tailscale" || arg == "phone" || arg == "qr") {
+    // This machine's name on the tailnet, kept; the web view put on the
+    // tailnet with `tailscale serve` when nothing else is served there (and
+    // taken down again by `:web off`); the address as a QR code for a phone,
+    // and on the clipboard. Never `funnel`: it stays inside the tailnet.
     const std::string name = tailscale_name();
     if (name.empty()) {
       set_status("tailscale: no name found (is it installed and up? `tailscale status`)");
@@ -1301,9 +1303,12 @@ void App::web_command(const std::string& arg) {
     }
     set_web(true);
     set_web_host(name);
-    copy_to_clipboard(web_remote_url());
-    set_status("tailnet address copied. Now run: tailscale serve --bg " + std::to_string(web_port()) +
-               "  (never funnel)");
+    const TailscaleServe served = tailscale_serve(web_port());
+    const std::string url = web_remote_url();
+    copy_to_clipboard(url);
+    qr_ = QrCard{qr::encode(url), "On your phone", url, served.ok ? std::string() : served.note};
+    if (!served.ok) set_status(served.note);
+    mark_dirty();
     return;
   }
   if (arg == "new-token") {
@@ -1331,8 +1336,10 @@ void App::web_command(const std::string& arg) {
     }
     return;
   }
-  if (arg == "off") set_web(false);
-  else if (arg == "on" || arg.starts_with("on ")) set_web(true, arg.size() > 3 ? std::atoi(arg.c_str() + 3) : 0);
+  if (arg == "off") {
+    set_web(false);
+    tailscale_unserve();
+  } else if (arg == "on" || arg.starts_with("on ")) set_web(true, arg.size() > 3 ? std::atoi(arg.c_str() + 3) : 0);
   if (!web_enabled()) {
     set_status("web view off  (:web on serves it on 127.0.0.1:" + std::to_string(web_port()) + ")");
     return;
@@ -1343,6 +1350,44 @@ void App::web_command(const std::string& arg) {
   set_status("web view on 127.0.0.1:" + std::to_string(web_port()) +
              (web_host().empty() ? "" : ", and " + web_host() + " over https") +
              " \xE2\x80\x94 its address (with the token) is on the clipboard");
+}
+
+void App::render_qr(Surface& s) {
+  const QrCard& c = *qr_;
+  constexpr int kQuiet = 3;
+  const int side = c.code.size + 2 * kQuiet;  // modules; two to a row
+  const int code_rows = (side + 1) / 2;
+  const int w = std::min(s.width(), std::max(side + 6, 44));
+  const int h = std::min(s.height(), code_rows + 7);
+  const Rect r{(s.width() - w) / 2, std::max(0, (s.height() - h) / 2), w, h};
+  Painter box(s, r);
+  const Theme& th = theme();
+  box.clear(Style{th.text, th.menu_bg});
+  box.box(Rect{0, 0, w, h}, Style{th.border_focus, th.menu_bg});
+  box.text(2, 0, " " + c.title + " ", Style{th.border_focus, th.menu_bg, attr::kBold});
+  if (c.code.size == 0) {
+    box.text_clipped(2, 2, "that address is too long for a QR code", Style{th.text, th.menu_bg}, w - 4);
+  } else {
+    // Black on white whatever the theme, as a scanner wants it: a row of the
+    // card holds two rows of modules, an upper half block saying both.
+    constexpr Color kBlack = 0x000000, kWhite = 0xFFFFFF;
+    const auto dark = [&](int x, int y) {
+      x -= kQuiet;
+      y -= kQuiet;
+      return x >= 0 && y >= 0 && x < c.code.size && y < c.code.size && c.code.at(x, y);
+    };
+    const int x0 = (w - side) / 2;
+    for (int row = 0; row < code_rows; row++)
+      for (int x = 0; x < side; x++) {
+        const bool top = dark(x, 2 * row), bottom = dark(x, 2 * row + 1);
+        box.put(x0 + x, 1 + row, U'\u2580', Style{top ? kBlack : kWhite, bottom ? kBlack : kWhite});
+      }
+  }
+  int y = 1 + code_rows + 1;
+  box.text_clipped(2, y++, c.note.empty() ? "Scan it with the phone's camera (Tailscale connected)." : c.note,
+                   Style{th.text, th.menu_bg}, w - 4);
+  box.text_clipped(2, y++, c.url.substr(0, c.url.find('#')) + "#\u2026", Style{th.dim, th.menu_bg}, w - 4);
+  box.text_clipped(2, y, "c copies the address \u00B7 any other key closes", Style{th.dim, th.menu_bg}, w - 4);
 }
 
 void App::open_command_palette() {
@@ -1724,6 +1769,13 @@ void App::handle_mouse(const MouseEvent& m) {
     return;
   }
 
+  if (qr_) {
+    if (m.kind == MouseKind::Press) {
+      qr_.reset();
+      mark_dirty();
+    }
+    return;
+  }
   if (menu_) {
     if (m.kind == MouseKind::Press) cancel_selection();
     if (menu_mouse(m)) return;
@@ -1866,6 +1918,16 @@ void App::handle_key(const KeyEvent& k) {
   // A key press ends a mouse selection. A copy queued by the release is left
   // alone so it still lands in this frame's clipboard flush.
   if (sel_has_ && !sel_copy_pending_) cancel_selection();
+  if (qr_) {
+    // A phone is scanning it: any key puts it away, c copies the address first.
+    if (k.is('c')) {
+      copy_to_clipboard(qr_->url);
+      set_status("address copied");
+    }
+    qr_.reset();
+    mark_dirty();
+    return;
+  }
   if (prompt_ && prompt_key(k)) return;
   if (command_key(k)) return;
   if (menu_) {

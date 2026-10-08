@@ -35,4 +35,16 @@ std::string web_remote_url();
 // tailscale is not there or not up.
 std::string tailscale_name();
 
+// Puts the web view on the tailnet, over HTTPS, with `tailscale serve --bg`:
+// only when nothing else is served there, since another configuration is
+// never touched. `owned` is whether mico set it up (and so will take it down).
+struct TailscaleServe {
+  bool ok = false;      // the tailnet reaches the web view
+  bool owned = false;   // mico put it there
+  std::string note;     // what to tell the user when it is not (or is only partly) done
+};
+TailscaleServe tailscale_serve(int port);
+// Takes down what tailscale_serve put up; nothing else.
+void tailscale_unserve();
+
 }  // namespace mico

@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 
@@ -154,6 +155,51 @@ std::string tailscale_name() {
   std::string name = out.substr(open + 1, close - open - 1);
   while (!name.empty() && name.back() == '.') name.pop_back();
   return valid_host(name) ? name : std::string();
+}
+
+namespace {
+std::string trimmed(const std::string& s) {
+  size_t a = 0, b = s.size();
+  while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) a++;
+  while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) b--;
+  return s.substr(a, b - a);
+}
+}  // namespace
+
+TailscaleServe tailscale_serve(int port) {
+  const std::string p = std::to_string(port);
+  proc::Options opt;
+  opt.cap = 1u << 20;
+  opt.timeout_ms = 5000;
+  const proc::Result st = proc::capture({"tailscale", "serve", "status", "--json"}, opt);
+  if (!st.ran) return {false, false, "tailscale is not installed (https://tailscale.com/download)"};
+  const std::string body = trimmed(st.out);
+  if (st.ok() && !body.empty() && body != "{}") {
+    if (read_setting("web-serve") == "owned") return {true, true, {}};
+    return {false, false,
+            "tailscale serve already has a configuration, left alone: make sure it forwards to http://localhost:" + p +
+                " (tailscale serve status)"};
+  }
+  opt.timeout_ms = 12000;
+  const proc::Result r = proc::capture({"tailscale", "serve", "--bg", p}, opt);
+  if (r.timed_out)
+    return {false, false,
+            "tailscale serve did not answer: Serve may be off for your tailnet. Run `tailscale serve --bg " + p +
+                "` once by hand to see the link that turns it on"};
+  if (!r.ok())
+    return {false, false,
+            "`tailscale serve --bg " + p +
+                "` failed: it may need `sudo tailscale set --operator=$USER` once, or HTTPS enabled in the Tailscale admin console"};
+  write_setting("web-serve", "owned");
+  return {true, true, {}};
+}
+
+void tailscale_unserve() {
+  if (read_setting("web-serve") != "owned") return;
+  proc::Options opt;
+  opt.timeout_ms = 8000;
+  proc::capture({"tailscale", "serve", "--https=443", "off"}, opt);
+  write_setting("web-serve", "");
 }
 
 }  // namespace mico
