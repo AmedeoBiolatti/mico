@@ -37,6 +37,28 @@ bool reply_row(const VtRow& r) {
 
 }  // namespace
 
+// Both redraw a status bar, clock and cursor while idle, so output is no
+// evidence of work. What is: the row each shows only during a turn, with a
+// spinner (pi's braille dot after its rule, omp's ⎋) before "Working". The
+// words in a reply have neither beside them.
+bool PiFamilyAdapter::busy(const Liveness& l) const {
+  const Vt& vt = l.vt;
+  const int top = std::max(0, vt.total_rows() - vt.height());
+  int bottom = vt.total_rows() - 1;
+  while (bottom >= top && row_is_blank(vt.row(bottom))) bottom--;
+  for (int y = bottom; y >= std::max(top, bottom - 8); y--) {
+    const VtRow& r = vt.row(y);
+    bool spinner = false;
+    for (const Cell& c : r) {
+      if (!c.width || !c.cp || c.cp == U' ' || c.cp == U'\u2500') continue;  // pi's rule leads its row
+      spinner = c.cp == U'\u238B' || (c.cp >= 0x2800 && c.cp <= 0x28FF);
+      break;
+    }
+    if (spinner && row_text(r).find("Working") != std::string::npos) return true;
+  }
+  return false;
+}
+
 // Both draw the reply one column in, under whatever came before it in the
 // turn; pi's input box is two rules at the bottom, omp's a status bar in a
 // background of its own with "Working…" or the session's title above it.

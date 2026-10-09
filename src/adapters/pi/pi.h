@@ -45,6 +45,8 @@ class PiFamilyAdapter : public Adapter {
 
   // screen.cpp
   std::string screen_reply(const Vt& vt) const override;
+  // Working while the screen says so: pi's rule "── ⠹ Working ──", omp's "⎋ Working…".
+  bool busy(const Liveness& l) const override;
 
   // The agent's directory in a project, for the project's prompts and skills:
   // ".pi", ".omp".
