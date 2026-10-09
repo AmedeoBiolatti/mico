@@ -34,8 +34,10 @@ FAKE = r'''#!/bin/sh
 echo "$@" >> "$HOME/tailscale.log"
 case "$1 $2" in
   "status --json") echo '{"BackendState":"Running","Self":{"DNSName":"my-pc.tail1234.ts.net."}}' ;;
-  "serve status") if [ -f "$HOME/serving" ]; then echo '{"TCP":{"443":{"HTTPS":true}}}'; else echo '{}'; fi ;;
-  "serve --bg") touch "$HOME/serving" ;;
+  "serve status") if [ -f "$HOME/serving" ]; then
+      echo '{"TCP":{"443":{"HTTPS":true}},"Web":{"my-pc.tail1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:'"$(cat "$HOME/serving")"'"}}}}}'
+    else echo '{}'; fi ;;
+  "serve --bg") echo "$3" > "$HOME/serving" ;;
   "serve --https=443") rm -f "$HOME/serving" ;;
 esac
 '''
@@ -155,13 +157,23 @@ with tempfile.TemporaryDirectory(prefix='mico-phone-') as directory:
         calls = (root / 'tailscale.log').read_text().splitlines()
         check(calls.count('serve --bg 7311') == 1, 'a second ask leaves its own serve as it is')
 
+        # Its own serve, but to a port the web view has since left: put up again.
+        (root / 'serving').write_text('8765\n')
+        send(2, b':web tailscale\r')
+        receive(1.0)
+        send(2, b'x')
+        receive(0.3)
+        calls = (root / 'tailscale.log').read_text().splitlines()
+        check(calls.count('serve --bg 7311') == 2 and (root / 'serving').read_text().strip() == '7311',
+              'its own serve to an old port is pointed at the web view again')
+
         send(2, b':web off\r')
         receive(1.0)
         calls = (root / 'tailscale.log').read_text().splitlines()
         check('serve --https=443 off' in calls and not (root / 'serving').exists(), ':web off takes its serve down')
 
         # Something else already served: left alone.
-        (root / 'serving').touch()
+        (root / 'serving').write_text('9000\n')
         (root / 'tailscale.log').write_text('')
         (config / 'web-serve').write_text('')
         send(2, b':web tailscale\r')
