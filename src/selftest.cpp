@@ -1590,6 +1590,14 @@ int run_selftest() {
     omp.write(user + "\r\n" + reply + "\r\n  \xE2\x8E\x8B Working\xE2\x80\xA6\r\n\x1b[48;2;15;18;22m \xE2\xA0\xB4 4s > model          \x1b[49m\r\n"
               "\xE2\x95\xB0\xE2\x94\x80");
     check_str(omp_adapter().screen_reply(omp), "Hello **there**, this is a reply that wraps.", "omp: the reply off its screen");
+    // Busy only while the Working row is up; an idle redraw is not work.
+    Vt omp_idle;
+    omp_idle.resize(30, 14);
+    omp_idle.write(user + "\r\n" + reply + "\r\n\x1b[48;2;15;18;22m \xE2\xA0\xB4 4s > model          \x1b[49m\r\n");
+    const Liveness hot{omp_idle, 0, false}, hot_omp{omp, 0, false}, hot_pi{pi, 0, false};
+    check(omp_adapter().busy(hot_omp) && pi_adapter().busy(hot_pi) && !omp_adapter().busy(hot) &&
+              !pi_adapter().busy(Liveness{thinking, 0, false}),
+          "pi/omp: busy while the Working row shows, not on recent output alone");
   }
 
   // The models each agent lists on the command line, and the chips that set
