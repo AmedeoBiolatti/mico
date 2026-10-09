@@ -1711,15 +1711,29 @@ void render_output(std::string_view text, uint32_t base, bool in_scratch, int co
 
     // Wrapped like prose: on spaces, a word longer than the line cut where it
     // must. A listing's continuation sits under its code, not its number.
-    text::wrap_spans(line, listing ? cols : cols, *out.spans, out.max_lines - out.lines->size());
+    // Output that is indented (a todo list, a tree) keeps its indentation on
+    // the rows a long line wraps onto, under the text rather than at the
+    // margin: after a bullet's "- " too.
+    size_t hang = 0;
+    if (!listing) {
+      while (hang < line.size() && line[hang] == ' ') hang++;
+      if (hang && hang + 1 < line.size() && (line[hang] == '-' || line[hang] == '*' || line[hang] == '+') &&
+          line[hang + 1] == ' ')
+        hang += 2;
+      if (hang >= line.size() || int(hang) * 2 > cols) hang = 0;
+    }
+    if (hang) text::wrap_spans(line.substr(hang), cols - int(hang), *out.spans, out.max_lines - out.lines->size());
+    else text::wrap_spans(line, cols, *out.spans, out.max_lines - out.lines->size());
     bool first = true;
     for (const auto& sp : *out.spans) {
       if (out.lines->size() >= out.max_lines) return;
       const uint32_t first_seg = uint32_t(out.segs->size());
-      const size_t lo = pos + sp.off, hi = lo + sp.len;
-      if (listing && !first) {
-        const Str pad = out.scratch->add(std::string(content, ' '));
-        out.segs->push_back(Seg{pad.off | kScratchBit, pad.len, Ink::CodeMark});
+      // The first row of an indented line starts at its indentation.
+      const size_t lo = hang ? (first ? pos : pos + hang + sp.off) : pos + sp.off;
+      const size_t hi = hang ? pos + hang + sp.off + sp.len : lo + sp.len;
+      if ((listing || hang) && !first) {
+        const Str pad = out.scratch->add(std::string(listing ? content : hang, ' '));
+        out.segs->push_back(Seg{pad.off | kScratchBit, pad.len, listing ? Ink::CodeMark : Ink::Text});
       }
       for (const Seg& r : runs) {
         const size_t a = std::max<size_t>(r.off, lo), b = std::min<size_t>(size_t(r.off) + r.len, hi);

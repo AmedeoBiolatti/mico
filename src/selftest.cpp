@@ -5926,6 +5926,25 @@ int run_selftest() {
       keyword |= sg.ink == md::Ink::CodeKeyword;
     }
     check(number && keyword && lines.size() == 2, "output: a Read listing is coloured, its numbers set apart");
+
+    // Indented output (omp's todo list) keeps its indentation on wrapped rows.
+    segs.clear();
+    lines.clear();
+    const std::string todo = "Remaining items (2):\n  - Assess trace translation and replayability [in_progress] (Research)\n";
+    md::render_output(todo, 0, false, 40, o, nullptr);
+    std::vector<std::string> rows;
+    for (const auto& L : lines) {
+      std::string row;
+      for (uint16_t k = 0; k < L.seg_count; k++) {
+        const md::Seg& sg = segs[L.seg_first + k];
+        row += (sg.off & md::kScratchBit) ? std::string(sc.view(Str{sg.off & ~md::kScratchBit, sg.len}))
+                                          : todo.substr(sg.off, sg.len);
+      }
+      rows.push_back(row);
+    }
+    check(rows.size() >= 3 && rows[0] == "Remaining items (2):" && rows[1].starts_with("  - Assess") &&
+              rows[2].starts_with("    ") && rows[2][4] != ' ',
+          "output: a wrapped indented line continues under its text, past a bullet's dash");
     math::configure(math::Config{false, 10, 20, 0x56B6C2});
   }
 
