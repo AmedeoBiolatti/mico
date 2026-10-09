@@ -175,10 +175,15 @@ TailscaleServe tailscale_serve(int port) {
   if (!st.ran) return {false, false, "tailscale is not installed (https://tailscale.com/download)"};
   const std::string body = trimmed(st.out);
   if (st.ok() && !body.empty() && body != "{}") {
-    if (read_setting("web-serve") == "owned") return {true, true, {}};
-    return {false, false,
-            "tailscale serve already has a configuration, left alone: make sure it forwards to http://localhost:" + p +
-                " (tailscale serve status)"};
+    // Ours, and forwarding to this port: nothing to do. Ours but to another
+    // port (the web view has moved since): put up again below, which replaces it.
+    const bool here = body.find("127.0.0.1:" + p + "\"") != std::string::npos ||
+                      body.find("localhost:" + p + "\"") != std::string::npos;
+    if (here) return {true, true, {}};
+    if (read_setting("web-serve") != "owned")
+      return {false, false,
+              "tailscale serve already has a configuration, left alone: make sure it forwards to http://localhost:" + p +
+                  " (tailscale serve status)"};
   }
   opt.timeout_ms = 12000;
   const proc::Result r = proc::capture({"tailscale", "serve", "--bg", p}, opt);
