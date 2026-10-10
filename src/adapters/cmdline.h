@@ -15,6 +15,12 @@ bool mentions(const std::vector<std::string>& argv, std::string_view needle);
 // True when the command line passes `flag`, alone or as `flag=value`.
 bool has_flag(const std::vector<std::string>& argv, std::string_view flag);
 
+// Resolve the last working-directory flag against the launch folder, and
+// make its argument absolute so repeated preparation cannot resolve it twice.
+// The PTY still starts in the original folder; the agent changes it itself.
+void adopt_cwd(std::vector<std::string>& argv, std::string& cwd,
+               const std::vector<std::string_view>& flags);
+
 // Reads the id a command line passes with --session-id into `id`, or, when it
 // passes none, appends a fresh one. However it was launched, a session of an
 // agent that takes an id gets one mico knows, so the chat view can find its

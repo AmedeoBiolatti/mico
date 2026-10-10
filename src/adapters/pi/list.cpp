@@ -36,7 +36,7 @@ void read_ref(SessionRef& s, std::string& buf) {
           return false;
         return true;
       }
-      if (k == "cwd" && s.cwd.empty()) s.cwd = std::string(v.body());
+      if (k == "cwd" && s.cwd.empty()) js::unescape_append(v.body(), s.cwd);
       else if (k == "id" && s.id.empty() && type == "session") s.id = std::string(v.body());
       else if (k == "title") title = v.body();
       else if (k == "message") message = v;
@@ -59,7 +59,11 @@ void read_ref(SessionRef& s, std::string& buf) {
         if (mk == "content") { content = mv; return false; }
         return true;
       });
-      if (role == "user" && content.is_array()) {
+      if (role == "user" && content.is_string()) {
+        std::string text;
+        js::unescape_append(content.body(), text);
+        if (!text.empty() && !is_noise_prompt(text)) first_user = std::move(text);
+      } else if (role == "user" && content.is_array()) {
         js::scan_array(content.raw, [&](const js::Value& b) {
           if (!b.is_object()) return true;
           bool done = false;

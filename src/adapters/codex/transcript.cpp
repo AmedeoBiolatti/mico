@@ -6,6 +6,7 @@
 
 #include "adapters/adapters.h"
 #include "adapters/user_text.h"
+#include "adapters/translation.h"
 
 namespace mico {
 namespace {
@@ -33,12 +34,49 @@ Str add_content(Arena& arena, const js::Value& content) {
 // Codex replays the whole system preamble as user-role messages. They are
 // machinery, not conversation, so they get demoted to Meta and hidden.
 bool looks_like_preamble(std::string_view t) {
+  while (!t.empty() && std::isspace(uint8_t(t.front()))) t.remove_prefix(1);
   static constexpr std::string_view kMarkers[] = {
       "# AGENTS.md instructions", "<skills_instructions>", "<user_instructions>",
       "<environment_context>",    "<recommended_plugins>", "# Instructions for"};
   for (auto m : kMarkers)
     if (t.size() >= m.size() && t.compare(0, m.size(), m) == 0) return true;
   return false;
+}
+
+// Context and a user's text can share one message. Filter its blocks rather
+// than demoting the whole message because its first block is context. Newer
+// rollouts identify user.text explicitly, including pasted instruction text.
+Str add_user_content(Arena& arena, const js::Value& content, const js::Value& metadata, bool& context_only) {
+  std::vector<std::string_view> kinds;
+  js::scan_object(metadata.raw, [&](std::string_view k, const js::Value& v) {
+    if (k == "content_item_kinds")
+      js::scan_array(v.raw, [&](const js::Value& kind) { kinds.push_back(kind.body()); return true; });
+    return true;
+  });
+  if (!content.is_array()) {
+    Str text = add_content(arena, content);
+    context_only = (kinds.empty() || kinds[0] != "user.text") && looks_like_preamble(arena.view(text));
+    return text;
+  }
+  std::string shown;
+  size_t index = 0;
+  js::scan_array(content.raw, [&](const js::Value& b) {
+    const bool human = index < kinds.size() && kinds[index] == "user.text";
+    index++;
+    js::scan_object(b.raw, [&](std::string_view k, const js::Value& v) {
+      if (k != "text" || !v.is_string()) return true;
+      std::string text;
+      js::unescape_append(v.body().substr(0, Arena::kMaxText), text);
+      if (human || !looks_like_preamble(text)) {
+        if (!shown.empty()) shown += '\n';
+        shown += text;
+      }
+      return false;
+    });
+    return shown.size() < Arena::kMaxText;
+  });
+  context_only = shown.empty();
+  return context_only ? add_content(arena, content) : arena.add(shown);
 }
 
 // Codex's `exec` tool takes a JavaScript snippet, so the raw input reads as
@@ -127,21 +165,32 @@ void CodexAdapter::seed_state(SessionState& st) const {
 }
 
 void CodexAdapter::observe(std::string_view raw, SessionState& st) const {
-  js::Value payload{};
-  bool wanted = false;
-  js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
+  std::string_view payload;
+  std::string_view type;
+  js::scan_keys(raw, [&](std::string_view k, std::string_view rest) {
     if (k == "type") {
-      wanted = v.body() == "turn_context";
-      return wanted;
+      type = js::string_body(rest);
+      return type == "turn_context" || type == "event_msg";
     }
-    if (k == "payload") { payload = v; return false; }
+    if (k == "payload") { payload = rest; return false; }
     return true;
   });
-  if (!wanted || !payload.is_object()) return;
+  if (payload.empty() || payload.front() != '{') return;
+  if (type == "event_msg") {
+    std::string_view settings;
+    bool applied = false;
+    js::scan_keys(payload, [&](std::string_view k, std::string_view rest) {
+      if (k == "type") { applied = js::string_body(rest) == "thread_settings_applied"; return applied; }
+      if (k == "thread_settings") { settings = rest; return false; }
+      return true;
+    });
+    if (!applied || settings.empty() || settings.front() != '{') return;
+    payload = settings;
+  } else if (type != "turn_context") return;
 
-  js::scan_object(payload.raw, [&](std::string_view k, const js::Value& v) {
+  js::scan_object(payload, [&](std::string_view k, const js::Value& v) {
     if (k == "model") st.set("model", "model", v.body());
-    else if (k == "effort") st.set("effort", "effort", v.body());
+    else if (k == "effort" || k == "reasoning_effort") st.set("effort", "effort", v.body());
     else if (k == "approval_policy") st.set("approval", "permissions", v.body());
     else if (k == "personality") st.set("personality", "style", v.body());
     else if (k == "summary") st.set("summary", "summary", v.body());
@@ -151,6 +200,26 @@ void CodexAdapter::observe(std::string_view raw, SessionState& st) const {
         st.set("sandbox", "sandbox", sv.body());
         return false;
       });
+    } else if (k == "permission_profile") {
+      std::string_view profile;
+      bool write = false;
+      js::scan_object(v.raw, [&](std::string_view pk, const js::Value& pv) {
+        if (pk == "type") profile = pv.body();
+        else if (pk == "file_system")
+          js::scan_object(pv.raw, [&](std::string_view fk, const js::Value& fv) {
+            if (fk == "entries") js::scan_array(fv.raw, [&](const js::Value& entry) {
+              js::scan_object(entry.raw, [&](std::string_view ek, const js::Value& ev) {
+                if (ek == "access" && ev.body() == "write") write = true;
+                return true;
+              });
+              return true;
+            });
+            return true;
+          });
+        return true;
+      });
+      if (profile == "disabled") st.set("sandbox", "sandbox", "danger-full-access");
+      else if (profile == "managed") st.set("sandbox", "sandbox", write ? "workspace-write" : "read-only");
     }
     return true;
   });
@@ -184,11 +253,21 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
     out.push_back(e);
     return;
   }
-  if (payload.empty() || payload.front() != '{') return;
+  if (type != "response_item" && type != "event_msg") {
+    if (type != "session_meta" && type != "turn_context" && type != "world_state" && type != "token_usage_record")
+      translation_warning(arena, out, "codex", "record " + std::string(type), raw);
+    return;
+  }
+  if (payload.empty() || payload.front() != '{') {
+    translation_warning(arena, out, "codex", "record payload", raw);
+    return;
+  }
   if (type == "event_msg") {
     bool item = false;
+    std::string_view event_type;
     js::scan_object(payload, [&](std::string_view k, const js::Value& v) {
       if (k != "type") return true;
+      event_type = v.body();
       if (v.body() == "task_complete" || v.body() == "turn_complete" ||
           v.body() == "turn_aborted") {
         Event e;
@@ -200,6 +279,11 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
       item = v.body() == "item_completed";
       return false;
     });
+    if (!item && event_type != "task_complete" && event_type != "turn_complete" && event_type != "turn_aborted" &&
+        event_type != "task_started" && event_type != "turn_started" && event_type != "token_count" &&
+        event_type != "thread_settings_applied" && event_type != "agent_message" && event_type != "agent_reasoning" &&
+        event_type != "agent_reasoning_raw_content" && event_type != "user_message")
+      translation_warning(arena, out, "codex", "event " + std::string(event_type), raw);
     // A finished MCP call, and mico's plot among them: drawn as its chart.
     // The item's type is its first member, so other items (command output
     // runs long) are turned away after one key.
@@ -210,11 +294,17 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
         return true;
       });
       bool mcp = false;
+      std::string_view item_type;
       js::scan_keys(it, [&](std::string_view k, std::string_view rest) {
-        if (k == "type") mcp = js::string_body(rest) == "McpToolCall";
+        if (k == "type") { item_type = js::string_body(rest); mcp = item_type == "McpToolCall"; }
         return false;
       });
-      if (!mcp) return;
+      if (!mcp) {
+        if (item_type != "CommandExecution" && item_type != "FileChange" && item_type != "AgentMessage" &&
+            item_type != "Reasoning" && item_type != "UserMessage" && item_type != "WebSearch")
+          translation_warning(arena, out, "codex", "completed item " + std::string(item_type), raw);
+        return;
+      }
       std::string_view server, tool, id;
       js::Value args{};
       js::scan_object(it, [&](std::string_view k, const js::Value& v) {
@@ -235,12 +325,14 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
   }
   if (type != "response_item") return;
 
-  std::string_view pt, role, channel;
-  js::Value content{}, summary{}, name{}, call_id{}, input{}, arguments{}, output{};
+  std::string_view pt, role, channel, phase;
+  js::Value content{}, summary{}, name{}, call_id{}, input{}, arguments{}, output{}, metadata{};
   js::scan_object(payload, [&](std::string_view k, const js::Value& v) {
     if (k == "type") pt = v.body();
     else if (k == "role") role = v.body();
     else if (k == "channel") channel = v.body();
+    else if (k == "phase") phase = v.body();
+    else if (k == "internal_chat_message_metadata_passthrough") metadata = v;
     else if (k == "content") content = v;
     else if (k == "summary") summary = v;
     else if (k == "name") name = v;
@@ -253,12 +345,21 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
 
   Event e;
   if (pt == "message") {
-    if (content.type == js::Type::Null) return;
-    e.text = add_content(arena, content);
+    if (role != "user" && role != "assistant" && role != "developer" && role != "system") {
+      translation_warning(arena, out, "codex", "message role " + std::string(role), raw);
+      return;
+    }
+    if (content.type == js::Type::Null) {
+      if (role == "user" || role == "assistant") translation_warning(arena, out, "codex", "missing message content", raw);
+      return;
+    }
+    if (role == "user" || role == "assistant") warn_content(arena, out, "codex", content);
+    bool context_only = false;
+    e.text = role == "user" ? add_user_content(arena, content, metadata, context_only) : add_content(arena, content);
     if (e.text.empty()) return;
     if (role == "assistant") e.kind = EventKind::Assistant;
     else if (role == "user")
-      e.kind = looks_like_preamble(arena.view(e.text)) ? EventKind::Meta : EventKind::User;
+      e.kind = context_only ? EventKind::Meta : EventKind::User;
     else e.kind = EventKind::Meta;  // developer
     if (e.kind == EventKind::User) e.text = unwrap_pasted_content(arena, e.text);
     // An answer to an optional question reads the way Codex shows it, and
@@ -277,6 +378,7 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
     // summary is usually empty (content is encrypted server-side); only the
     // rare summarized reasoning is renderable.
     if (summary.type == js::Type::Null) return;
+    warn_content(arena, out, "codex", summary);
     e.text = add_content(arena, summary);
     if (e.text.empty()) return;
     e.kind = EventKind::Thinking;
@@ -297,6 +399,7 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
       if (is_async_question_tool(arena.view(e.name))) e.summary = arena.add(call_id.body());
     } else if (args.type != js::Type::Null) {
       e.summary = add_content(arena, args);
+      if (!args.is_string()) warn_content(arena, out, "codex", args);
       e.detail = narrow_to_patch(arena, e.summary);
       if (e.detail.empty() && arena.view(e.name) == "exec")
         e.summary = narrow_to_command(arena, e.summary);
@@ -305,11 +408,13 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
     e.kind = EventKind::ToolResult;
     e.tool_id = hash_id(call_id.body());
     if (output.type != js::Type::Null) e.text = add_tool_output(arena, output);
+    warn_content(arena, out, "codex", output);
   } else {
+    translation_warning(arena, out, "codex", "response item " + std::string(pt), raw);
     return;
   }
   out.push_back(e);
-  if (pt == "message" && role == "assistant" && channel == "final") {
+  if (pt == "message" && role == "assistant" && (channel == "final" || phase == "final_answer")) {
     Event end;
     end.kind = EventKind::TurnEnd;
     out.push_back(end);

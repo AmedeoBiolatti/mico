@@ -674,6 +674,13 @@ void ChatRenderer::layout_event(size_t index, int w, const Filters& f) {
       break;
 
     case EventKind::Notice: {
+      if (!e.ok) {
+        gap();
+        const uint64_t id = kWarningBit | uint64_t(conv_.file().line_offset(e.src_line));
+        emit_text(e.text, RowStyle::ResultErr, 2, w, 3, id, true, false);
+        if (expanded(id)) emit_text(e.detail, RowStyle::Dim, 4, w, kMaxRowsPerEvent, id, true, false);
+        break;
+      }
       // A divider rather than a message: it marks a break in the conversation.
       gap();
       uint32_t off = scratch_.open();
@@ -2323,14 +2330,21 @@ std::vector<MenuItem> ChatRenderer::context_menu(Point local) {
     char buf[32];
     snprintf(buf, sizeof buf, "toggle:%llu", (unsigned long long)clicked);
     const bool fold = clicked & kFoldBit;
-    items.push_back(MenuItem{expanded(clicked) ? (fold ? "Fold these steps" : "Collapse this tool call")
-                                               : (fold ? "Show these steps" : "Expand this tool call"),
+    const bool warning = clicked == (kWarningBit | uint64_t(conv_.file().line_offset(menu_line_)));
+    items.push_back(MenuItem{warning ? (expanded(clicked) ? "Hide original content" : "Inspect original content")
+                                    : expanded(clicked) ? (fold ? "Fold these steps" : "Collapse this tool call")
+                                                        : (fold ? "Show these steps" : "Expand this tool call"),
                              buf});
+    if (warning) items.push_back(MenuItem{"Copy original transcript record", "copy_raw"});
   }
   return items;
 }
 
 bool ChatRenderer::on_action(const std::string& a, Filters& f, std::string* copy_out) {
+  if (a == "copy_raw") {
+    if (copy_out) *copy_out = conv_.file().line(menu_line_);
+    return true;
+  }
   if (a == "copy") {
     // Everything the clicked line came from, not just the wrapped row: a
     // clipboard full of hard-wrapped fragments is useless.

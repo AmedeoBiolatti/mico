@@ -43,6 +43,7 @@ class CodexAdapter final : public Adapter {
   void snapshot_transcripts(const std::vector<std::string>& argv, const std::string& cwd,
                             std::vector<std::string>& out) const override;
   bool find_transcript(const TranscriptQuery& q, FoundTranscript& out) const override;
+  bool find_replacement_transcript(const TranscriptQuery& q, FoundTranscript& out) const override;
   bool busy(const Liveness& l) const override;
   bool awaits_input(const Vt& vt) const override;
   bool tracks_turns() const override { return true; }

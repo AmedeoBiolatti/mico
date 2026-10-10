@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "base/uuid.h"
+#include "base/path.h"
 
 namespace mico::cmdline {
 
@@ -21,6 +22,27 @@ bool has_flag(const std::vector<std::string>& argv, std::string_view flag) {
   return std::any_of(argv.begin(), argv.end(), [&](const std::string& a) {
     return a == flag || (a.starts_with(flag) && a.size() > flag.size() && a[flag.size()] == '=');
   });
+}
+
+void adopt_cwd(std::vector<std::string>& argv, std::string& cwd,
+               const std::vector<std::string_view>& flags) {
+  size_t index = argv.size(), prefix = 0;
+  for (size_t i = 1; i < argv.size(); i++) {
+    if (argv[i] == "--") break;
+    for (const auto flag : flags) {
+      if (argv[i] == flag && i + 1 < argv.size()) { index = ++i; prefix = 0; break; }
+      if (argv[i].starts_with(flag) && argv[i].size() > flag.size() && argv[i][flag.size()] == '=') {
+        index = i; prefix = flag.size() + 1; break;
+      }
+      if (flag.size() == 2 && argv[i].starts_with(flag) && argv[i].size() > 2) {
+        index = i; prefix = 2; break;
+      }
+    }
+  }
+  if (index == argv.size() || argv[index].size() == prefix) return;
+  const std::string resolved = resolve_path(cwd, std::string_view(argv[index]).substr(prefix));
+  argv[index] = argv[index].substr(0, prefix) + resolved;
+  cwd = resolved;
 }
 
 void adopt_session_id(std::vector<std::string>& argv, std::string& id) {

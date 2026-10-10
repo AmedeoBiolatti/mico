@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 
 #include "adapters/listing.h"
@@ -18,21 +19,29 @@ namespace {
 // rollouts, and it is the name codex itself shows.
 std::map<std::string, std::string> load_codex_names() {
   std::map<std::string, std::string> names;
-  std::string buf;
-  std::string_view blob = fs::read_prefix(codex_home() + "/session_index.jsonl", 4u << 20, buf);
-  fs::for_each_line(blob, [&](std::string_view line) {
+  FILE* index = fopen((codex_home() + "/session_index.jsonl").c_str(), "rb");
+  if (!index) return names;
+  char* buf = nullptr;
+  size_t capacity = 0;
+  ssize_t n;
+  // This index is append-only. Stream all complete records so the newest
+  // names remain available even after years of sessions and renames.
+  while ((n = getline(&buf, &capacity, index)) > 0) {
+    if (buf[n - 1] != '\n') break;
+    const std::string_view line(buf, size_t(n));
     std::string_view id, name;
     js::scan_object(line, [&](std::string_view k, const js::Value& v) {
       if (k == "id") id = v.body();
       else if (k == "thread_name") name = v.body();
       return true;
     });
-    if (id.empty() || name.empty()) return true;
+    if (id.empty() || name.empty()) continue;
     std::string decoded;
     js::unescape_append(name, decoded);
     if (!decoded.empty()) names[std::string(id)] = std::move(decoded);
-    return true;
-  });
+  }
+  free(buf);
+  fclose(index);
   return names;
 }
 

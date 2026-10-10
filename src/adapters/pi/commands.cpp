@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <algorithm>
 
 #include "adapters/command_table.h"
 #include "base/json.h"
@@ -224,7 +225,7 @@ ChipControl OmpAdapter::chip_control(std::string_view key) const {
   } else if (key == "effort") {
     c.source = ChipControl::Source::Efforts;
     c.values = {"off", "minimal", "low", "medium", "high", "xhigh", "max"};
-    c.steps = {"/switch {provider}/{model}:{value}", "\r", "\r"};
+    c.steps = {"/switch {model_selector}:{value}", "\r", "\r"};
   }
   return c;
 }
@@ -259,7 +260,8 @@ bool PiFamilyAdapter::read_command_probe(std::string_view output, bool ended, Co
             });
           return true;
         });
-        if (!o.efforts.empty()) o.efforts.insert(o.efforts.begin(), "off");
+        if (!o.efforts.empty() && std::find(o.efforts.begin(), o.efforts.end(), "off") == o.efforts.end())
+          o.efforts.insert(o.efforts.begin(), "off");
         o.detail = provider;
         if (!o.value.empty() && (kind.empty() || kind == "chat")) out.models.push_back(std::move(o));
         return true;

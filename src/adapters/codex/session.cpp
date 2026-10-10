@@ -5,11 +5,13 @@
 
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <set>
 
 #include "adapters/cmdline.h"
 #include "base/fs.h"
 #include "base/json.h"
+#include "base/process.h"
 
 namespace mico {
 namespace {
@@ -67,6 +69,26 @@ bool config_has_instructions() {
   return false;
 }
 
+// Older Codex releases have no daemon and reject --no-daemon. Ask the
+// executable once, without starting an agent or contacting a model.
+bool supports_no_daemon(const std::string& program) {
+  const std::string bin = proc::find_program(program);
+  struct stat st{};
+  if (bin.empty() || stat(bin.c_str(), &st) != 0) return false;
+  struct Capability { ino_t inode; time_t modified; bool supported; };
+  static std::map<std::string, Capability> cache;
+  auto it = cache.find(bin);
+  if (it != cache.end() && it->second.inode == st.st_ino && it->second.modified == st.st_mtime)
+    return it->second.supported;
+  proc::Options options;
+  options.cap = 128u << 10;
+  options.timeout_ms = 2000;
+  const auto help = proc::capture({bin, "--help"}, options);
+  const bool supported = help.ok() && help.out.find("--no-daemon") != std::string::npos;
+  cache[bin] = {st.st_ino, st.st_mtime, supported};
+  return supported;
+}
+
 }  // namespace
 
 std::string codex_home() {
@@ -79,6 +101,13 @@ void CodexAdapter::prepare(Launch& l, const LaunchExtras& x) const {
   if (l.argv.empty()) l.argv = {"codex"};
   std::vector<std::string>& argv = l.argv;
   if (cmdline::program(argv) != "codex") return;
+  cmdline::adopt_cwd(argv, l.cwd, {"--cd", "-C"});
+
+  // Transcript discovery ties the writer to this PTY's process session.
+  // The shared daemon owns writers outside it; use a local server so two
+  // agents in the same folder can still be linked without guessing.
+  if (!cmdline::has_flag(argv, "--no-daemon") && !cmdline::has_flag(argv, "--remote") &&
+      supports_no_daemon(argv[0])) argv.insert(argv.begin() + 1, "--no-daemon");
 
   // mico's own tools, as -c overrides rather than written into codex's config.
   // codex asks before every MCP call; plot is approved up front, as for claude.
@@ -113,7 +142,7 @@ bool CodexAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& ou
   std::string best, best_sid;
   const auto owned = q.session_id.empty() ? open_transcripts(q.pid) : std::set<std::string>{};
   int64_t best_mtime = 0;
-  for_each_rollout([&](const std::string& path) {
+  auto consider = [&](const std::string& path) {
     // Anything that existed before we spawned belongs to someone else, however
     // recently it was written to.
     const bool resuming = q.resuming();
@@ -131,23 +160,32 @@ bool CodexAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& ou
     if (head.empty()) return;
 
     js::Value payload{};
+    std::string_view type;
     js::scan_object(head,
                     [&](std::string_view k, const js::Value& v) {
+                      if (k == "type") type = v.body();
                       if (k != "payload") return true;
                       payload = v;
                       return false;
                     });
-    if (!payload.is_object()) return;
+    if (type != "session_meta" || !payload.is_object()) return;
 
     std::string cwd;
     std::string_view sid, forked_from;
+    bool subagent = false;
     js::scan_object(payload.raw, [&](std::string_view k, const js::Value& v) {
       if (k == "cwd") js::unescape_append(v.body(), cwd);
       else if (k == "id" || k == "session_id") sid = v.body();
       else if (k == "forked_from_id") forked_from = v.body();
+      else if (k == "source" && v.is_object())
+        js::scan_object(v.raw, [&](std::string_view sk, const js::Value&) {
+          if (sk == "subagent") subagent = true;
+          return true;
+        });
       return true;
     });
     if (sid.empty()) return;
+    if (!resuming && subagent) return;
     if (resuming ? sid != q.session_id : cwd != q.cwd) return;
     // A fork records what it came from, which identifies ours exactly even if
     // several start together.
@@ -156,11 +194,21 @@ bool CodexAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& ou
     best = path;
     best_sid = std::string(sid);
     best_mtime = int64_t(st.st_mtime);
-  });
+  };
+  if (q.resuming()) for_each_rollout(consider);
+  else for (const auto& path : owned) consider(path);
   if (best.empty()) return false;
   out.path = std::move(best);
   out.session_id = std::move(best_sid);
   return true;
+}
+
+bool CodexAdapter::find_replacement_transcript(const TranscriptQuery& q, FoundTranscript& out) const {
+  TranscriptQuery next = q;
+  next.session_id.clear();
+  next.origin.clear();
+  next.forked = false;
+  return find_transcript(next, out);
 }
 
 bool CodexAdapter::busy(const Liveness& l) const {

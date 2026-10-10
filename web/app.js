@@ -189,17 +189,12 @@ function agentsChanged() {
     const a = st.agents.find((x) => x.key === st.openKey);
     if (a) { st.openKey = null; openAgent(a); }
   }
-  // A new agent writes its transcript only with its first message: follow it
-  // there once it does.
-  if (st.chat && st.chat.key && !st.chat.path) {
+  // Follow the first transcript, and a replacement when /clear or /new
+  // starts another chat in the same running agent.
+  if (st.chat && st.chat.key) {
     const a = st.agents.find((x) => x.key === st.chat.key);
-    if (a && a.transcript) {
-      st.chat.path = a.transcript;
-      $("events").replaceChildren();
-      st.calls.clear();
-      send({ type: "open", path: a.transcript });
-      keepAddress();
-    }
+    if (a && a.transcript && a.transcript !== st.chat.path)
+      openChat(a.transcript, a.title, a.key);
   }
   renderSide();
   renderHead();
@@ -1082,7 +1077,12 @@ const TOOL_ICON = {
   WebFetch: "↗", WebSearch: "↗", Task: "◈", Agent: "◈", TodoWrite: "☑", exec: "$", apply_patch: "✎",
 };
 
-function notice(text, bad) {
+function notice(text, bad, detail) {
+  if (bad && detail) {
+    const d = el("details", "ev notice bad translation-warning");
+    d.append(el("summary", "", text), markdown(detail));
+    return d;
+  }
   const d = el("div", "ev notice" + (bad ? " bad" : ""));
   d.append(el("span", "", text));
   return d;
@@ -1272,7 +1272,7 @@ function buildEvents(events, last) {
         break;
       }
       case "question": n = questionNode(ev); break;
-      case "notice": case "task": n = notice(ev.text || "", ev.ok === false); break;
+      case "notice": case "task": n = notice(ev.text || "", ev.ok === false, ev.detail); break;
       case "peer": {
         n = el("div", "ev peer");
         n.append(el("div", "from", (ev.name || "agent") + (ev.summary ? " \u2192 " + ev.summary : "")));

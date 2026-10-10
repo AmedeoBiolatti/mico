@@ -48,8 +48,14 @@ ChipSpec spec_for(const std::string& agent, const ChipControl& c) {
 const ModelOption* current_model(const std::string& agent, const SessionState& st) {
   const std::string* model = st.find("model");
   if (!model || model->empty()) return nullptr;
+  // A selection made through mico is already provider-qualified. Match it
+  // before consulting the provider last reported by the transcript.
   for (const auto& m : known_models(agent))
-    if (m.value == *model || m.resolved == *model || m.label == *model) return &m;
+    if (m.value == *model) return &m;
+  const std::string* provider = st.find("provider");
+  for (const auto& m : known_models(agent))
+    if ((m.resolved == *model || m.label == *model) &&
+        (!provider || provider->empty() || m.value == *provider + "/" + m.resolved)) return &m;
   return nullptr;
 }
 
@@ -183,7 +189,13 @@ std::vector<PickItem> chip_pick_items(const SessionState& st, const std::string&
     if (name == "value") got = chosen;
     else if (name == "label") got = chosen_label;
     else if (name == "model_label") got = model ? model->label : st.find("model") ? *st.find("model") : "";
-    else if (name.ends_with("_label")) {
+    else if (name == "model_selector") {
+      const std::string* m = st.find("model");
+      const std::string* provider = st.find("provider");
+      if (model) got = model->value;
+      else if (m && !m->empty() && m->find('/') != std::string::npos) got = *m;
+      else if (m && !m->empty() && provider && !provider->empty()) got = *provider + "/" + *m;
+    } else if (name.ends_with("_label")) {
       const std::string* f = st.find(name.substr(0, name.size() - 6));
       got = f ? label_of(*f) : "";
     } else {
@@ -240,6 +252,7 @@ std::vector<PickItem> chip_pick_items(const SessionState& st, const std::string&
       it.checked = value && (*value == v || *value == shown ||
                              (!res.empty() && *value == res) ||
                              (!res_short.empty() && *value == res_short));
+      if (opt && model && control.source == ChipControl::Source::Models) it.checked = opt == model;
       if (it.checked && cursor) *cursor = int(items.size());
       items.push_back(std::move(it));
     }

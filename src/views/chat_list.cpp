@@ -583,9 +583,8 @@ class ChatList final : public Pane {
 
   // Enter / single-click opens and resumes. Arrow navigation only previews.
   void activate(int i) {
-    const Project* pr = app_->current_project();
     if (i == int(rows_.size())) {
-      app_->spawn_agent("claude", pr ? app_->selected_cwd() : ".");
+      app_->open_new_agent();
       return;
     }
     if (i < 0 || i >= int(rows_.size())) return;

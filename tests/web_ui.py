@@ -273,6 +273,18 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
     ]
     chat2.write_text(''.join(json.dumps(r, separators=(',', ':')) + '\n' for r in pics))
 
+    codex = root / '.codex/sessions/2026/10/03/rollout-warning.jsonl'
+    codex.parent.mkdir(parents=True)
+    codex.write_text('\n'.join(json.dumps(r) for r in [
+        {'type': 'session_meta', 'payload': {'id': 'warning-session', 'cwd': cwd}},
+        {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+            'content': [{'type': 'input_text', 'text': 'First prompt after clear'}]}},
+        {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
+            'phase': 'final_answer', 'content': [
+                {'type': 'output_text', 'text': 'Supported reply'},
+                {'type': 'future_audio', 'data': '<script>RAW_UNKNOWN_MARKER</script>'}]}}
+    ]) + '\n')
+
     env = dict(os.environ, HOME=directory, XDG_CONFIG_HOME=directory, XDG_STATE_HOME=directory,
                XDG_RUNTIME_DIR=directory)
     env.pop('DISPLAY', None)
@@ -371,7 +383,7 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
         check(app.attrs.get('data-screen') == 'chat', 'a phone opened on a chat shows the chat')
         phone = parse(dom_of(base, 390, 800, True))
         app = next(n for n in phone.walk() if n.attrs.get('id') == 'app')
-        check(app.attrs.get('data-screen') == 'list' and len(find(phone, 'button', 'row')) == 2,
+        check(app.attrs.get('data-screen') == 'list' and len(find(phone, 'button', 'row')) == 3,
               'a phone opened on nothing shows the list')
 
         # Pictures, a chart, an equation, and how much of the work shows.
@@ -401,6 +413,31 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
         check(page.eval("getComputedStyle(document.body).backgroundColor") == 'rgb(250, 249, 247)', 'Light overrides a dark system')
         page.eval("(() => { const s = document.getElementById('theme'); s.value = 'auto'; s.dispatchEvent(new Event('change')); })()")
         check(page.eval("document.documentElement.dataset.theme") is None, 'Auto goes back to the system')
+        page.call('Page.close')
+
+        # A replacement transcript on the same live agent must reset the chat
+        # and subscribe from its first record. Unknown content stays inspectable.
+        page = Page(debug_port, '')
+        page.open(f'{base}&chat={chat}', 1200, 900, False)
+        check(page.wait("document.querySelectorAll('#events .ev').length >= 4"), 'the old chat loaded before clear')
+        page.eval("st.chat.key = 'clear-fixture'; st.agents = [{key: 'clear-fixture', status: 'idle', "
+                  f"transcript: {json.dumps(str(codex))}, title: 'New chat'}}]; agentsChanged()")
+        check(page.wait("!!document.querySelector('#events details.translation-warning')"),
+              'a replacement transcript shows its translation warning')
+        check(page.eval("document.getElementById('events').textContent.includes('First prompt after clear') && "
+                        "document.getElementById('events').textContent.includes('Supported reply') && "
+                        "!document.getElementById('events').textContent.includes('What changed')"),
+              'the replacement starts at the first prompt and clears the old chat')
+        page.eval("document.querySelector('#views button[data-view=minimal]').click()")
+        check(page.eval("getComputedStyle(document.querySelector('#events .translation-warning')).display !== 'none'"),
+              'translation warnings remain visible in minimal view')
+        page.eval("document.querySelector('#events .translation-warning > summary').click()")
+        check(page.eval("document.querySelector('#events .translation-warning').open && "
+                        "document.querySelector('#events .translation-warning pre').textContent.includes('RAW_UNKNOWN_MARKER')"),
+              'a warning expands to the original content')
+        check(page.eval("document.querySelectorAll('#events .translation-warning script').length === 0 && "
+                        "!!document.querySelector('#events .translation-warning .code-bar button')"),
+              'original content is inert and has a copy button')
         page.call('Page.close')
 
         if not failures:

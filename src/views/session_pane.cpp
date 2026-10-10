@@ -1339,8 +1339,12 @@ class SessionPane final : public Pane {
     if (a.rfind("chipcmd:", 0) == 0) {
       // Open the agent's own picker for a chip mico does not enumerate.
       const std::string cmd = a.substr(8);
-      s_->pty().write(cmd);
-      s_->pty().write("\r");
+      // Let its command completion settle before Enter. A single PTY read
+      // containing both can be treated as pasted text by the agent's TUI.
+      if (!s_->send_answer({cmd, "\r"})) {
+        app_->set_status("busy; try again in a moment");
+        return;
+      }
       view_ = View::Raw;
       view_chosen_ = true;
       app_->set_status("opened " + cmd);
