@@ -1483,7 +1483,11 @@ int run_regression_tests() {
     // reach the agent: Ctrl+Backspace deletes a word, Ctrl+Z brings it back,
     // Ctrl+A then Ctrl+X cuts the whole draft to the clipboard.
     const std::string got = base + "/edit-keys-received";
-    put(base + "/edit-bin/claude", "#!/bin/sh\nstty raw -echo\nexec cat > '" + got + "'\n");
+    // The command catalog also invokes claude in the background. Its SDK
+    // initialize request is independent of input sent to the live chat.
+    put(base + "/edit-bin/claude", "#!/bin/sh\nfor arg in \"$@\"; do\n"
+        "  if [ \"$arg\" = --no-session-persistence ]; then exit 0; fi\ndone\n"
+        "stty raw -echo\nexec cat > '" + got + "'\n");
     chmod((base + "/edit-bin/claude").c_str(), 0755);
     const char* path_env = getenv("PATH");
     EnvScope search_path("PATH", base + "/edit-bin:" + (path_env ? path_env : "/bin"));
