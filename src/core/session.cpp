@@ -327,7 +327,9 @@ std::string LiveSession::label() const {
 }
 
 void LiveSession::discover_transcript() {
-  if (!adapter_ || pty_.exited()) return;
+  // A failed or very short resume still has its existing conversation to
+  // display. Only probing for a replacement needs a running process.
+  if (!adapter_ || (!transcript_.empty() && pty_.exited())) return;
   int64_t t = now_ms();
   if (t - last_probe_ < 500) return;
   last_probe_ = t;

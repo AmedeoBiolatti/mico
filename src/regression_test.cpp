@@ -906,6 +906,9 @@ int run_regression_tests() {
       launch.agent = "codex"; launch.cwd = project; launch.session_id = sid;
       launch.argv = {base + "/missing-agent"};
       stopped.start(launch); stopped.set_geometry(80, 24);
+      stopped.pump();
+      check(stopped.exited() && stopped.transcript() == path,
+            "a failed resume still loads its original conversation after the process exits");
       auto pane = make_session_pane(&stopped);
       pane->set_app(&app);
       bool resumable = false;
