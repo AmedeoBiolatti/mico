@@ -54,7 +54,7 @@ class PiFamilyAdapter : public Adapter {
   // omp's profiles).
   virtual std::string agent_dir(const std::string& home) const = 0;
   // Where the agent keeps its sessions, one folder per working directory.
-  virtual std::string sessions_dir() const;
+  virtual std::string sessions_dir(const std::vector<std::string>* argv = nullptr) const;
   // Each top-level transcript: <sessions_dir>/<cwd-slug>/*.jsonl, then those
   // directly in the folder a session-dir override names —
   // $PI_CODING_AGENT_SESSION_DIR, or --session-dir on `argv` (relative to
@@ -109,7 +109,7 @@ class OmpAdapter final : public PiFamilyAdapter {
   std::string_view label() const override { return "OMP"; }
   std::string_view dot_dir() const override { return ".omp"; }
   std::string agent_dir(const std::string& home) const override;
-  std::string sessions_dir() const override;
+  std::string sessions_dir(const std::vector<std::string>* argv = nullptr) const override;
   std::vector<SlashCommand> builtin_commands() const override;
   ChipControl chip_control(std::string_view key) const override;
   bool resumes_subagents() const override { return true; }

@@ -18,6 +18,9 @@ omp profile (`$OMP_PROFILE`, `~/.omp/profiles/<name>/agent`) or omp's
 `$XDG_DATA_HOME/omp`, and the flat folder `$PI_CODING_AGENT_SESSION_DIR` or a
 `--session-dir` on the command line names — the home-directory defaults
 otherwise.
+For a live omp launch, `--profile <name>` selects that profile's transcript
+folder. Codex's `--cd` / `-C` and omp's `--cwd` also set the folder mico uses
+to match the live chat, including relative paths.
 
 ## Status: M3 — daemon, live agents, raw + chat views
 
@@ -344,9 +347,24 @@ in advance, so it matches on the `_<uuid>.jsonl` suffix instead of the whole
 name). Codex and omp offer no such flag. On Linux, new Codex runs match a rollout
 opened by the agent's own process session, with matching `cwd` and fork origin
 where applicable; this prevents simultaneous runs from swapping transcripts.
+When Codex's local help advertises `--no-daemon`, mico adds it so its transcript
+writer stays in that process session rather than the CLI's shared background
+server. Older versions receive no unsupported flag. An explicit `--remote`
+connection keeps its server choice; a server outside the local process session
+has only the raw terminal view.
 Codex and omp resumes match the original session id, including existing files.
 New omp runs still discover the newest matching session created after spawn. No
 adapter, or correlation not yet resolved, degrades to raw-only.
+Codex's `/clear` and `/new` can start another conversation inside the same
+terminal process. mico follows its new main transcript and shows its first
+prompt and reply, while keeping the previous conversation in stored history.
+
+Content that Codex or omp emits in a format mico cannot translate appears as a
+warning in chat, at every density. Click it to inspect a bounded preview of the
+original content. The terminal context menu can copy the complete original
+transcript record for a bug report; the web view can copy the preview.
+Known internal metadata and deliberately hidden
+records stay hidden.
 
 ## Performance
 
@@ -552,6 +570,10 @@ where the agent says. Codex's `/model` takes no value — typed with one, the
 line goes to the model as a message — so its chips walk codex's own menus:
 `/model`, then the model's row and the level's row, each found by its name on
 screen and picked by its number (Max and Ultra sit behind "More reasoning…").
+Codex's permissions chip opens its own `/permissions` picker in the terminal
+view, sending the command and Enter on separate settled frames. Use F2 to
+return to chat. The chips read `thread_settings_applied` records so permission,
+sandbox, model and effort changes appear without sending another message.
 pi takes `/model provider/id` and `/thinking <level>`; omp, which has no
 command for the level alone, takes `/switch provider/id:level` for the
 session. Both open a completion menu as the line is typed, so the chip sends
@@ -1104,7 +1126,8 @@ chat takes focus without starting another process. An exited chat restarts in
 place, keeping its unsent draft and avoiding duplicate rows. Arrow keys only
 preview a row, so browsing the list does not launch agents. A saved preview also
 has an **Open chat** button and accepts Enter. The `+ New chat` button,
-pinned to the bottom of the pane, starts a fresh Claude session. Right-click a
+pinned to the bottom of the pane, asks which agent to start, then which folder
+to run it in. Right-click a
 chat for what applies to it: open, rename, archive, move to a sub-project,
 copy its path, resume, fork, stop. Right-click the empty part of the list for
 **New chat…** (which asks which agent) and **Show archived** (`a`). The main pane

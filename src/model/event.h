@@ -33,7 +33,8 @@ enum class EventKind : uint8_t {
   Question,
   TurnEnd,  // completion or cancellation; never rendered
   // A one-line marker for something that happened to the conversation rather
-  // than in it ("Conversation compacted"). Shown at every density.
+  // than in it ("Conversation compacted"). Shown at every density. With
+  // ok=false, a translation warning; detail holds inspectable original content.
   Notice,
   // The agent took a message the user sent while it was working and is
   // holding it (QueueAdd, `text` = the message), or has now handed it to the

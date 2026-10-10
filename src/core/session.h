@@ -200,6 +200,7 @@ class LiveSession {
   Vt vt_;
   std::string agent_;
   std::string cwd_;
+  std::string spawn_cwd_;  // before the agent's --cwd / --cd takes effect
   std::string session_id_;
   std::string origin_;
   bool forked_ = false;

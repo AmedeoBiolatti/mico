@@ -315,6 +315,7 @@ class ChatRenderer {
   static constexpr uint64_t kFoldBit = 1ull << 63;
   // An agent's message, named by where its line is in the file.
   static constexpr uint64_t kPeerBit = 1ull << 62;
+  static constexpr uint64_t kWarningBit = 1ull << 61;
   FrontVec<uint8_t> roles_;     // per event of the window
   FrontVec<uint64_t> fold_of_;  // per event: the fold it is in, 0 for none
   size_t open_from_ = 0;        // where the last turn starts, still open to new events

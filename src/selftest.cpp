@@ -1144,6 +1144,135 @@ int run_selftest() {
         a, ev);
     check(ev.size() == 1 && ev[0].kind == EventKind::Meta, "preamble demoted to meta");
 
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"response_item","payload":{"type":"message","role":"user","content":[)"
+        R"({"type":"input_text","text":"  <environment_context>context</environment_context>"},)"
+        R"({"type":"input_text","text":"Keep this message"}]}})", a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::User && a.view(ev[0].text) == "Keep this message",
+          "codex: context in the first block does not hide the user's message");
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"response_item","payload":{"type":"message","role":"user",)"
+        R"("internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]},)"
+        R"("content":[{"type":"input_text","text":"# AGENTS.md instructions for /x: please review"}]}})", a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::User,
+          "codex: explicit user text can quote instructions without being hidden");
+    for (const char* phase : {"commentary", "final_answer"}) {
+      ev.clear();
+      codex_adapter().parse(
+          std::string(R"({"type":"response_item","payload":{"type":"message","role":"assistant","phase":)") +
+          js::quote(phase) + R"(,"content":[{"type":"output_text","text":"Reply"}]}})", a, ev);
+      check(ev.size() == (std::string_view(phase) == "final_answer" ? 2 : 1) &&
+                ev[0].kind == EventKind::Assistant &&
+                (ev.size() == 1 || ev[1].kind == EventKind::TurnEnd),
+            "codex: the final_answer phase closes a turn; commentary keeps it open");
+    }
+    SessionState settings;
+    codex_adapter().observe(
+        R"({"type":"turn_context","payload":{"model":"old","effort":"low",)"
+        R"("approval_policy":"on-request","sandbox_policy":{"type":"workspace-write"}}})", settings);
+    codex_adapter().observe(
+        R"({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{)"
+        R"("model":"new","reasoning_effort":"high","approval_policy":"never","permission_profile":{"type":"disabled"}}}})",
+        settings);
+    check(settings.find("approval") && *settings.find("approval") == "never" &&
+              settings.find("sandbox") && *settings.find("sandbox") == "danger-full-access" &&
+              settings.find("model") && *settings.find("model") == "new" &&
+              settings.find("effort") && *settings.find("effort") == "high",
+          "codex: settings applied by a picker refresh the chips before another turn");
+    codex_adapter().observe(
+        R"({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{)"
+        R"("approval_policy":"on-request","permission_profile":{"type":"managed","file_system":{"entries":[{"access":"read"},{"access":"write"}]}}}}})",
+        settings);
+    check(settings.find("sandbox") && *settings.find("sandbox") == "workspace-write",
+          "codex: managed permissions report workspace write access");
+    codex_adapter().observe(
+        R"({"type":"event_msg","payload":{"type":"token_count","thread_settings":{"approval_policy":"never"}}})", settings);
+    check(settings.find("approval") && *settings.find("approval") == "on-request",
+          "codex: unrelated events do not overwrite the permission setting");
+
+    // Unknown conversation formats produce diagnostics rather than holes.
+    for (const Adapter* adapter : {&codex_adapter(), &omp_adapter()}) {
+      ev.clear();
+      const std::string unknown = adapter->id() == "codex"
+          ? R"({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"future_audio","data":"opaque"}]}})"
+          : R"({"type":"message","message":{"role":"assistant","content":[{"type":"future_audio","data":"opaque"}]}})";
+      adapter->parse(unknown, a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Notice && !ev[0].ok &&
+                a.view(ev[0].text).find("future_audio") != std::string_view::npos &&
+                a.view(ev[0].detail).find("opaque") != std::string_view::npos,
+            "translation: unknown assistant blocks warn with the original content");
+      ev.clear();
+      adapter->parse(R"({"type":"future_record","content":"unrecognized"})", a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Notice && !ev[0].ok,
+            "translation: unknown transcript records warn");
+      ev.clear();
+      const std::string metadata = adapter->id() == "codex"
+          ? R"({"type":"event_msg","payload":{"type":"token_count","info":{}}})"
+          : R"({"type":"custom","customType":"telemetry","data":{}})";
+      adapter->parse(metadata, a, ev);
+      check(ev.empty(), "translation: known internal records do not create warnings");
+      ev.clear();
+      const std::string image = adapter->id() == "codex"
+          ? R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}})"
+          : R"({"type":"message","message":{"role":"user","content":[{"type":"image","data":"AAAA","mimeType":"image/png"}]}})";
+      adapter->parse(image, a, ev);
+      check(std::none_of(ev.begin(), ev.end(), [](const Event& e) { return e.kind == EventKind::Notice && !e.ok; }),
+            "translation: images handled by the image reader do not create warnings");
+    }
+    ev.clear();
+    omp_adapter().parse(R"({"type":"custom_message","customType":"future-card","display":true,"content":"Visible in agent"})", a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Notice && !ev[0].ok,
+          "translation: an unknown visible omp custom message warns");
+    ev.clear();
+    omp_adapter().parse(R"({"type":"custom_message","customType":"future-card","display":false,"content":"Internal"})", a, ev);
+    check(ev.empty(), "translation: explicitly hidden omp custom messages stay hidden");
+
+    const std::string bins = "/tmp/mico-selftest-codex-help-" + std::to_string(getpid());
+    fs::make_dirs(bins + "/modern");
+    fs::make_dirs(bins + "/legacy");
+    put_file(bins + "/modern/codex", "#!/bin/sh\nprintf '%s\\n' '--no-daemon'\n");
+    put_file(bins + "/legacy/codex", "#!/bin/sh\nprintf '%s\\n' 'Usage: codex [OPTIONS]'\n");
+    chmod((bins + "/modern/codex").c_str(), 0700);
+    chmod((bins + "/legacy/codex").c_str(), 0700);
+    Launch launch;
+    launch.argv = {bins + "/modern/codex"};
+    codex_adapter().prepare(launch, {});
+    codex_adapter().prepare(launch, {});
+    check(std::count(launch.argv.begin(), launch.argv.end(), "--no-daemon") == 1,
+          "codex: the transcript writer stays in its PTY session, once");
+    Launch resumed;
+    codex_adapter().continue_session(resumed, "fixture", false, nullptr);
+    resumed.argv[0] = bins + "/modern/codex";
+    codex_adapter().prepare(resumed, {});
+    check(std::find(resumed.argv.begin(), resumed.argv.end(), "--no-daemon") != resumed.argv.end() &&
+              resumed.session_id == "fixture", "codex: resumed chats also keep a local transcript writer");
+    Launch legacy;
+    legacy.argv = {bins + "/legacy/codex"};
+    codex_adapter().prepare(legacy, {});
+    check(legacy.argv.size() == 1, "codex: older CLIs receive no unsupported daemon flag");
+    Launch remote;
+    remote.argv = {bins + "/modern/codex", "--remote=unix:///remote.sock"};
+    codex_adapter().prepare(remote, {});
+    check(remote.argv.size() == 2, "codex: an explicit remote server is preserved");
+    Launch moved;
+    moved.cwd = "/launch";
+    moved.argv = {bins + "/modern/codex", "--cd=../work"};
+    codex_adapter().prepare(moved, {});
+    codex_adapter().prepare(moved, {});
+    check(moved.cwd == "/work" && moved.argv.back() == "--cd=/work",
+          "codex: working-directory flags resolve once against the launch folder");
+    moved.cwd = "/launch"; moved.argv = {bins + "/modern/codex", "-C../work"};
+    codex_adapter().prepare(moved, {});
+    check(moved.cwd == "/work" && moved.argv.back() == "-C/work", "codex: attached short directory flags resolve too");
+    moved.cwd = "/launch"; moved.argv = {bins + "/modern/codex", "--", "--cd=/prompt-text"};
+    codex_adapter().prepare(moved, {});
+    check(moved.cwd == "/launch", "codex: prompt text after the option boundary never changes the folder");
+    unlink((bins + "/modern/codex").c_str());
+    unlink((bins + "/legacy/codex").c_str());
+    rmdir((bins + "/modern").c_str()); rmdir((bins + "/legacy").c_str()); rmdir(bins.c_str());
+
     // pi / omp: a user turn, an assistant turn with thinking + a tool call,
     // and the matching tool result — the shared schema both agents write.
     ev.clear();
@@ -1428,6 +1557,55 @@ int run_selftest() {
                 std::find(seen.begin(), seen.end(), parent) != seen.end() && seen.size() == 2,
             "omp --session-dir is looked in, subagent runs are not new sessions");
 
+      const std::string sessions = omp.sessions_dir();
+      put_file(sessions + "/direct.jsonl", R"({"type":"session","id":"direct","cwd":"/work"})" "\n");
+      fs::make_dirs(sessions + "/nested/deeper");
+      put_file(sessions + "/nested/deeper/deep.jsonl", R"({"type":"session","id":"deep","cwd":"/work"})" "\n");
+      seen.clear();
+      omp.snapshot_transcripts({"omp", "--session-dir=" + sessions}, root, seen);
+      check(std::count(seen.begin(), seen.end(), sessions + "/direct.jsonl") == 1,
+            "omp: an override at the default session root is scanned flat");
+      seen.clear();
+      omp.snapshot_transcripts({"omp", "--session-dir", sessions + "/nested/deeper"}, root, seen);
+      check(std::count(seen.begin(), seen.end(), sessions + "/nested/deeper/deep.jsonl") == 1,
+            "omp: a deeper override inside the session root is scanned flat");
+      seen.clear();
+      omp.snapshot_transcripts({"omp", "--session-dir", slug}, root, seen);
+      check(std::count(seen.begin(), seen.end(), parent) == 1, "omp: an existing slug override is not duplicated");
+      setenv("PI_CODING_AGENT_SESSION_DIR", "flat", 1);
+      seen.clear();
+      omp.snapshot_transcripts({"omp"}, root, seen);
+      check(std::count(seen.begin(), seen.end(), root + "/flat/x_f1.jsonl") == 1,
+            "omp: a relative environment session dir resolves against the agent cwd");
+      unsetenv("PI_CODING_AGENT_SESSION_DIR");
+
+      const std::string profiled = root + "/.omp/profiles/cli/agent/sessions/-work/cli.jsonl";
+      fs::make_dirs(root + "/.omp/profiles/cli/agent/sessions/-work");
+      put_file(profiled, R"({"type":"session","id":"cli","cwd":"/work"})" "\n");
+      setenv("OMP_PROFILE", "other", 1);
+      std::vector<std::string> profile_argv{"omp", "--profile=cli"};
+      seen.clear();
+      omp.snapshot_transcripts(profile_argv, "/work", seen);
+      check(seen == std::vector<std::string>{profiled}, "omp: CLI profile overrides the environment for discovery");
+      TranscriptQuery q;
+      q.cwd = "/work"; q.argv = &profile_argv; q.claimed = [](const std::string&) { return false; };
+      FoundTranscript found;
+      check(omp.find_transcript(q, found) && found.path == profiled && found.session_id == "cli",
+            "omp: a new CLI-profile session attaches to its transcript");
+      unsetenv("OMP_PROFILE");
+      const std::string escaped = slug + "/escaped.jsonl";
+      put_file(escaped, R"({"type":"session","id":"escaped","cwd":"/work/\"quoted\"\\dir"})" "\n"
+                        R"({"type":"message","message":{"role":"user","content":"String prompt"}})" "\n");
+      bool escaped_found = false;
+      omp.list_sessions([&](SessionRef&& r) {
+        if (r.id == "escaped") {
+          escaped_found = true;
+          check(r.cwd == "/work/\"quoted\"\\dir" && r.title == "String prompt",
+                "omp: listed folder names decode JSON and string prompts supply titles");
+        }
+      });
+      check(escaped_found, "omp: the escaped folder fixture is listed");
+
       if (system(("rm -rf '" + root + "'").c_str()) != 0) {}
       for (auto& [k, v] : saved) {
         if (v.empty()) unsetenv(k.c_str());
@@ -1647,6 +1825,26 @@ int run_selftest() {
           "omp: a thinking level through /switch, past its completion menu");
     picks = chip_pick_items(os, "effort", true, "pi", &cursor, &title);
     check(!picks.empty() && picks[0].id == "chipsteps:effort|off|/thinking off\x1f\r\x1f\r", "pi: /thinking with its level");
+
+    set_known_models("omp", {{"first/shared", "Shared", "first", "shared", false, {"low"}},
+                              {"second/shared", "Shared", "second", "shared", false, {"high", "max"}}});
+    os.set("model", "model", "shared"); os.set("provider", "provider", "second");
+    picks = chip_pick_items(os, "effort", true, "omp", &cursor, &title);
+    check(picks.size() == 2 && picks[0].id == "chipsteps:effort|high|/switch second/shared:high\x1f\r\x1f\r",
+          "omp: shared model ids use the active provider's effort levels");
+    picks = chip_pick_items(os, "model", true, "omp", &cursor, &title);
+    check(picks.size() >= 2 && !picks[0].checked && picks[1].checked &&
+              std::count_if(picks.begin(), picks.end(), [](const PickItem& it) { return it.checked; }) == 1,
+          "omp: only the active provider's model is marked selected");
+    os.set("model", "model", "first/shared");
+    picks = chip_pick_items(os, "effort", true, "omp", &cursor, &title);
+    check(picks.size() == 1 && picks[0].id == "chipsteps:effort|low|/switch first/shared:low\x1f\r\x1f\r",
+          "omp: effort after a model switch never duplicates the old provider");
+    set_known_models("omp", {});
+    check(omp_adapter().read_command_probe(
+              R"({"models":[{"selector":"x/y","thinking":["off","high"]}]})", true, got) &&
+              got.models[0].efforts == std::vector<std::string>({"off", "high"}),
+          "omp: a model catalog that includes off does not offer it twice");
 
     // What mico gives pi and omp at launch: its extension and its hints.
     Launch l;

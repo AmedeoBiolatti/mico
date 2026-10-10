@@ -62,12 +62,12 @@ bool read_head(const std::string& path, SessionHead& out) {
 
 }  // namespace
 
-std::string PiFamilyAdapter::sessions_dir() const { return agent_dir(fs::home()) + "/sessions"; }
+std::string PiFamilyAdapter::sessions_dir(const std::vector<std::string>*) const { return agent_dir(fs::home()) + "/sessions"; }
 
 void PiFamilyAdapter::for_each_session(const std::function<void(const std::string&)>& fn,
                                        const std::vector<std::string>* argv,
                                        const std::string& cwd) const {
-  const std::string root = sessions_dir();
+  const std::string root = sessions_dir(argv);
   fs::list_dir(root, true, [&](const std::string& slug) {
     const std::string dir = root + "/" + slug;
     fs::list_dir(dir, false, [&](const std::string& name) {
@@ -78,8 +78,11 @@ void PiFamilyAdapter::for_each_session(const std::function<void(const std::strin
   std::string flat;
   if (argv) flat = session_dir_flag(*argv);
   if (!flat.empty()) flat = absolute(flat, cwd);
-  else if (const char* e = env("PI_CODING_AGENT_SESSION_DIR")) flat = absolute(e, {});
-  if (flat.empty() || flat.starts_with(root + "/") || flat == root) return;
+  else if (const char* e = env("PI_CODING_AGENT_SESSION_DIR")) flat = absolute(e, cwd);
+  if (flat.empty()) return;
+  // Only a direct child of root was already scanned as a cwd slug. The
+  // root itself and deeper overrides can contain flat transcripts too.
+  if (flat.starts_with(root + "/") && flat.find('/', root.size() + 1) == std::string::npos) return;
   fs::list_dir(flat, false, [&](const std::string& name) {
     if (fs::has_suffix(name, ".jsonl")) fn(flat + "/" + name);
   });
@@ -224,10 +227,16 @@ std::string omp_root(const std::string& home) {
   return home + "/" + (d ? d : ".omp");
 }
 
-std::string omp_profile() {
+std::string omp_profile(const std::vector<std::string>* argv = nullptr) {
   const char* p = getenv("OMP_PROFILE");  // set but empty still wins
   if (!p) p = getenv("PI_PROFILE");
   std::string_view s = p ? p : "";
+  if (argv)
+    for (size_t i = 1; i < argv->size(); i++) {
+      if ((*argv)[i] == "--") break;
+      if ((*argv)[i] == "--profile" && i + 1 < argv->size()) s = (*argv)[++i];
+      else if ((*argv)[i].starts_with("--profile=")) s = std::string_view((*argv)[i]).substr(10);
+    }
   while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
   while (!s.empty() && s.back() == ' ') s.remove_suffix(1);
   if (s == "default" || s.find('/') != std::string_view::npos || s == "." || s == "..") return {};
@@ -245,19 +254,22 @@ std::string OmpAdapter::agent_dir(const std::string& home) const {
 
 // Sessions are data: unless the agent directory was moved, an existing
 // $XDG_DATA_HOME/omp (…/omp/profiles/<name> under a profile) holds them.
-std::string OmpAdapter::sessions_dir() const {
-  const std::string profile = omp_profile();
-  if (profile.empty() && env("PI_CODING_AGENT_DIR")) return agent_dir(fs::home()) + "/sessions";
+std::string OmpAdapter::sessions_dir(const std::vector<std::string>* argv) const {
+  const std::string profile = omp_profile(argv);
+  if (profile.empty())
+    if (const char* d = env("PI_CODING_AGENT_DIR")) return absolute(d, {}) + "/sessions";
   if (const char* x = env("XDG_DATA_HOME")) {
     std::string data = std::string(x) + "/omp";
     if (!profile.empty()) data += "/profiles/" + profile;
     if (fs::exists(data)) return data + "/sessions";
   }
-  return agent_dir(fs::home()) + "/sessions";
+  const std::string root = omp_root(fs::home());
+  return (profile.empty() ? root + "/agent" : root + "/profiles/" + profile + "/agent") + "/sessions";
 }
 
 void OmpAdapter::prepare(Launch& l, const LaunchExtras& x) const {
   if (l.argv.empty()) l.argv = {"omp"};
+  if (cmdline::program(l.argv) == "omp") cmdline::adopt_cwd(l.argv, l.cwd, {"--cwd"});
   add_extras(l, x);
 }
 

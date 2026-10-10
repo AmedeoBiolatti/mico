@@ -219,6 +219,7 @@ LiveSession::~LiveSession() {
 bool LiveSession::start(const Launch& l) {
   agent_ = l.agent;
   cwd_ = l.cwd;
+  spawn_cwd_ = l.cwd;
   origin_ = l.origin;
   forked_ = l.forked;
   session_id_ = l.session_id;
@@ -251,6 +252,7 @@ bool LiveSession::start(const Launch& l) {
   }
   driver().prepare(launch, extras);
   session_id_ = launch.session_id;
+  cwd_ = launch.cwd;
 
   driver().snapshot_transcripts(launch.argv, cwd_, preexisting_);
   std::sort(preexisting_.begin(), preexisting_.end());
@@ -307,7 +309,7 @@ bool LiveSession::set_geometry(int w, int h) {
   // Named afresh each spawn: a restart must not meet the scope of the run
   // before, which a process it left behind can keep alive.
   static unsigned spawns = 0;
-  pty_.spawn(argv_, cwd_, w, h,
+  pty_.spawn(argv_, spawn_cwd_, w, h,
              scope::unit_name(agent_.substr(agent_.rfind('/') + 1) + "-" + std::to_string(getpid()) + "-" +
                               std::to_string(++spawns)),
              "mico: " + agent_ + " in " + cwd_);
@@ -325,7 +327,7 @@ std::string LiveSession::label() const {
 }
 
 void LiveSession::discover_transcript() {
-  if (!adapter_ || !transcript_.empty()) return;
+  if (!adapter_ || pty_.exited()) return;
   int64_t t = now_ms();
   if (t - last_probe_ < 500) return;
   last_probe_ = t;
@@ -341,7 +343,22 @@ void LiveSession::discover_transcript() {
   q.preexisting = &preexisting_;
   q.claimed = [](const std::string& path) { return claimed_transcripts().count(path) > 0; };
   FoundTranscript found;
-  if (!adapter_->find_transcript(q, found)) return;
+  const bool replacing = !transcript_.empty();
+  if (replacing ? !adapter_->find_replacement_transcript(q, found) : !adapter_->find_transcript(q, found)) return;
+  if (found.path == transcript_) return;
+  if (replacing) {
+    // The previous conversation stays in the agent's history, and cannot
+    // be selected again merely because its writer is still open.
+    preexisting_.push_back(transcript_);
+    std::sort(preexisting_.begin(), preexisting_.end());
+    if (auto it = claimed_transcripts().find(transcript_); it != claimed_transcripts().end() && it->second == this)
+      claimed_transcripts().erase(it);
+    origin_.clear();
+    forked_ = false;
+    turn_open_ = false;
+    turns_from_end_ = false;
+    continued_ = true;  // read the new chat's first records, including its first prompt
+  }
   transcript_ = std::move(found.path);
   if (!found.session_id.empty()) session_id_ = std::move(found.session_id);
   claimed_transcripts()[transcript_] = this;
@@ -834,7 +851,7 @@ bool LiveSession::pump() {
   discover_transcript();
   // Followed from the moment it is found, not the next turn of the loop (up
   // to a second later): what the agent writes in between would be skipped.
-  if (transcript_ != before) follow_background();
+  if (transcript_ != before) { follow_turns(); follow_background(); }
   const bool moved = changed || queue_.size() != held || transcript_ != before;
   if (moved) ++generation_;
   return moved;

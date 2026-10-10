@@ -229,6 +229,9 @@ class Adapter {
   // Looks once for the transcript of the session `q` describes. Called every
   // half second until it succeeds; false while there is none yet.
   virtual bool find_transcript(const TranscriptQuery& q, FoundTranscript& out) const { return false; }
+  // A CLI can start a fresh conversation without restarting its PTY (for
+  // example Codex /clear). Find its new transcript once the original is linked.
+  virtual bool find_replacement_transcript(const TranscriptQuery& q, FoundTranscript& out) const { return false; }
 
   // --- Watching a running session ------------------------------------------
 

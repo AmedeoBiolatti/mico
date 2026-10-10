@@ -305,8 +305,9 @@ int run_regression_tests() {
       cl.agent = "codex"; cl.cwd = project;
       cl.argv = {"codex", "resume", "abc"};
       codex.start(cl);
-      check(codex.argv().size() > 2 && codex.argv()[1] == "-c" &&
-                codex.argv()[2].starts_with("developer_instructions=\"") && codex.argv()[3] == "resume",
+      check(codex.argv().size() > 3 && codex.argv()[1] == "-c" &&
+                codex.argv()[2].starts_with("developer_instructions=\"") &&
+                std::find(codex.argv().begin() + 3, codex.argv().end(), "resume") != codex.argv().end(),
             "codex gets the charts note as developer_instructions, before its subcommand");
       {
         // The user's own developer_instructions in config.toml are not overridden.
@@ -536,9 +537,10 @@ int run_regression_tests() {
     check(p.spawn({"/bin/sh", "-c", "env > '" + got + "'"}, project, 80, 24), "env: an agent starts");
     std::string env;
     for (int i = 0; i < 200; i++) {
+      p.poll_exit();
       std::ifstream f(got);
       env.assign(std::istreambuf_iterator<char>(f), {});
-      if (env.find("PLAIN_TEST_VAR") != std::string::npos) break;
+      if (p.exited()) break;  // env writes in chunks: inspect the complete file
       usleep(5000);
     }
     const auto has = [&](std::string_view line) { return ("\n" + env).find("\n" + std::string(line)) != std::string::npos; };
@@ -642,12 +644,17 @@ int run_regression_tests() {
                   std::string(100000, 'x') + "\"}}\n");
     const std::string legacy = dir + "rollout-legacy.jsonl";
     put(legacy, "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"legacy\",\"cwd\":\"" + project + "\"}}\n");
+    put(base + "/.codex/session_index.jsonl",
+        "{\"id\":\"" + sid + "\",\"thread_name\":\"Old name\"}\n" + std::string(4u << 20, ' ') + "\n" +
+        "{\"id\":\"" + sid + "\",\"thread_name\":\"Latest \\\"name\\\"\"}\n" +
+        "{\"id\":\"" + sid + "\",\"thread_name\":\"Incomplete record\"}");
     Store store;
     store.scan();
     bool modern_found = false, legacy_found = false;
     for (const auto& pr : store.projects()) for (const auto& s : pr.sessions) {
       modern_found |= s.id == sid;
       legacy_found |= s.id == "legacy";
+      if (s.id == sid) check(s.title == "Latest \"name\"", "codex: names past 4 MB win, partial index records wait");
     }
     check(modern_found && legacy_found, "discovery accepts both metadata id fields and large headers");
     {
@@ -1237,6 +1244,37 @@ int run_regression_tests() {
                   app.live_sessions().size() == running,
               "the switcher opens a running chat without starting another");
         check(screen(sf).find("Go to chat") == std::string::npos, "and closes");
+
+        // Both activating the New chat row with Enter and clicking it use
+        // the chooser, without launching the first agent before a choice.
+        auto chats = make_chat_list();
+        chats->set_app(&app);
+        Painter cp(sf, {0, 0, sf.width(), sf.height()});
+        chats->render(cp, true);
+        chats->on_key({Key::End});
+        chats->on_key({Key::Enter});
+        app.draw(sf);
+        check(screen(sf).find("New agent") != std::string::npos &&
+                  screen(sf).find("codex") != std::string::npos && app.live_sessions().size() == running,
+              "New chat: Enter offers the agent chooser and starts nothing");
+        press(Key::Escape);
+        chats->render(cp, true);
+        int add_y = -1;
+        for (int y = 0; y < sf.height(); y++) {
+          std::string row;
+          for (int x = 0; x < sf.width(); x++) text::encode(sf.at(x, y).cp, row);
+          if (row.find("+ New chat") != std::string::npos) add_y = y;
+        }
+        check(add_y >= 0, "New chat: its row is visible");
+        if (add_y >= 0) {
+          chats->on_mouse({MouseKind::Press, MouseButton::Left}, {2, add_y});
+          type("codex");
+          press(Key::Enter);
+          app.draw(sf);
+          check(screen(sf).find("Run codex in") != std::string::npos && app.live_sessions().size() == running,
+                "New chat: clicking offers Codex and then its working folder");
+          press(Key::Escape);
+        }
 
         // F7: an agent, or any command, then where. Backspace on an empty
         // query steps back with the command still typed.
@@ -1861,6 +1899,284 @@ int run_regression_tests() {
     check(shown.find("PISTEP") == std::string::npos && shown.find("PIANSWER") != std::string::npos &&
               shown.find("\xE2\x96\xB8 1 step \xC2\xB7 1 comment") != std::string::npos,
           "pi: a finished turn folds above its answer");
+  }
+
+  // Codex /clear starts a new conversation inside the same PTY. Follow its
+  // writer rather than leaving the pane attached to the previous session.
+  {
+    const std::string root = base + "/codex-clear";
+    const std::string home = root + "/codex-home";
+    EnvScope codex_home("CODEX_HOME", home);
+    const std::string old_file = home + "/sessions/2026/10/10/old.jsonl";
+    const std::string next_file = home + "/sessions/2026/10/10/new.jsonl";
+    put(old_file, R"({"type":"session_meta","payload":{"id":"before-clear","source":"cli","cwd":)" + js::quote(project) + "}}\n" +
+        R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"OLDCHAT"}]}})" "\n");
+    const std::string fixture = root + "/clear.py";
+    put(fixture, R"PY(import json, os, pathlib, sys, tty
+old, new, cwd, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3], pathlib.Path(sys.argv[4])
+tty.setraw(0)
+writers = [old.open('a')]
+sub = new.with_name('subagent.jsonl').open('w')
+sub.write(json.dumps({'type': 'session_meta', 'payload': {'id': 'worker', 'cwd': cwd,
+    'source': {'subagent': {'thread_spawn': {'parent_thread_id': 'before-clear'}}}}}, separators=(',', ':')) + '\n')
+sub.flush()
+os.write(1, b'READY\r\n')
+(root / 'ready').touch()
+def line():
+    text = b''
+    while not text.endswith(b'\r'):
+        text += os.read(0, 1)
+    return text[:-1].decode()
+assert line() == '/clear'
+writers.append(new.open('w'))
+writer = writers[-1]
+writer.write(json.dumps({'type': 'session_meta', 'payload': {'id': 'after-clear', 'cwd': cwd, 'source': 'cli'}}, separators=(',', ':')) + '\n')
+writer.flush()
+os.write(1, b'\x1b[2J\x1b[HNEWCHAT\r\n')
+(root / 'cleared').touch()
+prompt = line()
+writer.write(json.dumps({'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+    'content': [{'type': 'input_text', 'text': prompt}]}}, separators=(',', ':')) + '\n')
+writer.write(json.dumps({'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant', 'phase': 'final_answer',
+    'content': [{'type': 'output_text', 'text': 'NEWANSWER'}]}}, separators=(',', ':')) + '\n')
+writer.flush()
+writers[0].write(json.dumps({'type': 'event_msg', 'payload': {'type': 'token_count'}}, separators=(',', ':')) + '\n')
+writers[0].flush()
+(root / 'answered').touch()
+os.write(1, b'NEWANSWER\r\n')
+os.read(0, 1)
+)PY");
+    LiveSession session;
+    Launch l;
+    l.agent = "codex"; l.cwd = project; l.session_id = "before-clear"; l.origin = "before-clear";
+    l.argv = {"python3", fixture, old_file, next_file, project, root};
+    session.start(l);
+    App app;
+    auto pane = make_session_pane(&session); pane->set_app(&app);
+    Surface sf; sf.resize(100, 32); Painter p(sf, {0, 0, 100, 32});
+    const auto wait_for = [&](const char* marker, const std::string& path) {
+      for (int i = 0; i < 500; i++) {
+        session.pump(); pane->render(p, true);
+        if (std::filesystem::exists(root + "/" + marker) && session.transcript() == path) return true;
+        if (session.exited()) return false;
+        usleep(5000);
+      }
+      return false;
+    };
+    check(wait_for("ready", old_file), "codex clear: resumed chat initially attaches to its old transcript");
+    for (int i = 0; i < 120; i++) { session.pump(); usleep(5000); }
+    check(session.transcript() == old_file, "codex clear: a subagent writer does not replace the main chat");
+    session.pty().write("/clear\r");
+    check(wait_for("cleared", next_file) && session.session_id() == "after-clear" && session.origin().empty(),
+          "codex clear: a new conversation adopts a fresh identity without retaining the resume origin");
+    session.pty().write("FIRSTAFTERCLEAR\r");
+    check(wait_for("answered", next_file), "codex clear: the first turn is delivered to the replacement chat");
+    pane->render(p, true);
+    check(screen(sf).find("FIRSTAFTERCLEAR") != std::string::npos && screen(sf).find("NEWANSWER") != std::string::npos &&
+              screen(sf).find("OLDCHAT") == std::string::npos,
+          "codex clear: the first prompt and answer show in the new chat, with no previous conversation");
+    for (int i = 0; i < 120; i++) { session.pump(); usleep(5000); }
+    check(session.transcript() == next_file, "codex clear: an old writer's later output cannot steal the pane back");
+    std::vector<SessionRef> saved;
+    codex_adapter().list_sessions([&](SessionRef&& r) { saved.push_back(std::move(r)); });
+    check(std::any_of(saved.begin(), saved.end(), [](const SessionRef& r) { return r.id == "before-clear"; }) &&
+              std::any_of(saved.begin(), saved.end(), [](const SessionRef& r) { return r.id == "after-clear"; }),
+          "codex clear: both conversations remain separately available in history");
+    session.pty().terminate();
+  }
+
+  // Untranslated content is visible even when tools and thinking are folded.
+  {
+    const std::string path = base + "/translation-warning.jsonl";
+    const std::string original = R"({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Supported answer"},{"type":"future_audio","data":"RAW_UNKNOWN_MARKER"}]}})";
+    put(path, original + "\n");
+    ChatRenderer chat; chat.open(path, &codex_adapter());
+    Surface sf; sf.resize(110, 24); Painter p(sf, {0, 0, 110, 24});
+    Filters filters; Theme theme;
+    chat.render(p, theme, filters);
+    const auto shown = screen(sf);
+    const size_t pos = shown.find("Warning: mico cannot display codex content block future_audio");
+    check(pos != std::string::npos && shown.find("Supported answer") != std::string::npos,
+          "translation: supported content and a warning both survive turn folding");
+    if (pos != std::string::npos) {
+      const int y = int(std::count(shown.begin(), shown.begin() + pos, '\n'));
+      const auto menu = chat.context_menu({5, y});
+      std::string toggle;
+      bool copy = false;
+      for (const auto& item : menu) {
+        if (item.action.starts_with("toggle:")) toggle = item.action;
+        if (item.action == "copy_raw") copy = true;
+      }
+      std::string copied;
+      check(copy && chat.on_action("copy_raw", filters, &copied) && copied == original,
+            "translation: the warning copies the complete original transcript record");
+      check(!toggle.empty() && chat.on_action(toggle, filters, nullptr), "translation: a warning offers inspection");
+      chat.render(p, theme, filters);
+      check(screen(sf).find("RAW_UNKNOWN_MARKER") != std::string::npos,
+            "translation: expanding the warning reveals the unsupported content");
+    }
+  }
+
+  // Working-directory flags change the matched folder, while the original
+  // launch folder is preserved for parsing other relative arguments.
+  {
+    const std::string root = base + "/agent-cwd";
+    const std::string target = root + "/target \"quoted\"";
+    std::filesystem::create_directories(root + "/launch");
+    std::filesystem::create_directories(target);
+    EnvScope home("HOME", root);
+    EnvScope codex_home("CODEX_HOME", root + "/codex-home");
+    EnvScope omp_profile("OMP_PROFILE", "environment-profile");
+    EnvScope agent_dir("PI_CODING_AGENT_DIR", "");
+    EnvScope session_dir("PI_CODING_AGENT_SESSION_DIR", "");
+    EnvScope config_dir("PI_CONFIG_DIR", ".omp");
+    EnvScope data_dir("XDG_DATA_HOME", "");
+    for (const std::string agent : {"codex", "omp"}) {
+      const std::string exe = root + "/bin/" + agent;
+      put(exe, R"PY(#!/usr/bin/env python3
+import json, os, pathlib, sys
+if '--help' in sys.argv:
+    print('--no-daemon')
+    sys.exit(0)
+def option(name):
+    for i, arg in enumerate(sys.argv):
+        if arg == name:
+            return sys.argv[i + 1]
+        if arg.startswith(name + '='):
+            return arg.split('=', 1)[1]
+agent = pathlib.Path(sys.argv[0]).name
+root = pathlib.Path(os.environ['HOME'])
+(root / ('spawn-' + agent)).write_text(os.getcwd())
+os.chdir(option('--cd') if agent == 'codex' else option('--cwd'))
+if agent == 'codex':
+    path = pathlib.Path(os.environ['CODEX_HOME']) / 'sessions/2026/10/10/rollout-cwd.jsonl'
+    record = {'type': 'session_meta', 'payload': {'id': 'cwd-codex', 'cwd': os.getcwd()}}
+else:
+    path = root / '.omp/profiles' / option('--profile') / 'agent/sessions/slug/cwd.jsonl'
+    record = {'type': 'session', 'id': 'cwd-omp', 'cwd': os.getcwd()}
+path.parent.mkdir(parents=True, exist_ok=True)
+writer = path.open('w')
+writer.write(json.dumps(record, separators=(',', ':')) + '\n')
+writer.flush()
+os.write(1, b'READY\r\n')
+os.read(0, 1)
+)PY");
+      chmod(exe.c_str(), 0700);
+      LiveSession session;
+      Launch l;
+      l.agent = agent; l.cwd = root + "/launch";
+      if (agent == "codex") l.argv = {exe, "--cd", "../target \"quoted\""};
+      else l.argv = {exe, "--cwd=../target \"quoted\"", "--profile", "cli-profile"};
+      session.start(l);
+      check(session.cwd() == target, "agent cwd: relative CLI flags update mico's working folder");
+      session.set_geometry(80, 20);
+      for (int i = 0; i < 600 && session.transcript().empty() && !session.exited(); i++) {
+        session.pump(); usleep(5000);
+      }
+      check(session.session_id() == "cwd-" + agent && !session.transcript().empty(),
+            "agent cwd: Codex and CLI-profile omp transcripts attach in the overridden folder");
+      std::ifstream initial(root + "/spawn-" + agent);
+      std::string launched; std::getline(initial, launched);
+      check(launched == root + "/launch", "agent cwd: the PTY starts in the user's original launch folder");
+      session.pty().terminate();
+    }
+  }
+
+  // The permissions chip opens Codex's picker with paced input. A fixture
+  // refuses an Enter coalesced with the command, then reports settings as
+  // the CLI does, without starting a model turn.
+  {
+    const std::string root = base + "/codex-picker";
+    const std::string home = root + "/codex-home";
+    EnvScope codex_home("CODEX_HOME", home);
+    const std::string transcript = home + "/sessions/2026/10/10/rollout-picker.jsonl";
+    put(transcript, R"({"type":"session_meta","payload":{"id":"picker-fixture","cwd":)" + js::quote(root) + "}}\n" +
+        R"({"type":"turn_context","payload":{"approval_policy":"on-request","sandbox_policy":{"type":"workspace-write"}}})" "\n");
+    const std::string fixture = root + "/picker.py";
+    put(fixture, R"PY(import json, os, pathlib, select, sys, time, tty
+root, transcript = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+tty.setraw(0)
+os.write(1, 'Ready\r\n› \r\n'.encode())
+(root / 'ready').touch()
+command = os.read(0, 1024)
+if command != b'/permissions':
+    (root / 'error').write_text(repr(command))
+    sys.exit(1)
+time.sleep(.06)
+if select.select([0], [], [], 0)[0]:
+    (root / 'error').write_text('Enter arrived before command completion redrew')
+    sys.exit(1)
+os.write(1, b'COMMAND_COMPLETION\r\n')
+if os.read(0, 1024) != b'\r':
+    (root / 'error').write_text('missing Enter')
+    sys.exit(1)
+os.write(1, '\x1b[2J\x1b[HPermissions\r\n› 1. Ask for approval\r\n  2. Full Access\r\n'.encode())
+(root / 'menu').touch()
+if os.read(0, 1024) != b'2':
+    (root / 'error').write_text('wrong selection')
+    sys.exit(1)
+with transcript.open('a') as f:
+    f.write(json.dumps({'type': 'event_msg', 'payload': {'type': 'thread_settings_applied',
+        'thread_settings': {'approval_policy': 'never', 'permission_profile': {'type': 'disabled'}}}}) + '\n')
+os.write(1, '\x1b[2J\x1b[HPermissions updated\r\n› \r\n'.encode())
+(root / 'done').touch()
+time.sleep(10)
+)PY");
+    App app;
+    LiveSession session;
+    Launch launch;
+    launch.agent = "codex";
+    launch.session_id = "picker-fixture";
+    launch.cwd = root;
+    launch.argv = {"python3", fixture, root, transcript};
+    session.start(launch);
+    auto pane = make_session_pane(&session);
+    pane->set_app(&app);
+    Surface sf; sf.resize(100, 30);
+    Painter p(sf, {0, 0, 100, 30});
+    const auto wait_for = [&](const char* name) {
+      for (int i = 0; i < 800; i++) {
+        session.pump();
+        pane->render(p, true);
+        if (std::filesystem::exists(root + "/" + name)) return true;
+        if (session.exited()) return false;
+        usleep(5000);
+      }
+      return false;
+    };
+    check(wait_for("ready"), "codex: picker fixture starts");
+    pane->on_action("chipcmd:/permissions");
+    check(wait_for("menu") && !std::filesystem::exists(root + "/error"),
+          "codex: permissions picker receives the command and Enter on separate settled frames");
+    for (int i = 0; i < 100 && session.answer_sending(); i++) { session.pump(); usleep(5000); }
+    check(session.send_answer({"2"}) && wait_for("done"), "codex: its permission picker accepts a selection");
+    pane->on_action("toggle_view");
+    pane->render(p, true);
+    check(screen(sf).find("permissions never") != std::string::npos &&
+              screen(sf).find("danger-full-access") != std::string::npos,
+          "codex: returning to chat shows the applied permission and sandbox immediately");
+    session.pty().terminate();
+  }
+
+  // Current Codex closes final answers by phase, even when the separate
+  // task_complete record has not landed before the next user message.
+  {
+    const std::string path = base + "/codex-phases.jsonl";
+    put(path,
+        R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first request"}]}})" "\n"
+        R"({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"PHASECOMMENT"}]}})" "\n"
+        R"({"type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"p1","arguments":"ls"}})" "\n"
+        R"({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"PHASEANSWER"}]}})" "\n"
+        R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"next request"}]}})" "\n");
+    ChatRenderer chat;
+    chat.open(path, &codex_adapter());
+    Surface sf; sf.resize(80, 24);
+    Painter p(sf, {0, 0, 80, 24});
+    chat.render(p, Theme{}, Filters{});
+    const std::string shown = screen(sf);
+    check(shown.find("PHASEANSWER") != std::string::npos && shown.find("PHASECOMMENT") == std::string::npos &&
+              shown.find("1 comment") != std::string::npos && shown.find("next request") != std::string::npos,
+          "codex: final_answer remains visible after a new user turn, with earlier work folded");
   }
 
   // A cancelled codex turn has no answer, so nothing folds.

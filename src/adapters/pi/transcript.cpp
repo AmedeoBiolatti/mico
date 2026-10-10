@@ -3,6 +3,7 @@
 
 #include "adapters/pi/pi.h"
 #include "adapters/user_text.h"
+#include "adapters/translation.h"
 
 // The transcript reader pi and omp share; see pi.h.
 namespace mico {
@@ -417,10 +418,35 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
     return;
   }
   if (type == "custom_message") {
-    custom_message(arena, raw, out);
+    if (custom_message(arena, raw, out)) {
+      js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
+        if (k == "content") warn_content(arena, out, id(), v);
+        return true;
+      });
+    } else {
+      bool display = false;
+      std::string_view kind;
+      js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
+        if (k == "display") display = v.is_true();
+        else if (k == "customType") kind = v.body();
+        return true;
+      });
+      if (display) translation_warning(arena, out, id(), "custom message " + std::string(kind), raw);
+    }
     return;
   }
-  if (type != "message" || !message.is_object()) return;
+  if (type != "message") {
+    if (type != "session" && type != "session_init" && type != "title" && type != "title_change" &&
+        type != "session_info" && type != "model_change" && type != "thinking_level_change" && type != "custom" &&
+        type != "credential_pin" && type != "branch_summary" && type != "mode_change" && type != "service_tier_change" &&
+        type != "label" && type != "leaf")
+      translation_warning(arena, out, id(), "record " + std::string(type), raw);
+    return;
+  }
+  if (!message.is_object()) {
+    translation_warning(arena, out, id(), "message record", raw);
+    return;
+  }
 
   std::string_view role, stop_reason, attribution;
   js::Value content{};
@@ -434,6 +460,7 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
 
   if (role == "user") {
     if (content.type == js::Type::Null) return;
+    warn_content(arena, out, id(), content);
     Event e;
     e.text = add_content(arena, content);
     if (e.text.empty()) return;
@@ -463,15 +490,27 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
     e.tool_id = hash_id(call_id);
     e.ok = !is_error;
     if (result.type != js::Type::Null) e.text = add_content(arena, result);
+    warn_content(arena, out, id(), result);
     if (e.ok) e.detail = edit_diff(arena, message);
     out.push_back(e);
     return;
   }
 
-  if (role != "assistant" || !content.is_array()) return;
+  if (role != "assistant") {
+    translation_warning(arena, out, id(), "message role " + std::string(role), message.raw);
+    return;
+  }
+  if (content.is_string()) {
+    Event e;
+    e.kind = EventKind::Assistant;
+    e.text = arena.add_json(content);
+    if (!e.text.empty()) out.push_back(e);
+  } else if (!content.is_array()) {
+    translation_warning(arena, out, id(), "assistant content", message.raw);
+  }
 
   js::scan_array(content.raw, [&](const js::Value& item) {
-    if (!item.is_object()) return true;
+    if (!item.is_object()) { translation_warning(arena, out, id(), "assistant content block", item.raw); return true; }
     std::string_view itype;
     js::Value text{}, thinking{}, name{}, id{}, args{};
     js::scan_object(item.raw, [&](std::string_view k, const js::Value& v) {
@@ -486,12 +525,12 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
 
     Event e;
     if (itype == "text") {
-      if (!text.is_string()) return true;
+      if (!text.is_string()) { translation_warning(arena, out, this->id(), "text block", item.raw); return true; }
       e.text = arena.add_json(text);
       if (e.text.empty()) return true;
       e.kind = EventKind::Assistant;
     } else if (itype == "thinking") {
-      if (!thinking.is_string()) return true;
+      if (!thinking.is_string()) { translation_warning(arena, out, this->id(), "thinking block", item.raw); return true; }
       e.text = arena.add_json(thinking);
       if (e.text.empty()) return true;
       e.kind = EventKind::Thinking;
@@ -513,7 +552,9 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
             e.summary = arena.add(paths);
       }
     } else {
-      return true;  // e.g. a redacted/encrypted block with nothing to show
+      if (itype != "redacted_thinking" && itype != "redactedThinking")
+        warn_content(arena, out, this->id(), js::Value{"[" + std::string(item.raw) + "]", js::Type::Array});
+      return true;
     }
     out.push_back(e);
     return true;
