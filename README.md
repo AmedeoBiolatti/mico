@@ -59,8 +59,8 @@ git clone https://github.com/AmedeoBiolatti/mico && cd mico
 mico
 ```
 
-To update, `git pull && ./install.sh`, then `mico kill` so the next daemon runs
-the new copy. `./install.sh --help` lists its options (`--prefix DIR`,
+To update, `git pull && ./install.sh`, then `:reset` inside mico to load
+the new copy while agents keep working. `./install.sh --help` lists its options (`--prefix DIR`,
 `--test`); the script is short, and only runs CMake. By hand it is
 `cmake -S . -B build -G Ninja && cmake --build build && cmake --install build`.
 
@@ -76,9 +76,16 @@ gh attestation verify mico-*.tar.gz -R AmedeoBiolatti/mico
 tar -xzf mico-*.tar.gz && install -Dm755 mico-*/bin/mico ~/.local/bin/mico
 ```
 
-From then on, `mico update` fetches the latest release, checks its checksum and
-replaces the binary in place (`mico update --check` only looks); `mico kill`
-then switches the daemon over. Releases before 0.1.3 lack the command.
+Inside mico, `:update` fetches the latest release, checks its checksum,
+installs it and reloads the daemon while agents keep working. `:update --check`
+only looks. `:reset` reloads an already installed build. Agent processes,
+their work, attached terminals, drafts and queued messages survive the reload.
+
+From a shell, `mico update` only installs (`mico update --check` only looks);
+`mico reset` then reloads the daemon and attaches. Live reload needs support in
+both the running daemon and the installed build. Older daemons need one ordinary
+restart before these commands are available; an incompatible build is refused
+without stopping agents. Releases before 0.1.3 lack `mico update`.
 
 `gh attestation` needs gh 2.49 or newer. Ubuntu 24.04's own `gh` package is
 older; GitHub's apt repository at [cli.github.com](https://cli.github.com) has
@@ -92,7 +99,7 @@ close the terminal to detach: your agents keep running.
 | `mico` | attach, starting a daemon if needed |
 | `mico --attach` | attach only; fail if no daemon is running |
 | `mico kill` | stop the daemon and its agents (the next daemon resumes them) |
-| `mico reset` | restart the daemon and reattach; its agents resume |
+| `mico reset` | reload the daemon and attach; agents keep working |
 | `mico --local` | single process; agents stop when it exits |
 
 ## Keys

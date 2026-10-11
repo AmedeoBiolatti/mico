@@ -7,6 +7,21 @@
 #include "base/text.h"
 
 namespace mico {
+
+void Vt::handoff(Handoff& h) {
+  h.fields(w_, h_, cx_, cy_, saved_cx_, saved_cy_, top_, bot_, wrap_pending_, autowrap_,
+           cursor_visible_, alt_, app_cursor_, sgr_mouse_, bracketed_paste_, mouse_mode_,
+           cur_.fg, cur_.bg, cur_.a, saved_style_.fg, saved_style_.bg, saved_style_.a);
+  const auto row = [&](VtRow& r) {
+    h.items(r, [&](Cell& c) { h.fields(c.cp, c.st.fg, c.st.bg, c.st.a, c.width, c.link); });
+  };
+  row(blank_row_);
+  h.items(screen_, row);
+  h.items(alt_buf_, row);
+  h.items(scrollback_, row);
+  h.fields(state_, params_, intermediates_, nums_, utf8_, last_cp_, last_x_, last_y_, after_x_, after_wrap_);
+  if (h.reading()) gen_ = next_generation();
+}
 namespace {
 
 constexpr size_t kMaxScrollback = 10000;

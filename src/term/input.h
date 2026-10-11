@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "vt/events.h"
+#include "base/handoff.h"
 
 namespace mico {
 
@@ -15,6 +16,7 @@ class InputDecoder {
   void feed(std::string_view bytes) { pending_.append(bytes); }
   bool empty() const { return pending_.empty(); }
   void clear() { pending_.clear(); }
+  void handoff(Handoff& h) { h.fields(pending_); }
 
   // Returns the next complete event, or nullopt when more bytes are needed.
   std::optional<InputEvent> next();

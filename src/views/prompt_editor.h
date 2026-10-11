@@ -8,6 +8,7 @@
 
 #include "model/message.h"
 #include "base/text.h"
+#include "base/handoff.h"
 
 namespace mico {
 
@@ -22,6 +23,19 @@ class PromptEditor {
   const std::string& text() const { return text_; }
   size_t cursor() const { return cursor_; }
   bool empty() const { return text_.empty(); }
+  void handoff(Handoff& h) {
+    const auto attachments = [&](auto& as) {
+      h.items(as, [&](Attachment& a) { h.fields(a.image, a.data, a.label); });
+    };
+    h.fields(text_, cursor_, sel_anchor_, last_);
+    attachments(attachments_);
+    const auto snapshot = [&](Snapshot& s) {
+      h.fields(s.text, s.cursor, s.anchor);
+      attachments(s.attachments);
+    };
+    h.items(undo_, snapshot);
+    h.items(redo_, snapshot);
+  }
 
   bool has_selection() const { return sel_anchor_ != std::string::npos; }
   size_t sel_lo() const { return std::min(cursor_, sel_anchor_); }

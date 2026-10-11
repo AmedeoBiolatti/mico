@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -242,11 +243,45 @@ int kill_daemon() {
   return 0;
 }
 
-// `mico kill` and then `mico` in one step: the next daemon resumes the agents
-// the last one was running, and this terminal attaches to it. With no daemon
-// running it is just `mico`.
+// Reload in place, then attach this terminal. Unknown/old daemons are never
+// killed as a fallback: that would interrupt precisely the work being kept.
 int reset_daemon() {
-  stop_daemon();
+  const int fd = dial(proto::socket_path());
+  if (fd >= 0) {
+    signal(SIGPIPE, SIG_IGN);
+    std::string out, in;
+    proto::encode(proto::Type::Reset, {}, out);
+    tty::write_all(fd, out);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    bool reset = false;
+    bool replied = false;
+    std::string error = "daemon did not accept a safe reload; agents were left running";
+    while (std::chrono::steady_clock::now() < deadline) {
+      pollfd p{fd, POLLIN, 0};
+      const int ready = ::poll(&p, 1, 100);
+      if (ready < 0 && errno == EINTR) continue;
+      if (ready <= 0) continue;
+      char buf[4096];
+      const ssize_t n = read(fd, buf, sizeof buf);
+      if (n <= 0) break;
+      in.append(buf, size_t(n));
+      proto::Type t;
+      std::string payload;
+      while (proto::decode(in, &t, &payload)) {
+        if (t != proto::Type::ResetResult) continue;
+        replied = true;
+        reset = payload.empty();
+        error = std::move(payload);
+        break;
+      }
+      if (replied) break;
+    }
+    close(fd);
+    if (!reset) {
+      fprintf(stderr, "mico reset: %s\n", error.c_str());
+      return 1;
+    }
+  }
   return run_client(true);
 }
 

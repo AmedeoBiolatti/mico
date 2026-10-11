@@ -11,6 +11,7 @@
 #include "vt/vt.h"
 #include "base/text.h"
 #include "base/log.h"
+#include "base/handoff.h"
 #include "ui/app.h"
 #include "math/math.h"
 #include "ui/theme.h"
@@ -22,7 +23,7 @@
 #include <sstream>
 
 namespace mico {
-int run_daemon();
+int run_daemon(int handoff_fd = -1);
 int run_client(bool allow_spawn);
 int kill_daemon();
 int reset_daemon();
@@ -94,6 +95,20 @@ int show_keys() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // The installed binary must agree on the handoff schema before the live
+  // daemon replaces itself. These switches are only used between binaries.
+  if (argc == 2 && !strcmp(argv[1], "--handoff-version")) {
+    printf("%d\n", mico::kHandoffVersion);
+    return 0;
+  }
+  if (argc == 4 && !strcmp(argv[1], "--daemon") && !strcmp(argv[2], "--handoff-fd")) {
+    char* end = nullptr;
+    const long fd = strtol(argv[3], &end, 10);
+    if (!end || *end || fd < 3 || fd > 0x7fffffff) return 2;
+    mico::logs::init("daemon");
+    mico::logs::install_crash_handler();
+    return mico::run_daemon(int(fd));
+  }
   // The MCP server agents start: nothing else of mico, and only JSON on stdout.
   if (argc > 1 && !strcmp(argv[1], "--mcp")) return mico::run_mcp_server();
   if (argc > 1 && !strcmp(argv[1], "update")) {
@@ -252,7 +267,7 @@ int main(int argc, char** argv) {
           "  mico                 attach, starting a daemon if needed\n"
           "  mico --attach        attach only; fail if no daemon is running\n"
           "  mico kill            stop the daemon and its agents (the next daemon resumes them)\n"
-          "  mico reset           restart the daemon and reattach; its agents resume\n"
+          "  mico reset           reload the daemon and attach; agents keep working\n"
           "  mico --local         single process; agents stop when it exits\n"
           "  mico update          install the latest release (--check only looks)\n"
           "  mico --version       print the version\n"

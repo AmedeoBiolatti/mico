@@ -20,6 +20,7 @@ struct Options {
   size_t cap = 16u << 20;   // bytes of output kept; more cuts the program short
   int timeout_ms = 10'000;  // then it is stopped, and timed_out set
   int stop_signal = SIGTERM;
+  bool capture_stderr = false;  // updater diagnostics belong with its output
   // Called after each read: true when what has arrived is enough, and the
   // program can be let go (cut is then set, as for the cap).
   std::function<bool(const std::string&)> enough;

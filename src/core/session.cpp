@@ -288,6 +288,39 @@ bool LiveSession::restart(const Launch& l) {
   return start(l);
 }
 
+void LiveSession::handoff(Handoff& h) {
+  h.fields(pty_, vt_, agent_, cwd_, spawn_cwd_, session_id_, origin_, forked_, transcript_,
+           started_at_, used_at_, last_probe_, last_output_ms_, was_working_, work_generation_, generation_,
+           was_exited_, trust_tries_, starting_until_ms_, trust_next_ms_, unseen_, settle_at_ms_,
+           turn_open_, turns_from_end_, turn_file_, turn_read_, turn_head_, turn_poll_ms_,
+           preexisting_, buf_, argv_, spawned_, answer_steps_, answer_step_, answer_key_ms_,
+           answer_feedback_, answer_failed_, after_answer_, after_answer_ms_);
+  h.items(queue_, [&](auto& parts) {
+    h.items(parts, [&](MessagePart& p) { h.fields(p.image, p.text); });
+  });
+  h.fields(queue_waiting_, queue_gen_, queue_sent_ms_);
+  h.items(msg_steps_, [&](Step& s) { h.fields(s.bytes, s.settle_ms); });
+  h.fields(msg_step_, msg_key_ms_, msg_feedback_, last_w_, last_h_);
+  h.items(bg_.running, [&](BackgroundTask& t) {
+    h.fields(t.id, t.kind, t.what, t.started_ms, t.expires_ms, t.offset, t.last_event,
+             t.last_event_ms, t.events, t.output, t.fraction, t.done, t.total, t.eta_s,
+             t.since_ms, t.since_fraction);
+  });
+  std::vector<std::string> keys;
+  if (!h.reading()) for (const auto& c : bg_.calls) keys.push_back(c.first);
+  h.fields(keys);
+  for (const auto& key : keys) {
+    auto& c = bg_.calls[key];
+    h.fields(c.kind, c.what, c.at_ms, c.timeout_ms, c.offset);
+  }
+  h.fields(bg_.version, bg_file_, continued_to_, continued_, bg_read_, bg_line_, bg_skip_,
+           bg_poll_ms_, bg_progress_ms_, bg_tasks_dir_);
+  if (h.reading()) {
+    adapter_ = adapter_for(agent_);
+    if (!transcript_.empty()) claimed_transcripts()[transcript_] = this;
+  }
+}
+
 bool LiveSession::set_geometry(int w, int h) {
   w = w > 0 ? w : 80;
   h = h > 0 ? h : 24;

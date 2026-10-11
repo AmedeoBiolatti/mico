@@ -175,6 +175,41 @@ void set_layout_mode(LayoutMode m) {
 
 App::~App() = default;
 
+void App::handoff(Handoff& h) {
+  int selected = -1;
+  for (size_t i = 0; i < ws_.live().size(); i++)
+    if (ws_.live()[i].get() == selected_live_) selected = int(i);
+  h.fields(selected, screen_, cmd_active_, cmd_text_);
+  for (const auto& s : ws_.live()) {
+    std::string data;
+    if (!h.reading()) {
+      Pane* pane = nullptr;
+      if (auto i = session_panes_.find(s.get()); i != session_panes_.end()) pane = i->second.get();
+      if (root_) root_->for_each_pane([&](Pane& p) { if (p.session() == s.get()) pane = &p; });
+      if (pane) {
+        Handoff state;
+        pane->handoff(state);
+        data = state.data();
+      }
+    }
+    h.fields(data);
+    if (h.reading() && !data.empty()) {
+      auto pane = make_session_pane(s.get());
+      pane->set_app(this);
+      Handoff state(data);
+      pane->handoff(state);
+      if (!state.finished()) h.fail();
+      session_panes_[s.get()] = std::move(pane);
+    }
+  }
+  if (h.reading()) {
+    selected_live_ = selected >= 0 && size_t(selected) < ws_.live().size() ? ws_.live()[size_t(selected)].get() : nullptr;
+    if (selected_live_) selected_path_.clear();
+    build_layout();
+    focus_after_build_ = selected_live_;
+  }
+}
+
 void App::build_layout() {
   if (root_) {
     if (auto pane = root_->take_session_pane()) {
@@ -1284,6 +1319,8 @@ constexpr Command kCommands[] = {
     {"redraw", "repaint everything"},
     {"log", "show where the log file is"},
     {"rescan", "re-read sessions from disk"},
+    {"update", "install the latest release and reload mico; agents keep working (update --check only looks)"},
+    {"reset", "reload the installed mico; agents keep working"},
     {"close", "close the focused pane"},
     {"detach", "leave; agents keep running"},
     {"quit", "stop every agent and quit"},
@@ -1582,6 +1619,18 @@ void App::run_command(std::string line) {
   if (cmd == "redraw") { force_redraw(); return; }
   if (cmd == "log") { set_status("log: " + logs::path()); return; }
   if (cmd == "rescan") { ws_.store().scan(); set_status("rescanned"); return; }
+  if (cmd == "update" || cmd == "reset") {
+    if (!maintenance_enabled_) {
+      set_status("update/reset needs the daemon: start mico without --local");
+      return;
+    }
+    if ((!arg.empty() && arg != "--check") || (cmd == "reset" && !arg.empty())) {
+      set_status(cmd == "update" ? "update [--check]" : "reset takes no arguments");
+      return;
+    }
+    maintenance_ = cmd == "reset" ? Maintenance::Reset : arg == "--check" ? Maintenance::CheckUpdate : Maintenance::Update;
+    return;
+  }
   if (cmd == "close") {
     if (focus_ < placed_.size())
       if (LiveSession* ls = placed_[focus_].pane->session()) close_session(ls);

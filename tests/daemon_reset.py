@@ -2,7 +2,7 @@
 """`mico reset` swaps the daemon and keeps the running chats.
 
 Against an isolated daemon and a stand-in for claude: `mico reset` in a
-terminal stops the daemon, starts another that resumes the listed agent, and
+terminal reloads the daemon in place without restarting the listed agent, and
 attaches to it; with no daemon running it only starts one.
 Run: python3 tests/daemon_reset.py build/mico
 """
@@ -26,6 +26,8 @@ if '--resume' not in sys.argv:
     sys.exit(0)
 with open(os.path.join(os.environ['HOME'], 'argv.log'), 'a') as f:
     f.write(' '.join(sys.argv[1:2] + sys.argv[2:3]) + '\n')
+with open(os.path.join(os.environ['HOME'], 'agent.pid'), 'w') as f:
+    f.write(str(os.getpid()))
 time.sleep(0.5)
 sys.stdout.write('✻ Working… (esc to interrupt)\r\n')
 sys.stdout.flush()
@@ -66,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix='mico-daemon-reset-') as directory:
 
     env = dict(os.environ, HOME=directory, XDG_CONFIG_HOME=str(root / 'config'),
                XDG_STATE_HOME=str(root / 'state'), XDG_RUNTIME_DIR=directory,
-               PATH=f'{root / "bin"}:{os.environ.get("PATH", "")}', TERM='xterm')
+               PATH=f'{root / "bin"}:{os.environ.get("PATH", "")}', TERM='xterm', MICO_SCOPES='0')
     env.pop('DISPLAY', None)
     env.pop('WAYLAND_DISPLAY', None)
     address = root / 'mico/default.sock'
@@ -119,11 +121,18 @@ with tempfile.TemporaryDirectory(prefix='mico-daemon-reset-') as directory:
         time.sleep(0.5)
         drain(fd)
         assert len(argv_log.read_text().splitlines()) == 1, argv_log.read_text()
+        agent_pid = int((root / 'agent.pid').read_text())
+        daemon_pid = int((state / 'daemon').read_text().split()[0])
         finish(pid, fd)
 
-        # A daemon running: reset replaces it, and the agent is resumed again.
+        # A daemon running: reset execs it in place, and never resumes the agent.
         pid, fd = reset_in_terminal()
-        wait_for('claude to be resumed again', lambda: len(argv_log.read_text().splitlines()) == 2, 15)
+        log = state / 'mico.log'
+        wait_for('the reload', lambda: log.exists() and 'reload complete' in log.read_text(), 15)
+        assert len(argv_log.read_text().splitlines()) == 1, argv_log.read_text()
+        assert int((root / 'agent.pid').read_text()) == agent_pid
+        assert int((state / 'daemon').read_text().split()[0]) == daemon_pid
+        os.kill(agent_pid, 0)
         assert all(f'--resume {SESSION}' in line for line in argv_log.read_text().splitlines())
         wait_for('the new daemon', address.exists, 5)
         finish(pid, fd)

@@ -76,6 +76,11 @@ Pty::~Pty() {
   }
 }
 
+void Pty::handoff(Handoff& h) {
+  h.fields(fd_, pid_, exited_, status_, signal_, unit_, spawn_error_, pending_input_);
+  if (h.reading() && fd_ >= 0 && fcntl(fd_, F_SETFD, FD_CLOEXEC) < 0) h.fail();
+}
+
 bool Pty::spawn(const std::vector<std::string>& argv, const std::string& cwd, int w, int h, const std::string& unit,
                 const std::string& description) {
   spawn_error_.clear();

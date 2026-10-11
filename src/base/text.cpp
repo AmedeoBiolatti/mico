@@ -226,6 +226,16 @@ std::string_view glyph_text(char32_t id) {
   return k < g.text.size() ? std::string_view(g.text[k]) : std::string_view();
 }
 
+void handoff(Handoff& h) {
+  Glyphs& g = glyphs();
+  std::lock_guard lock(g.mu);
+  h.fields(g.text);
+  if (h.reading()) {
+    g.ids.clear();
+    for (size_t i = 0; i < g.text.size(); i++) g.ids.emplace(g.text[i], kGlyphBase + char32_t(i));
+  }
+}
+
 std::string ellipsize(std::string_view s, int max_cols) {
   if (max_cols <= 0) return {};
   if (str_width(s) <= max_cols) return std::string(s);

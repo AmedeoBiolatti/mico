@@ -65,6 +65,16 @@ class SessionPane final : public Pane {
   static constexpr int kMaxPromptRows = 6;
 
   LiveSession* session() const override { return s_; }
+  void handoff(Handoff& h) override {
+    int permission_cursor = perm_pick_.cursor();
+    h.fields(view_, view_chosen_, prompt_, hist_, hist_at_, hist_shown_, note_q_, note_header_,
+             reply_live_, reply_.call_id, reply_.index, reply_.question, reply_.answer,
+             perm_key_, perm_note_, note_perm_, answering_question_, raw_scroll_, permission_cursor);
+    if (h.reading()) {
+      refresh_permission();
+      perm_pick_.set_cursor(permission_cursor);
+    }
+  }
 
   std::string title() const override {
     return (app_ ? app_->session_title(*s_) : s_->label()) +

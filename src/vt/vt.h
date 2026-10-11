@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "vt/surface.h"
+#include "base/handoff.h"
 
 namespace mico {
 
@@ -39,6 +40,7 @@ class Vt {
   bool sgr_mouse() const { return sgr_mouse_; }
   bool app_cursor_keys() const { return app_cursor_; }
   bool bracketed_paste() const { return bracketed_paste_; }
+  void handoff(Handoff& h);
 
  private:
   // Sequences arrive split across reads, so every multi-byte form needs a

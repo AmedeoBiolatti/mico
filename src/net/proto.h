@@ -22,6 +22,8 @@ enum class Type : uint8_t {
   Detach = 6,  // D->C  the daemon is going away
   Kill = 7,    // C->D  stop the daemon and everything it owns
   OpenUrl = 8, // D->C  the user clicked this link: open it where they are
+  Reset = 9,   // C->D reload mico in place, keeping agents and clients
+  ResetResult = 10, // D->C empty: reloaded; otherwise the reason it was refused
 };
 
 inline constexpr uint32_t kMaxPayload = 8u << 20;

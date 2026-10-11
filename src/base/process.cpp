@@ -20,7 +20,7 @@ int64_t now_ms() {
 
 // Runs `argv` with `in` as its stdin and `out` as its stdout, each /dev/null
 // when -1, and stderr to /dev/null. -1 when it could not be started.
-pid_t spawn(const std::vector<std::string>& argv, int in, int out) {
+pid_t spawn(const std::vector<std::string>& argv, int in, int out, bool capture_stderr = false) {
   if (argv.empty()) return -1;
   const std::string bin = find_program(argv[0]);
   if (bin.empty()) return -1;
@@ -34,7 +34,7 @@ pid_t spawn(const std::vector<std::string>& argv, int in, int out) {
   const int null = open("/dev/null", O_RDWR);
   dup2(in >= 0 ? in : null, STDIN_FILENO);
   dup2(out >= 0 ? out : null, STDOUT_FILENO);
-  dup2(null, STDERR_FILENO);
+  dup2(capture_stderr && out >= 0 ? out : null, STDERR_FILENO);
   execv(bin.c_str(), args.data());
   _exit(127);
 }
@@ -63,7 +63,7 @@ Result capture(const std::vector<std::string>& argv, const Options& opt) {
   Result r;
   int fds[2];
   if (pipe2(fds, O_CLOEXEC) != 0) return r;
-  const pid_t pid = spawn(argv, -1, fds[1]);
+  const pid_t pid = spawn(argv, -1, fds[1], opt.capture_stderr);
   if (pid < 0) {
     close(fds[0]);
     close(fds[1]);
