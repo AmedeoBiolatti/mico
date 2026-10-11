@@ -174,7 +174,7 @@ int run_update(bool check_only) {
   }
   cleanup();
   printf("updated %s to %s\n", self.c_str(), tag.c_str());
-  printf("a running daemon keeps the old copy; run 'mico kill' when ready, and the next 'mico' starts the new one\n");
+  printf("run ':reset' inside mico or 'mico reset' to reload it while agents keep working\n");
   printf("(the download's checksum was verified; to also verify its provenance: gh attestation verify)\n");
   return 0;
 }

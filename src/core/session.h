@@ -65,6 +65,7 @@ class LiveSession {
   bool start(const Launch& l);
   // Reuse the session identity so its pane and unsent draft survive a restart.
   bool restart(const Launch& l);
+  void handoff(Handoff& h);
   // Spawns on the first call, resizes on later ones. Returns true if this call
   // spawned the process.
   bool set_geometry(int w, int h);

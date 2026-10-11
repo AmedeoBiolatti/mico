@@ -233,6 +233,10 @@ class App {
   // Stop everything, agents included. Deliberate only: never bound to a bare
   // keystroke, because it is not recoverable.
   void shutdown() { action_ = AppAction::Shutdown; running_ = false; }
+  enum class Maintenance { None, Update, CheckUpdate, Reset };
+  void enable_maintenance() { maintenance_enabled_ = true; }
+  Maintenance take_maintenance() { return std::exchange(maintenance_, Maintenance::None); }
+  void handoff(Handoff& h);
   void set_status(std::string s) {
     status_ = std::move(s);
     status_at_ = ++tick_;
@@ -556,6 +560,8 @@ class App {
   uint64_t filter_version_ = 1;
   std::string selected_path_;       // transcript path of the selected stored chat
   LiveSession* selected_live_ = nullptr;
+  bool maintenance_enabled_ = false;
+  Maintenance maintenance_ = Maintenance::None;
   size_t focus_ = 0;
   bool running_ = true;
   AppAction action_ = AppAction::None;

@@ -2,6 +2,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -14,7 +15,9 @@
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <cstdlib>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -24,6 +27,8 @@
 #include "term/input.h"
 #include "base/log.h"
 #include "base/process.h"
+#include "base/text.h"
+#include "base/fs.h"
 #include "term/kitty.h"
 #include "math/math.h"
 #include "term/sixel.h"
@@ -33,6 +38,8 @@
 #include "core/opener.h"
 #include "ui/app.h"
 #include "ui/theme.h"
+
+extern char** environ;
 
 namespace mico {
 namespace {
@@ -62,6 +69,7 @@ struct Client {
   bool focused = true, focus_known = false;
   GfxCaps caps{};
   math::KittyHeld images;  // the images this terminal already holds
+  bool reset_requested = false;
 };
 
 bool set_nonblock(int fd) {
@@ -222,6 +230,162 @@ void flush_client(Client& c) {
     if (n < 0 && errno == EINTR) continue;
     break;  // EAGAIN: the rest goes out on the next POLLOUT
   }
+}
+
+std::string installed_exe() {
+  char buf[4096];
+  const ssize_t n = readlink("/proc/self/exe", buf, sizeof buf);
+  if (n <= 0) return {};
+  std::string path(buf, size_t(n));
+  if (path.ends_with(" (deleted)")) path.resize(path.size() - 10);
+  return path;
+}
+
+void carry_clients(Handoff& h, std::vector<std::unique_ptr<Client>>& clients) {
+  h.items(clients, [&](std::unique_ptr<Client>& c) {
+    if (h.reading()) c = std::make_unique<Client>();
+    h.fields(c->fd, c->in, c->out, c->dec, c->w, c->h, c->hello, c->dead,
+             c->mouse_on, c->mouse_any, c->focused, c->focus_known,
+             c->caps.kitty, c->caps.sixel, c->caps.tmux, c->caps.cell_w, c->caps.cell_h,
+             c->caps.notify, c->reset_requested);
+    if (h.reading()) {
+      if (fcntl(c->fd, F_SETFD, FD_CLOEXEC) < 0) h.fail();
+      c->escape_since = std::chrono::steady_clock::now();
+      if (c->reset_requested) {
+        proto::encode(proto::Type::ResetResult, {}, c->out);
+        c->reset_requested = false;
+      }
+    }
+  });
+}
+
+// Downloads and compatibility probes run off the event loop. The executable
+// fd pins the binary we checked, even if another updater replaces its path.
+struct MaintenanceJob {
+  std::mutex mu;
+  bool done = false;
+  int executable = -1;
+  std::string status;
+  ~MaintenanceJob() { if (executable >= 0) close(executable); }
+};
+
+std::shared_ptr<MaintenanceJob> start_maintenance(App::Maintenance request) {
+  auto job = std::make_shared<MaintenanceJob>();
+  const std::string self = installed_exe();
+  std::thread([job, self, request] {
+    std::string status;
+    int executable = -1;
+    bool ready = true;
+    if (request != App::Maintenance::Reset) {
+      proc::Options opt;
+      opt.timeout_ms = 300000;
+      opt.capture_stderr = true;
+      std::vector<std::string> argv{self, "update"};
+      if (request == App::Maintenance::CheckUpdate) argv.push_back("--check");
+      const auto result = proc::capture(argv, opt);
+      if (!result.out.empty()) MLOG("update: %s", result.out.c_str());
+      ready = result.ok();
+      if (!ready) {
+        const size_t at = result.out.find("mico update:");
+        status = result.timed_out ? "update timed out; agents are still running"
+                 : "update failed: " + (at == std::string::npos ? "see :log" : text::oneline(result.out.substr(at), 300));
+      } else if (request == App::Maintenance::CheckUpdate) {
+        status = text::oneline(result.out, 300);
+        ready = false;  // a check never reloads
+      }
+    }
+    if (ready) {
+      executable = open(self.c_str(), O_RDONLY | O_CLOEXEC);
+      const auto check = executable < 0 ? proc::Result{} :
+          proc::capture({"/proc/self/fd/" + std::to_string(executable), "--handoff-version"});
+      if (!check.ok() || check.out != std::to_string(kHandoffVersion) + "\n") {
+        if (executable >= 0) close(executable);
+        executable = -1;
+        status = "reload refused: installed mico cannot accept live agents; agents are still running (see :log)";
+        MLOG("reload compatibility check failed: %s", check.out.c_str());
+      }
+    }
+    std::lock_guard<std::mutex> lock(job->mu);
+    job->executable = executable;
+    job->status = std::move(status);
+    job->done = true;
+  }).detach();
+  return job;
+}
+
+// Success never returns: exec keeps this pid, its children and the open ptys.
+// On any failure, restore CLOEXEC and keep serving the existing workspace.
+std::string reload_daemon(int executable, int listener, int64_t started,
+                          Workspace& ws, App& app, std::vector<std::unique_ptr<Client>>& clients) {
+  app.save_view_if_changed();
+  // The next renderer starts its image ids afresh. Drop the old placements
+  // after any queued image chunks, then let the full repaint send new ones.
+  for (auto& c : clients) {
+    std::vector<uint32_t> ids;
+    for (const auto& im : c->images.images) ids.push_back(im.first);
+    std::string pictures;
+    math::free_images(ids, c->images, pictures, c->caps.tmux);
+    if (!pictures.empty()) proto::encode(proto::Type::Frame, pictures, c->out);
+    c->needs_full = true;
+  }
+  app.force_redraw();
+  Handoff state;
+  std::string magic = "mico-handoff-" + std::to_string(kHandoffVersion);
+  state.fields(magic, listener, started);
+  text::handoff(state);
+  ws.handoff(state);
+  app.handoff(state);
+  carry_clients(state, clients);
+  if (!state.ok()) return "could not prepare the reload; agents are still running";
+  const int fd = memfd_create("mico-handoff", MFD_CLOEXEC);
+  if (fd < 0) return "could not create reload state; agents are still running";
+  const std::string& data = state.data();
+  size_t at = 0;
+  while (at < data.size()) {
+    const ssize_t n = write(fd, data.data() + at, data.size() - at);
+    if (n > 0) at += size_t(n);
+    else if (n < 0 && errno == EINTR) continue;
+    else break;
+  }
+  if (at != data.size() || lseek(fd, 0, SEEK_SET) < 0) {
+    close(fd);
+    return "could not write reload state; agents are still running";
+  }
+  std::vector<int> fds{fd, listener};
+  for (const auto& s : ws.live()) if (s->pty().fd() >= 0) fds.push_back(s->pty().fd());
+  for (const auto& c : clients) fds.push_back(c->fd);
+  std::vector<int> flags;
+  bool inherited_ok = true;
+  for (int inherited : fds) {
+    const int fl = fcntl(inherited, F_GETFD);
+    flags.push_back(fl);
+    if (fl < 0 || fcntl(inherited, F_SETFD, fl & ~FD_CLOEXEC) < 0) { inherited_ok = false; break; }
+  }
+  if (inherited_ok) {
+    const std::string self = installed_exe(), number = std::to_string(fd);
+    char* argv[] = {const_cast<char*>(self.c_str()), const_cast<char*>("--daemon"),
+                    const_cast<char*>("--handoff-fd"), const_cast<char*>(number.c_str()), nullptr};
+    MLOG("reloading mico with %zu agents and %zu terminals", ws.live().size(), clients.size());
+    fexecve(executable, argv, environ);
+  }
+  const std::string error = strerror(errno);
+  for (size_t i = 0; i < flags.size(); i++)
+    if (flags[i] >= 0) fcntl(fds[i], F_SETFD, flags[i]);
+  close(fd);
+  return "reload failed: " + error + "; agents are still running";
+}
+
+std::string read_handoff(int fd) {
+  std::string data;
+  char buf[65536];
+  for (;;) {
+    const ssize_t n = read(fd, buf, sizeof buf);
+    if (n > 0) data.append(buf, size_t(n));
+    else if (n < 0 && errno == EINTR) continue;
+    else break;
+  }
+  close(fd);
+  return data;
 }
 
 }  // namespace
@@ -385,6 +549,10 @@ void read_client(App& app, Client& c) {
       // The client that asked is let go with the rest, once the address is
       // gone: it waits for that, to start the next daemon without racing this one.
       case proto::Type::Kill: g_stop = kStopKill; break;
+      case proto::Type::Reset:
+        c.reset_requested = true;
+        app.run_command("reset");
+        break;
       default: break;
     }
   }
@@ -407,7 +575,7 @@ void flush_escapes(App& app, std::vector<std::unique_ptr<Client>>& clients) {
 
 }  // namespace
 
-int run_daemon() {
+int run_daemon(int handoff_fd) {
   const std::string dir = proto::socket_dir();
   if (!proto::private_dir(dir, true)) {
     MLOG("refusing socket dir %s: not a private directory owned by this user", dir.c_str());
@@ -415,7 +583,19 @@ int run_daemon() {
   }
   const std::string path = proto::socket_path();
 
-  int lfd = listen_socket(path);
+  const std::string carried = handoff_fd >= 0 ? read_handoff(handoff_fd) : std::string();
+  Handoff state(carried);
+  int lfd = -1;
+  int64_t started = time(nullptr);
+  if (handoff_fd >= 0) {
+    std::string magic;
+    state.fields(magic, lfd, started);
+    if (!state.ok() || magic != "mico-handoff-" + std::to_string(kHandoffVersion) ||
+        lfd < 3 || fcntl(lfd, F_SETFD, FD_CLOEXEC) < 0) {
+      MLOG("invalid reload state");
+      return 1;
+    }
+  } else lfd = listen_socket(path);
   if (lfd < 0) return 1;
   MLOG("daemon listening on %s", path.c_str());
 
@@ -425,17 +605,37 @@ int run_daemon() {
   signal(SIGHUP, on_term);
   // Whether the last daemon stopped as it should, and if not, what the
   // journal says ended it: an out-of-memory kill takes no log line with it.
-  std::shared_ptr<Postmortem> postmortem = check_last_daemon();
-  write_pidfile(time(nullptr));
+  std::shared_ptr<Postmortem> postmortem = handoff_fd < 0 ? check_last_daemon() : nullptr;
+  write_pidfile(started);
 
   // The daemon owns the agents and what is known about them; the App is how
   // its clients see them. Today every client shares that one view.
   Workspace workspace;
+  if (handoff_fd >= 0) {
+    text::handoff(state);
+    workspace.handoff(state);
+  }
+  // An exec also inherits children of the old index/probe threads. Their
+  // pipes close at exec and they finish, but somebody still has to reap them.
+  // Record them before this daemon starts any new probes, excluding agents.
+  std::vector<pid_t> retired_children;
+  if (handoff_fd >= 0) {
+    std::string buf;
+    const auto children = fs::read_prefix("/proc/self/task/" + std::to_string(getpid()) + "/children", 1u << 20, buf);
+    std::stringstream pids{std::string(children)};
+    pid_t pid;
+    while (pids >> pid) {
+      bool agent = false;
+      for (const auto& s : workspace.live()) agent |= s->pty().pid() == pid;
+      if (!agent) retired_children.push_back(pid);
+    }
+  }
   // Agents the last daemon was running and did not stop on purpose come back:
   // after a reboot, a crash, or `mico kill`. Then this daemon keeps the list.
-  const int restored = restore_agents_enabled() ? workspace.restore_running() : 0;
+  const int restored = handoff_fd < 0 && restore_agents_enabled() ? workspace.restore_running() : 0;
   workspace.remember_running();
   App app(workspace);
+  app.enable_maintenance();
   if (restored)
     app.set_status("Resumed " + std::to_string(restored) + " agent" + (restored == 1 ? "" : "s") +
                    " that " + (restored == 1 ? "was" : "were") + " running when mico stopped");
@@ -444,17 +644,63 @@ int run_daemon() {
   WebServer web(workspace);
   Surface back;
   std::vector<std::unique_ptr<Client>> clients;
+  if (handoff_fd >= 0) {
+    app.handoff(state);
+    carry_clients(state, clients);
+    if (!state.finished()) {
+      MLOG("incomplete reload state");
+      return 1;
+    }
+    app.set_status("mico reloaded; " + std::to_string(workspace.live().size()) + " agents kept running");
+    MLOG("reload complete, with %zu agents and %zu terminals", workspace.live().size(), clients.size());
+  }
+  std::shared_ptr<MaintenanceJob> maintenance;
   std::vector<pollfd> fds;
   std::vector<int> session_fds;
   int last_w = 0, last_h = 0;
 
   std::vector<uint32_t> evicted;
   Color theme_bg = active_theme().bg;
-  const int64_t started = time(nullptr);
   int64_t alive_written = started;
   bool postmortem_shown = false;
   while (!g_stop && app.running()) {
+    std::erase_if(retired_children, [](pid_t pid) {
+      const pid_t reaped = waitpid(pid, nullptr, WNOHANG);
+      return reaped == pid || (reaped < 0 && errno == ECHILD);
+    });
     bool dirty = app.service();
+    const App::Maintenance request = app.take_maintenance();
+    if (request != App::Maintenance::None) {
+      if (maintenance) app.set_status("an update or reload is already in progress");
+      else {
+        maintenance = start_maintenance(request);
+        app.set_status(request == App::Maintenance::Reset ? "reloading mico; agents keep working"
+                        : request == App::Maintenance::CheckUpdate ? "checking for a mico update"
+                        : "updating mico; agents keep working");
+      }
+      dirty = true;
+    }
+    if (maintenance) {
+      std::lock_guard<std::mutex> lock(maintenance->mu);
+      if (maintenance->done) {
+        std::string status = maintenance->status;
+        if (maintenance->executable >= 0)
+          status = reload_daemon(maintenance->executable, lfd, started, workspace, app, clients);
+        app.set_status(status);
+        MLOG("maintenance: %s", status.c_str());
+        for (auto& c : clients) if (c->reset_requested) {
+          proto::encode(proto::Type::ResetResult, status, c->out);
+          c->reset_requested = false;
+        }
+        dirty = true;
+      }
+    }
+    // Release outside its mutex: the thread may have just let go of its copy.
+    if (maintenance) {
+      bool done;
+      { std::lock_guard<std::mutex> lock(maintenance->mu); done = maintenance->done; }
+      if (done) maintenance.reset();
+    }
     // Alive, once a minute: a daemon that is killed leaves this behind, and
     // the next one can say when it was last seen.
     if (const int64_t now = time(nullptr); now - alive_written >= 60) {
@@ -536,6 +782,7 @@ int run_daemon() {
     // covers work the clock moves, so an idle daemon sleeps for a second at a
     // time instead of waking 30 times a second to find nothing to do.
     int timeout = app.idle_timeout_ms();
+    if (maintenance) timeout = std::min(timeout, 100);
     for (auto& c : clients)
       if (c->dec.pending_escape()) timeout = std::min(timeout, 25);
     if (::poll(fds.data(), fds.size(), timeout) < 0 && errno != EINTR) break;

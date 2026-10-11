@@ -273,6 +273,8 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_ui.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-reset
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_reset.py $<TARGET_FILE:mico>)
+  add_test(NAME daemon-update
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_update.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-restore
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_restore.py $<TARGET_FILE:mico>)
   add_test(NAME claude-background
@@ -297,6 +299,6 @@ if(Python3_FOUND)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(daemon-input web-answers web-ui daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
+  set_tests_properties(daemon-input daemon-reset daemon-update web-answers web-ui daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

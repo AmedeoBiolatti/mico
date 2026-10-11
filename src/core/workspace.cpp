@@ -42,6 +42,28 @@ Workspace::Workspace() { store_.scan(); }
 
 Workspace::~Workspace() = default;
 
+void Workspace::handoff(Handoff& h) {
+  h.items(live_, [&](std::unique_ptr<LiveSession>& s) {
+    if (h.reading()) s = std::make_unique<LiveSession>();
+    s->handoff(h);
+  });
+  // Pending launches and sub-project filing are keyed by session addresses.
+  // Carry them by position; a newly allocated session has a new address.
+  for (const auto& s : live_) {
+    int64_t launch_at = unlaunched_.contains(s.get()) ? unlaunched_.at(s.get()) : 0;
+    std::string project, sub;
+    if (auto i = pending_subs_.find(s.get()); i != pending_subs_.end()) {
+      project = i->second.first;
+      sub = i->second.second;
+    }
+    h.fields(launch_at, project, sub);
+    if (h.reading()) {
+      if (launch_at) unlaunched_[s.get()] = launch_at;
+      if (!project.empty()) pending_subs_[s.get()] = {project, sub};
+    }
+  }
+}
+
 std::vector<LiveSession*> Workspace::live_sessions() const {
   std::vector<LiveSession*> out;
   out.reserve(live_.size());

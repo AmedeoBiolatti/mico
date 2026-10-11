@@ -142,6 +142,7 @@ class Workspace {
   int restore_running();
   // The agents were stopped on purpose: there is nothing to resume.
   void forget_running();
+  void handoff(Handoff& h);
 
   // --- Advancing -------------------------------------------------------------
 

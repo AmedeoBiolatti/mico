@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "base/handoff.h"
 
 namespace mico::text {
 
@@ -33,6 +34,9 @@ size_t glyph_end(std::string_view s, size_t i, int* width);
 char32_t next_glyph(std::string_view s, size_t& i, int* width);
 // The UTF-8 of a glyph id; empty for anything that is not one.
 std::string_view glyph_text(char32_t id);
+// Cell glyph ids refer to this process's intern table. Keep it with the VTs
+// across exec, so combining marks and joined emoji still name the same text.
+void handoff(Handoff& h);
 
 // Truncates to `max_cols` display columns, appending "…" when it cuts.
 std::string ellipsize(std::string_view s, int max_cols);

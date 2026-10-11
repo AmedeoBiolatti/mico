@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "base/handoff.h"
 
 namespace mico {
 
@@ -60,6 +61,8 @@ class Pty {
   void terminate();
   // Release a reaped child before restarting it. Never stops a running child.
   bool reset_exited();
+  // Carries this same child and master fd across the daemon's exec.
+  void handoff(Handoff& h);
 
  private:
   int fd_ = -1;

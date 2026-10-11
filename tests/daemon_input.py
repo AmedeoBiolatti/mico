@@ -68,6 +68,30 @@ with tempfile.TemporaryDirectory(prefix='mico-daemon-input-') as directory:
         receive(0.1)
         # Escape closes the command line, and what it held goes with it.
         assert 'PASTE_BOUNDARY_CHECK' not in screen(), 'standalone Escape was not delivered'
+        # Keep both a partial paste in the decoder and a partial protocol
+        # packet in the socket buffer while another client requests reload.
+        send(2, b':')
+        send(2, b'\x1b[200~HANDOFF_')
+        payload = b'PASTE_KEEP\x1b[201~'
+        packet = bytes([2]) + struct.pack('<I', len(payload)) + payload
+        client.sendall(packet[:8])
+        receive(.1)
+        control = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            control.connect(str(address))
+            control.sendall(bytes([9]) + struct.pack('<I', 0))
+            control.settimeout(10)
+            ack = bytearray()
+            while len(ack) < 5 or len(ack) < 5 + struct.unpack_from('<I', ack, 1)[0]:
+                data = control.recv(8192)
+                assert data, 'daemon disconnected during reload'
+                ack.extend(data)
+            assert ack[0] == 10 and struct.unpack_from('<I', ack, 1)[0] == 0, ack
+        finally:
+            control.close()
+        client.sendall(packet[8:])
+        receive(.2)
+        assert ': HANDOFF_PASTE_KEEP' in screen(), 'reload lost fragmented protocol/paste input'
         print('daemon input: fragmented paste and standalone Escape passed')
     finally:
         client.close()

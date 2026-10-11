@@ -39,10 +39,10 @@ cmake -S . -B build -G Ninja && cmake --build build
 | `mico` | attach, starting a daemon if needed |
 | `mico --attach` | attach only; fail if no daemon is running |
 | `mico --daemon` | run the daemon in the foreground |
-| `mico update` | install the latest release over this binary, after checking its SHA-256 (`--check` only looks); then `mico kill` to run it |
+| `mico update` | install the latest release over this binary, after checking its SHA-256 (`--check` only looks); then `mico reset` to reload it |
 | `mico --version` | print the version |
 | `mico kill` | stop the daemon **and every agent it owns** (the next daemon resumes them) |
-| `mico reset` | `mico kill` and then `mico` in one step: restart the daemon, resume its agents, reattach (just `mico` if no daemon runs) |
+| `mico reset` | reload the daemon in place and attach; agents keep working (just `mico` if no daemon runs) |
 | `mico --local` | single process; agents die with it |
 
 Detaching is just closing the client, or pressing `q`. Agents keep running.
@@ -666,12 +666,27 @@ the status bar. Settings → Away → Notifications: off, bell or desktop.
 the agents it runs — adapter, session id, folder — for chats that have a
 transcript to resume. When a daemon starts, it resumes the agents its
 predecessor listed, each in place, as the chat list's **resume** would. So a
-reboot, a crash or `mico kill` (to run a new build, say) costs the processes
+reboot, a crash or `mico kill` costs the processes
 but not the conversations. An agent that exited stays listed for ten
 seconds, since at shutdown the agents are often killed a moment before their
 daemon; one you closed goes at once. `:quit` (or `:kill`, or "Stop all
 agents and quit") is the way to end them for good: it empties the list. A
 `--local` mico lists nothing. Settings → Away → Resume agents turns it off.
+
+**Updating without interrupting work.** `:update` downloads and checks the
+latest release in the background, installs it, then reloads mico in place.
+`:update --check` only checks. After installing a source build, `:reset`
+reloads it. The daemon execs the installed binary with the same PID, inheriting
+its listening socket, attached terminals and each agent's existing pty. Agents
+and their children keep their PIDs and continue their current work; terminal
+screens, unsent drafts and queued messages are carried into the new daemon.
+The web view reconnects. These commands need the daemon, rather than `--local`.
+
+The installed executable must accept the running daemon's handoff format.
+An incompatible executable or a failed update leaves agents running and reports
+the error in the status bar and `:log`. A daemon from before live reload support
+needs one ordinary restart to enable it. `mico update` from a shell installs
+only; `mico reset` performs the live reload and attaches that terminal.
 
 ## Logs
 
@@ -744,6 +759,8 @@ command.
 :blame <file>:<line>   the chat that last changed a line
 :usage  :tools  :diff  :git  :sessions   switch tabs
 :density m|n|f   :select   :redraw   :rescan   :close
+:update [--check] install the latest release and reload; agents keep working
+:reset           reload an installed build; agents keep working
 :detach          leave; agents keep running
 :quit            stop every agent and quit
 ```
