@@ -1229,6 +1229,37 @@ int run_selftest() {
     omp_adapter().parse(R"({"type":"custom_message","customType":"future-card","display":false,"content":"Internal"})", a, ev);
     check(ev.empty(), "translation: explicitly hidden omp custom messages stay hidden");
 
+    for (std::string_view kind : {"web.search", "clock.sleep"}) {
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":)" +
+              js::quote(kind) + R"(,"id":"call-1"}}})", a, ev);
+      check(ev.empty(), "translation: known Codex extension mirrors do not duplicate tool rows or warn");
+    }
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"future.extension","data":"opaque"}}})",
+        a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Notice && !ev[0].ok &&
+              a.view(ev[0].detail).find("opaque") != std::string_view::npos,
+          "translation: unknown Codex extensions remain inspectable");
+    for (std::string_view kind : {"lsp-late-diagnostic", "lsp-post-edit", "lsp-post-edit-diagnostics"}) {
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":)" + js::quote(kind) +
+              R"(,"display":true,"attribution":"agent","content":[{"type":"text","text":"src/app.cpp: 2 errors\nMissing semicolon\nUnknown name"}]})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Peer &&
+                a.view(ev[0].name) == "LSP diagnostics" &&
+                a.view(ev[0].text) == "src/app.cpp: 2 errors\nMissing semicolon\nUnknown name",
+            "translation: OMP LSP reports retain their multiline diagnostics without a warning");
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":)" + js::quote(kind) +
+              R"(,"display":false,"content":"Internal diagnostics"})", a, ev);
+      check(ev.empty(), "translation: hidden OMP LSP messages stay hidden");
+    }
+
     const std::string bins = "/tmp/mico-selftest-codex-help-" + std::to_string(getpid());
     fs::make_dirs(bins + "/modern");
     fs::make_dirs(bins + "/legacy");

@@ -300,6 +300,18 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
         return false;
       });
       if (!mcp) {
+        // Built-in extensions also write a completed-item mirror. Their
+        // actual call and output are response_items, already rendered below.
+        if (item_type == "Extension") {
+          std::string_view kind;
+          js::scan_keys(it, [&](std::string_view k, std::string_view rest) {
+            if (k == "kind") { kind = js::string_body(rest); return false; }
+            return true;
+          });
+          if (kind == "web.search" || kind == "clock.sleep") return;
+          translation_warning(arena, out, "codex", "extension " + std::string(kind), raw);
+          return;
+        }
         if (item_type != "CommandExecution" && item_type != "FileChange" && item_type != "AgentMessage" &&
             item_type != "Reasoning" && item_type != "UserMessage" && item_type != "WebSearch")
           translation_warning(arena, out, "codex", "completed item " + std::string(item_type), raw);
