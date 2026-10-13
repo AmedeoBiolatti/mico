@@ -249,6 +249,16 @@ bool custom_message(Arena& arena, std::string_view raw, std::vector<Event>& out)
     return true;
   });
   if (!display) return false;
+  // Post-edit diagnostics arrive independently of the edit's tool result.
+  // Keep the complete report visible, including when the turn's steps fold.
+  if (kind == "lsp-late-diagnostic" || kind == "lsp-post-edit" || kind == "lsp-post-edit-diagnostics") {
+    e.text = add_content(arena, content);
+    if (e.text.empty()) return false;
+    e.kind = EventKind::Peer;
+    e.name = arena.add("LSP diagnostics");
+    out.push_back(e);
+    return true;
+  }
   if (attribution == "user") {
     e.text = add_content(arena, content);
     if (e.text.empty()) return false;
