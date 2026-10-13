@@ -313,7 +313,10 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
           return;
         }
         if (item_type != "CommandExecution" && item_type != "FileChange" && item_type != "AgentMessage" &&
-            item_type != "Reasoning" && item_type != "UserMessage" && item_type != "WebSearch")
+            item_type != "Reasoning" && item_type != "UserMessage" && item_type != "WebSearch" &&
+            item_type != "ContextCompaction" && item_type != "ImageView")
+          // Compaction and image-view mirrors are shown through their
+          // compacted record and tool output respectively.
           translation_warning(arena, out, "codex", "completed item " + std::string(item_type), raw);
         return;
       }

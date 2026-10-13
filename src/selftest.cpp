@@ -1237,6 +1237,23 @@ int run_selftest() {
       check(ev.empty(), "translation: known Codex extension mirrors do not duplicate tool rows or warn");
     }
     ev.clear();
+    codex_adapter().parse(R"({"type":"compacted","payload":{"message":"summary"}})", a, ev);
+    codex_adapter().parse(
+        R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"ContextCompaction","id":"compact-1"}}})",
+        a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Notice && ev[0].ok &&
+              a.view(ev[0].text) == "Conversation compacted",
+          "translation: Codex compaction and its completed-item mirror produce one marker without warnings");
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"response_item","payload":{"type":"function_call_output","call_id":"view-1","output":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}})",
+        a, ev);
+    codex_adapter().parse(
+        R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"ImageView","id":"view-1","path":"file:///tmp/preview.png"}}})",
+        a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::ToolResult && ev[0].tool_id == hash_id("view-1"),
+          "translation: Codex ImageView mirror preserves its image result without duplicate rows or warnings");
+    ev.clear();
     codex_adapter().parse(
         R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"future.extension","data":"opaque"}}})",
         a, ev);
