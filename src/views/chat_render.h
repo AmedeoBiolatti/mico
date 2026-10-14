@@ -94,6 +94,8 @@ class ChatRenderer {
     return out;
   }
   bool question_active() const;
+  // Reveals the newest unanswered card, leaving the prompt draft alone.
+  bool focus_question();
   bool question_submitted() const { return has_pending_question() && !sent_.empty(); }
   // Enables the interactive card. Stored views leave this off.
   void set_questions_interactive(bool on) { q_interactive_ = on; }

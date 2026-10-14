@@ -70,6 +70,7 @@ class SessionPane final : public Pane {
     h.fields(view_, view_chosen_, prompt_, hist_, hist_at_, hist_shown_, note_q_, note_header_,
              reply_live_, reply_.call_id, reply_.index, reply_.question, reply_.answer,
              perm_key_, perm_note_, note_perm_, answering_question_, raw_scroll_, permission_cursor);
+    h.fields(question_focus_, suspended_prompt_, prompt_suspended_);
     if (h.reading()) {
       refresh_permission();
       perm_pick_.set_cursor(permission_cursor);
@@ -566,20 +567,6 @@ class SessionPane final : public Pane {
     }
   }
 
-  // "> question" per line, the quote codex's own composer puts on a reply.
-  static std::string quote(std::string_view text) {
-    std::string out;
-    for (size_t at = 0; at <= text.size();) {
-      size_t end = text.find('\n', at);
-      if (end == std::string_view::npos) end = text.size();
-      if (!out.empty()) out += '\n';
-      out += "> ";
-      out += text.substr(at, end - at);
-      at = end + 1;
-    }
-    return out;
-  }
-
   // An optional question is not a menu on the agent's screen: codex already
   // returned from the call. The answer is a message, byte for byte what codex
   // writes when its own UI answers one: the envelope naming the question by
@@ -593,13 +580,13 @@ class SessionPane final : public Pane {
     }
     if (a.free_text) {
       const size_t qi = size_t(std::clamp(a.free_q, 0, int(a.card.questions.size()) - 1));
-      prompt_.clear();
-      if (a.card.call_id.empty()) {
-        insert_text(quote(a.card.questions[qi].text) + "\n\n");
-      } else {
-        reply_ = AsyncReply{a.card.call_id, int(qi), a.card.questions[qi].text, {}};
-        reply_live_ = true;
+      if (!prompt_.empty()) {
+        suspended_prompt_ = std::move(prompt_);
+        prompt_ = PromptEditor{};
+        prompt_suspended_ = true;
       }
+      reply_ = AsyncReply{a.card.call_id, int(qi), a.card.questions[qi].text, {}};
+      reply_live_ = true;
       app_->set_status("write your answer — Enter sends it");
       return;
     }
@@ -788,6 +775,7 @@ class SessionPane final : public Pane {
       find_.on_paste(t, chat_);
       return true;
     }
+    question_focus_ = false;
     insert_pasted(t);
     return true;
   }
@@ -836,6 +824,27 @@ class SessionPane final : public Pane {
     if ((k.alt || k.ctrl) && !k.shift && (k.key == Key::Up || k.key == Key::Down)) {
       chat_.jump_user(k.key == Key::Up ? -1 : 1);
       return true;
+    }
+
+    if (k.key == Key::Left && k.shift && !k.ctrl && !k.alt &&
+        note_q_ < 0 && !note_perm_ && !reply_live_ && s_->agent() == "codex") {
+      if (chat_.focus_question()) {
+        question_focus_ = true;
+        app_->set_status("question: arrows choose, Enter answers, Esc returns to your draft");
+        return true;
+      }
+    }
+    if (question_focus_) {
+      if (k.key == Key::Escape) {
+        question_focus_ = false;
+        return true;
+      }
+      if (chat_.question_active() && !k.ctrl && !k.alt && chat_.question_key(k)) {
+        ChatRenderer::Answer a;
+        if (chat_.take_answer(a)) { question_focus_ = false; deliver_answer(a); }
+        return true;
+      }
+      question_focus_ = false;
     }
 
     if (note_key(k)) return true;
@@ -891,11 +900,13 @@ class SessionPane final : public Pane {
         app_->set_status("sending answer");
         prompt_.reset();
         reply_live_ = false;
+        restore_suspended_prompt();
         return true;
       }
       if (k.key == Key::Escape) {
         prompt_.reset();
         reply_live_ = false;
+        restore_suspended_prompt();
         return true;
       }
     }
@@ -1731,6 +1742,15 @@ class SessionPane final : public Pane {
   // The box holds an answer to an optional question, in the user's words.
   bool reply_live_ = false;
   AsyncReply reply_;
+  bool question_focus_ = false;
+  PromptEditor suspended_prompt_;
+  bool prompt_suspended_ = false;
+  void restore_suspended_prompt() {
+    if (!prompt_suspended_) return;
+    prompt_ = std::move(suspended_prompt_);
+    suspended_prompt_ = PromptEditor{};
+    prompt_suspended_ = false;
+  }
   FindBar find_;
   // The agent's permission dialog, when one is up; see refresh_permission().
   BtwPanel btw_;

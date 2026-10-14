@@ -58,6 +58,7 @@ Nothing bound to a keystroke stops them: that needs `mico kill` or `:quit`.
 | left click | open/resume a chat, expand/collapse a tool call (opens on release), open a link |
 | left drag | select text and copy it to the clipboard |
 | `↑ ↓ ← →`, `enter`, `space`, `1`-`9` | answer a live question card (click an option or its header too); optional Codex cards take only arrows and `enter` |
+| `Shift+←` | jump to the newest unanswered Codex question; `Esc` returns to the draft |
 | drag a seam | resize the split either side of it |
 | drag the scrollbar | seek anywhere in the transcript; click the track to jump |
 | right click | context menu |

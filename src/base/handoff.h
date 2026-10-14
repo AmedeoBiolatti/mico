@@ -12,7 +12,7 @@ namespace mico {
 // Private, versioned state passed through an anonymous fd at exec. Encode
 // fields, never C++ object layouts or pointers: the receiving binary may be
 // built with a different compiler. Change the version if the schema changes.
-inline constexpr int kHandoffVersion = 1;
+inline constexpr int kHandoffVersion = 2;
 class Handoff {
  public:
   Handoff() = default;
