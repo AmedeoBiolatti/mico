@@ -839,14 +839,28 @@ int run_regression_tests() {
           R"([{"answer":"Continue later","question":"Pause the jobs?","questionItemId":"[\"request_user_input_async\",\"later\",0]"}])"
           "\n</send_user_message_question_reply>";
       if (later_y >= 0) {
-        pane->on_mouse(MouseEvent{MouseKind::Press, MouseButton::Left}, Point{8, later_y});
+        std::string work;
+        for (int i = 0; i < 80; i++) work += "Continuing the independent work.\n";
+        put(async_path, R"({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":)" +
+            js::quote(work) + "}]}}\n", true);
+        check(row_of("Continue later") < 0, "continued work scrolls the optional question out of view");
+        pane->on_paste("UNSENT_ASYNC_DRAFT");
+        pane->on_key(KeyEvent{Key::Left, 0, false, false, true});
+        check(row_of("Pause the jobs?") >= 0, "Shift+Left reveals the question above the current work");
+        pane->on_key(KeyEvent{Key::Down});
+        pane->on_key(KeyEvent{Key::Enter});
         const std::string sent = encode_paste(later_reply, false) + "\r";
         check(receive(sent.size()) == sent, "an optional answer is sent as codex's own reply envelope");
+        check(row_of("UNSENT_ASYNC_DRAFT") >= 0,
+              "Shift+Left answers an optional card while preserving the unsent draft");
       }
       put(async_path, reply_line(later_reply), true);
+      for (int i = 0; i < 6 && row_of("\xE2\x86\xB3 Continue later") < 0; i++)
+        pane->on_key(KeyEvent{Key::PageUp});
       check(row_of("\xE2\x86\xB3 Continue later") >= 0 && row_of("Answer in your own words") < 0 &&
                 row_of("questionItemId") < 0,
             "the envelope settles the card and shows the answer on it, not the envelope");
+      for (int i = 0; i < 6; i++) pane->on_key(KeyEvent{Key::PageDown});
 
       put(async_path, R"({"type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","call_id":"why","arguments":"{\"questions\":[{\"title\":\"Which benchmark matters?\"}]}"}})" "\n", true);
       const int own_y = row_of("Answer in your own words");
@@ -855,6 +869,14 @@ int run_regression_tests() {
         pane->on_mouse(MouseEvent{MouseKind::Press, MouseButton::Left}, Point{8, own_y});
         check(receive(1).empty() && row_of("Answer to \"Which benchmark matters?\"") >= 0,
               "answering in one's own words opens the box for the answer instead of sending");
+        Handoff saved;
+        pane->handoff(saved);
+        pane = make_session_pane(&session);
+        pane->set_app(&app);
+        Handoff restored(saved.data());
+        pane->handoff(restored);
+        check(restored.finished(), "question reply and suspended draft survive a pane handoff");
+        pane->render(painter, true);
         for (char c : std::string("nightly")) pane->on_key(KeyEvent{Key::Char, char32_t(c)});
         pane->on_key(KeyEvent{Key::Enter});
         const std::string why_reply =
@@ -865,7 +887,28 @@ int run_regression_tests() {
         check(receive(sent.size()) == sent, "the answer in one's own words goes in the envelope");
         put(async_path, reply_line(why_reply), true);
         check(row_of("\xE2\x86\xB3 nightly") >= 0, "the own-words answer lands on its card");
+        check(row_of("UNSENT_ASYNC_DRAFT") >= 0,
+              "sending a free-text answer restores the suspended draft after reload");
       }
+      put(async_path, R"({"type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","call_id":"cancel-own","arguments":"{\"questions\":[{\"title\":\"Explain the choice?\"}]}"}})" "\n", true);
+      row_of("Explain the choice?");
+      pane->on_key(KeyEvent{Key::Left, 0, false, false, true});
+      pane->render(painter, true);
+      pane->on_key(KeyEvent{Key::Enter});
+      pane->on_paste("CANCELLED_ANSWER");
+      pane->on_key(KeyEvent{Key::Escape});
+      check(receive(1).empty() && row_of("UNSENT_ASYNC_DRAFT") >= 0 && row_of("CANCELLED_ANSWER") < 0,
+            "cancelling an optional free-text answer restores the original draft without sending");
+      put(async_path, R"({"type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","call_id":"fresh-keyboard","arguments":"{\"questions\":[{\"title\":\"Use the new choice?\",\"options\":[\"First\",\"Second\"]}]}"}})" "\n", true);
+      pane->on_key(KeyEvent{Key::Left, 0, false, false, true});
+      pane->on_key(KeyEvent{Key::Down});
+      pane->on_key(KeyEvent{Key::Enter});
+      const std::string fresh_reply = async_reply_envelope({AsyncReply{"fresh-keyboard", 0, "Use the new choice?", "Second"}});
+      const std::string fresh_sent = encode_paste(fresh_reply, false) + "\r";
+      check(receive(fresh_sent.size()) == fresh_sent && row_of("UNSENT_ASYNC_DRAFT") >= 0,
+            "Shift+Left and answer keys work for a new card before the next redraw without sending the draft");
+      put(async_path, reply_line(fresh_reply), true);
+      pane->on_key(KeyEvent{Key::Escape});  // clear the ordinary draft
 
       // An older codex quoted the question instead.
       put(async_path, R"({"type":"response_item","payload":{"type":"function_call","name":"request_user_input_async","call_id":"old","arguments":"{\"questions\":[{\"title\":\"Keep the cache?\",\"options\":[\"Keep it\",\"Drop it\"]}]}"}})" "\n", true);
@@ -1385,6 +1428,47 @@ int run_regression_tests() {
                 row_showing("legacy") < 0,
             "archiving an idle running chat stops its agent and hides it");
       app.store().set_archived("codex", "legacy", false);
+    }
+    {
+      const char* path_env = getenv("PATH");
+      EnvScope search_path("PATH", base + "/bin:" + (path_env ? path_env : "/bin"));
+      App app;
+      const std::string recent = dir + "rollout-recent-stop.jsonl";
+      put(recent, R"({"type":"session_meta","payload":{"id":"recent-stop","cwd":)" + js::quote(project) + "}}\n");
+      app.store().set_custom_name("codex", "recent-stop", "RECENT_STOP_CHAT");
+      check(app.spawn_continuation("codex", "recent-stop", project, false), "recent stop fixture starts");
+      Surface sf; sf.resize(120, 32);
+      app.draw(sf);
+      LiveSession* live = app.selected_live();
+      auto list = make_chat_list(); list->set_app(&app);
+      Painter painter(sf, {0, 0, 36, 18});
+      const auto row_of = [&](std::string_view text) {
+        list->render(painter, true);
+        for (int y = 0; y < 18; y++) {
+          std::string row;
+          for (int x = 0; x < 36; x++) mico::text::encode(sf.at(x, y).cp, row);
+          if (row.find(text) != std::string::npos) return y;
+        }
+        return -1;
+      };
+      const int y = row_of("RECENT_STOP_CHAT");
+      if (live && y >= 0) {
+        app.focus_session(live);
+        app.feed(InputEvent{InputEvent::Type::Paste, {}, {}, "STOP_KEEP_DRAFT"});
+        list->context_menu({4, y});
+        list->on_action("stop");
+        for (int i = 0; i < 200 && !live->exited(); i++) { app.service(); usleep(1000); }
+        app.draw(sf);
+        check(live->exited() && app.selected_live() == live && app.live_sessions().size() == 1 &&
+                  screen(sf).find("STOP_KEEP_DRAFT") != std::string::npos,
+              "stopping from the chat list retains the chat and its draft");
+        check(row_of("RECENT_STOP_CHAT") >= 0 && row_of("stopped") >= 0,
+              "a stopped chat stays listed before its transcript has been scanned");
+        app.close_session(live);
+        app.draw(sf);
+        check(app.live_sessions().empty() && app.selected_path() == recent && row_of("RECENT_STOP_CHAT") >= 0,
+              "closing a recent stopped pane refreshes saved history and retains its selection");
+      } else check(false, "recent stop fixture is visible");
     }
     std::filesystem::remove_all(base + "/.codex");
   }

@@ -446,7 +446,10 @@ void App::focus_session(LiveSession* s) {
 
 void App::reap_sessions() {
   const bool closed = ws_.reap([&](LiveSession* gone) {
-    if (selected_live_ == gone) selected_live_ = nullptr;
+    if (selected_live_ == gone) {
+      selected_path_ = gone->transcript();
+      selected_live_ = nullptr;
+    }
     if (focus_after_build_ == gone) focus_after_build_ = nullptr;
     watch_.erase(gone);
   });

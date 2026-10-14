@@ -348,6 +348,9 @@ bool Workspace::reap(const std::function<void(LiveSession*)>& gone) {
     }
   }
   to_close_.clear();
+  // A new transcript may not have been in the last scan. Once its live
+  // row goes away, the saved row must be ready to take its place.
+  if (any) store_.scan();
   return any;
 }
 

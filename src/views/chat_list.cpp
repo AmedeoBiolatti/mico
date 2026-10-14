@@ -469,7 +469,7 @@ class ChatList final : public Pane {
         app_->spawn_continuation(r->live->agent(), r->live->session_id(), r->live->cwd(), true);
       return;
     }
-    if (a == "stop" && r && r->live) { app_->close_session(r->live); return; }
+    if (a == "stop" && r && r->live) { r->live->pty().terminate(); return; }
   }
 
  private:

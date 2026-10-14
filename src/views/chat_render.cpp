@@ -1079,6 +1079,35 @@ bool ChatRenderer::question_live(uint64_t id) const {
 
 bool ChatRenderer::question_active() const { return question_live(live_question()); }
 
+bool ChatRenderer::focus_question() {
+  poll_growth();
+  if (!conv_.at_tail()) {
+    reanchor(conv_.file().line_count());
+    grow_backwards();
+  }
+  const uint64_t id = live_question();
+  if (!id) return false;
+  for (const Event& e : conv_.events()) {
+    if (e.kind != EventKind::Question || e.tool_id != id) continue;
+    // Input can arrive in a burst before the next paint. Prepare the card
+    // now so Down/Enter answer it rather than touch the prompt draft.
+    if (!card(id)) {
+      QuestionCard c;
+      c.tool_id = id;
+      c.tool = std::string(conv_.arena().view(e.name));
+      c.async = is_async_question_tool(c.tool);
+      if (c.async) c.call_id = std::string(conv_.arena().view(e.summary));
+      parse_question_card(conv_.arena().view(e.detail), c);
+      if (c.questions.empty()) return false;
+      cards_.push_back(std::move(c));
+    }
+    state_for(id, *card(id));
+    go_to(conv_.file().line_offset(e.src_line));
+    return true;
+  }
+  return false;
+}
+
 bool ChatRenderer::card_needs_submit(const QuestionCard& card) const {
   return card.questions.size() > 1 || (!card.questions.empty() && card.questions[0].multi);
 }
