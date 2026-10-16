@@ -123,6 +123,7 @@ class OmpAdapter final : public PiFamilyAdapter {
   void snapshot_transcripts(const std::vector<std::string>& argv, const std::string& cwd,
                             std::vector<std::string>& out) const override;
   bool find_transcript(const TranscriptQuery& q, FoundTranscript& out) const override;
+  bool find_replacement_transcript(const TranscriptQuery& q, FoundTranscript& out) const override;
 };
 
 // The files an edit script touches: omp's "[path#hash]" headers, or

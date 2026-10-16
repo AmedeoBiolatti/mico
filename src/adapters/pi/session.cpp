@@ -316,6 +316,13 @@ bool OmpAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& out)
     SessionHead h;
     if (!read_head(path, h)) return;
     if (resuming ? h.id != q.session_id : h.cwd != q.cwd) return;
+    if (q.forked && !q.origin.empty()) {
+      // /fork records the parent's id; older branch operations used its path.
+      if (h.parent != q.origin) {
+        SessionHead parent;
+        if (h.parent.empty() || !read_head(h.parent, parent) || parent.id != q.origin) return;
+      }
+    }
 
     best = path;
     best_sid = std::move(h.id);
@@ -329,6 +336,15 @@ bool OmpAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& out)
   out.path = std::move(best);
   out.session_id = std::move(best_sid);
   return true;
+}
+
+bool OmpAdapter::find_replacement_transcript(const TranscriptQuery& q, FoundTranscript& out) const {
+  if (q.session_id.empty()) return false;
+  TranscriptQuery next = q;
+  next.origin = q.session_id;
+  next.session_id.clear();
+  next.forked = true;
+  return find_transcript(next, out);
 }
 
 }  // namespace mico

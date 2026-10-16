@@ -2076,6 +2076,63 @@ os.read(0, 1)
     session.pty().terminate();
   }
 
+  // OMP /fork changes session files inside the existing PTY.
+  {
+    const std::string root = base + "/omp-fork";
+    EnvScope agent_dir("PI_CODING_AGENT_DIR", root);
+    EnvScope profile("OMP_PROFILE", "default");
+    const std::string old_file = root + "/sessions/slug/old.jsonl";
+    const std::string fork_file = root + "/sessions/slug/fork.jsonl";
+    put(old_file, R"({"type":"session","id":"before-fork","cwd":)" + js::quote(project) + "}\n");
+    const std::string fixture = root + "/fork.py";
+    put(fixture, R"PY(import json, os, pathlib, sys, tty
+old, new, cwd, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3], pathlib.Path(sys.argv[4])
+tty.setraw(0)
+(root / 'ready').touch()
+text = b''
+while not text.endswith(b'\r'):
+    text += os.read(0, 1)
+assert text == b'/fork\r'
+def write(path, records):
+    path.write_text(''.join(json.dumps(r, separators=(',', ':')) + '\n' for r in records))
+write(new.with_name('unrelated.jsonl'), [{'type':'session','id':'unrelated','cwd':cwd}])
+write(new, [
+    {'type':'session','id':'after-fork','cwd':cwd,'parentSession':'before-fork'},
+    {'type':'message','message':{'role':'user','content':'INHERITED_FORK_PROMPT'}},
+    {'type':'message','message':{'role':'assistant','stopReason':'stop','content':[{'type':'text','text':'FORK_ANSWER'}]}}
+])
+(root / 'forked').touch()
+os.read(0, 1)
+)PY");
+    LiveSession session;
+    Launch l;
+    l.agent = "omp"; l.cwd = project; l.session_id = "before-fork"; l.origin = "before-fork";
+    l.argv = {"python3", fixture, old_file, fork_file, project, root};
+    session.start(l);
+    session.set_geometry(100, 24);
+    const auto wait_for = [&](const char* marker, const std::string& path) {
+      for (int i = 0; i < 500; i++) {
+        session.pump();
+        if (std::filesystem::exists(root + "/" + marker) && session.transcript() == path) return true;
+        if (session.exited()) return false;
+        usleep(5000);
+      }
+      return false;
+    };
+    check(wait_for("ready", old_file), "omp fork: resume attaches to the original transcript");
+    session.pty().write("/fork\r");
+    check(wait_for("forked", fork_file) && session.session_id() == "after-fork",
+          "omp fork: follows the fork and ignores unrelated new chats");
+    ChatRenderer chat; chat.open(session.transcript(), &omp_adapter());
+    Surface sf; sf.resize(100, 24); Painter p(sf, {0, 0, 100, 24});
+    Theme theme; Filters filters;
+    chat.render(p, theme, filters);
+    check(screen(sf).find("INHERITED_FORK_PROMPT") != std::string::npos &&
+              screen(sf).find("FORK_ANSWER") != std::string::npos,
+          "omp fork: inherited history and the fork's answer render in chat");
+    session.pty().terminate();
+  }
+
   // OMP file attachments have their own message role and files array.
   {
     Arena arena;
