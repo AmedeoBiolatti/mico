@@ -468,6 +468,47 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
     return true;
   });
 
+  if (role == "fileMention") {
+    js::Value files{};
+    js::scan_object(message.raw, [&](std::string_view k, const js::Value& v) {
+      if (k == "files") files = v;
+      return true;
+    });
+    if (!files.is_array()) {
+      translation_warning(arena, out, id(), "file mention", message.raw);
+      return;
+    }
+    js::scan_array(files.raw, [&](const js::Value& file) {
+      js::Value path{}, body{}, skipped{}, image{};
+      if (file.is_object()) js::scan_object(file.raw, [&](std::string_view k, const js::Value& v) {
+        if (k == "path") path = v;
+        else if (k == "content") body = v;
+        else if (k == "skippedReason") skipped = v;
+        else if (k == "image") image = v;
+        return true;
+      });
+      if (!path.is_string()) {
+        translation_warning(arena, out, id(), "file mention item", file.raw);
+        return true;
+      }
+      Event e;
+      e.kind = EventKind::Notice;
+      const uint32_t at = arena.open();
+      arena.put("Attached file: ");
+      arena.put_json(path);
+      if (skipped.is_string()) {
+        arena.put(" (skipped: ");
+        arena.put_json(skipped);
+        arena.put(")");
+      } else if (image.is_object()) arena.put(" (image)");
+      e.text = arena.close(at);
+      if (body.is_string()) e.detail = arena.add_json(body);
+      out.push_back(e);
+      return true;
+    });
+    return;
+  }
+
   if (role == "user") {
     if (content.type == js::Type::Null) return;
     warn_content(arena, out, id(), content);

@@ -2076,6 +2076,23 @@ os.read(0, 1)
     session.pty().terminate();
   }
 
+  // OMP file attachments have their own message role and files array.
+  {
+    Arena arena;
+    std::vector<Event> events;
+    omp_adapter().parse(R"({"type":"message","message":{"role":"fileMention","files":[{"path":"src/example.cpp","content":"int example;\n"},{"path":"large.bin","skippedReason":"tooLarge"},{"path":"photo.png","image":{"type":"image"}}]}})", arena, events);
+    check(events.size() == 3 && events[0].kind == EventKind::Notice &&
+              arena.view(events[0].text) == "Attached file: src/example.cpp" &&
+              arena.view(events[0].detail) == "int example;\n" &&
+              arena.view(events[1].text) == "Attached file: large.bin (skipped: tooLarge)" &&
+              arena.view(events[2].text) == "Attached file: photo.png (image)",
+          "omp file mentions preserve paths, expandable content, and attachment status");
+    events.clear();
+    omp_adapter().parse(R"({"type":"message","message":{"role":"fileMention","files":[{}]}})", arena, events);
+    check(events.size() == 1 && !events[0].ok && !events[0].detail.empty(),
+          "malformed file mentions retain an inspectable warning");
+  }
+
   // Untranslated content is visible even when tools and thinking are folded.
   {
     const std::string path = base + "/translation-warning.jsonl";
