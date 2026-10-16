@@ -1477,6 +1477,24 @@ int run_selftest() {
           a, ev);
       check(ev.size() == 1 && ev[0].kind == EventKind::Peer && a.view(ev[0].name) == "Fixer", "omp agent message");
       if (ev.size() == 1) check_str(a.view(ev[0].text), "Done.\nNo tests run.", "omp agent message text");
+      for (bool blocks : {false, true}) {
+        ev.clear();
+        const std::string content = blocks
+            ? R"([{"type":"text","text":"build exited with code 0.\ntests exited with code 1."}])"
+            : R"("build exited with code 0.\ntests exited with code 1.")";
+        omp_adapter().parse(
+            R"({"type":"custom_message","customType":"launch-completion","display":true,"attribution":"agent","content":)" +
+                content + R"(,"details":{"daemons":[{"name":"build","state":"exited","exitCode":0},{"name":"tests","state":"exited","exitCode":1}]}})",
+            a, ev);
+        check(ev.size() == 1 && ev[0].kind == EventKind::Peer &&
+                  a.view(ev[0].name) == "Background process completion" &&
+                  a.view(ev[0].text) == "build exited with code 0.\ntests exited with code 1.",
+              "omp launch completion preserves batched results as a background message");
+      }
+      ev.clear();
+      omp_adapter().parse(
+          R"({"type":"custom_message","customType":"launch-completion","display":false,"content":"hidden"})", a, ev);
+      check(ev.empty(), "omp hidden launch completion stays hidden");
       // In a subagent's own transcript, its session's messages arrive as
       // turns: a message each, not the envelope.
       ev.clear();
