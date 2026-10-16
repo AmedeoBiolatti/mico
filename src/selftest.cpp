@@ -1192,6 +1192,26 @@ int run_selftest() {
     check(settings.find("approval") && *settings.find("approval") == "on-request",
           "codex: unrelated events do not overwrite the permission setting");
 
+    for (std::string_view kind : {"started", "interacted", "completed"}) {
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"SubAgentActivity","kind":)" +
+              js::quote(kind) + R"(,"agent_path":"/root/reviewer","agent_thread_id":"worker","model":null,"reasoning_effort":null}}})", a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::TaskStatus && ev[0].ok &&
+                a.view(ev[0].text) == "Subagent /root/reviewer " + std::string(kind),
+            "codex subagent lifecycle items render as activity");
+    }
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"SubAgentActivity","kind":"started","agent_thread_id":"worker","model":"gpt-6.1-sol","reasoning_effort":"high"}}})", a, ev);
+    check(ev.size() == 1 && a.view(ev[0].text) == "Subagent worker started \xC2\xB7 gpt-6.1-sol \xC2\xB7 high",
+          "codex subagent activity falls back to thread id and preserves model settings");
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"SubAgentActivity","kind":"future","agent_path":"/root/reviewer"}}})", a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Notice && !ev[0].ok && !ev[0].detail.empty(),
+          "unknown codex subagent activities remain inspectable");
+
     // Unknown conversation formats produce diagnostics rather than holes.
     for (const Adapter* adapter : {&codex_adapter(), &omp_adapter()}) {
       ev.clear();
