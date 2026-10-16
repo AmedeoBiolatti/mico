@@ -300,6 +300,37 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
         return false;
       });
       if (!mcp) {
+        if (item_type == "SubAgentActivity") {
+          js::Value kind{}, path{}, thread{}, model{}, effort{};
+          js::scan_object(it, [&](std::string_view k, const js::Value& v) {
+            if (k == "kind") kind = v;
+            else if (k == "agent_path") path = v;
+            else if (k == "agent_thread_id") thread = v;
+            else if (k == "model") model = v;
+            else if (k == "reasoning_effort") effort = v;
+            return true;
+          });
+          if (!kind.is_string() || (kind.body() != "started" && kind.body() != "interacted" && kind.body() != "completed") ||
+              ((!path.is_string() || path.body().empty()) && (!thread.is_string() || thread.body().empty()))) {
+            translation_warning(arena, out, "codex", "subagent activity", raw);
+            return;
+          }
+          Event e;
+          e.kind = EventKind::TaskStatus;
+          const uint32_t at = arena.open();
+          arena.put("Subagent ");
+          arena.put_json(path.is_string() && !path.body().empty() ? path : thread);
+          arena.put(" ");
+          arena.put_json(kind);
+          for (const auto& value : {model, effort}) {
+            if (!value.is_string() || value.body().empty()) continue;
+            arena.put(" \xC2\xB7 ");
+            arena.put_json(value);
+          }
+          e.text = arena.close(at);
+          out.push_back(e);
+          return;
+        }
         // Built-in extensions also write a completed-item mirror. Their
         // actual call and output are response_items, already rendered below.
         if (item_type == "Extension") {
