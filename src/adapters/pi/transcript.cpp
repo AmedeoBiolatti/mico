@@ -249,6 +249,14 @@ bool custom_message(Arena& arena, std::string_view raw, std::vector<Event>& out)
     return true;
   });
   if (!display) return false;
+  if (kind == "launch-completion") {
+    e.text = add_content(arena, content);
+    if (e.text.empty()) return false;
+    e.kind = EventKind::Peer;
+    e.name = arena.add("Background process completion");
+    out.push_back(e);
+    return true;
+  }
   // Post-edit diagnostics arrive independently of the edit's tool result.
   // Keep the complete report visible, including when the turn's steps fold.
   if (kind == "lsp-late-diagnostic" || kind == "lsp-post-edit" || kind == "lsp-post-edit-diagnostics") {
