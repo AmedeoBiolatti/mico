@@ -7,6 +7,11 @@ namespace mico {
 // `p` made absolute against `cwd`, with "./" and doubled slashes taken out.
 std::string resolve_path(std::string_view cwd, std::string_view p);
 
+// A local path as a file:// URL, and its inverse (without a URL fragment).
+// Escaping keeps spaces, percent signs and # in filenames unambiguous.
+std::string file_url(std::string_view path);
+std::string file_url_path(std::string_view url);
+
 // $XDG_CONFIG_HOME/mico (or ~/.config/mico): what the user chose.
 std::string config_dir();
 // $XDG_STATE_HOME/mico (or ~/.local/state/mico): what mico keeps for itself,

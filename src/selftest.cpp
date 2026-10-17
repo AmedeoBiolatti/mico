@@ -5816,8 +5816,14 @@ int run_selftest() {
     std::vector<text::Span> spans;
     std::vector<md::Seg> inl;
     md::Out o{size_t(-1), &sc, &segs, &lines, &spans, &inl};
+    md::ChartEnv link_env;
+    link_env.base_dir = "/tmp";
+    o.charts = &link_env;
     const std::string msg =
         "Read [the docs](https://docs.example/x \"t\") or https://bare.example/y, and `https://code.example/z`.\n"
+        "[absolute](/tmp/report.txt:12:3) [relative](./report.txt#L7) "
+        "[spaces](</tmp/My Report (100%).txt:9>) [encoded](/tmp/My%20Report%20%231.txt) "
+        "[parentheses](https://example.org/a_(b)) [unsafe](javascript:alert(1))\n"
         "```py\nurl = \"https://block.example/q\"\n```\n";
     md::render(msg, 0, false, 200, o);
     const auto link_of = [&](std::string_view want) -> std::pair<md::Ink, std::string> {
@@ -5831,6 +5837,14 @@ int run_selftest() {
     };
     check(link_of("the docs") == std::pair<md::Ink, std::string>{md::Ink::Link, "https://docs.example/x"},
           "links: a markdown link shows its label and opens its target");
+    check(link_of("absolute").second == "file:///tmp/report.txt#L12" &&
+              link_of("relative").second == "file:///tmp/report.txt#L7",
+          "links: markdown file destinations resolve absolute and relative paths with line numbers");
+    check(link_of("spaces").second == "file:///tmp/My%20Report%20%28100%25%29.txt#L9" &&
+              link_of("encoded").second == "file:///tmp/My%20Report%20%231.txt",
+          "links: angle-bracket paths with spaces and encoded filenames retain their full destinations");
+    check(link_of("parentheses").second == "https://example.org/a_(b)" && link_of("unsafe").second.empty(),
+          "links: balanced parentheses survive and unsupported schemes remain unclickable");
     check(link_of("https://bare.example/y").first == md::Ink::Link &&
               link_of("https://bare.example/y").second == "https://bare.example/y",
           "links: a bare URL in prose is a link");

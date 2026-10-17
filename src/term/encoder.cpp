@@ -259,7 +259,7 @@ std::string mouse_mode_seq(bool on, bool any_event) {
   if (!on) return "\x1b[?1002l\x1b[?1003l\x1b[?1006l";
   // 1002 reports motion only while a button is held; 1003 reports every move.
   // The latter floods events for the whole terminal, so it is asked for only
-  // while something — a popup menu — actually needs hover with no button down.
+  // while a popup menu or a visible file link needs hover with no button down.
   return any_event ? "\x1b[?1003h\x1b[?1006h" : "\x1b[?1002h\x1b[?1006h";
 }
 

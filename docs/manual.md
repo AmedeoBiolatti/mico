@@ -1194,6 +1194,17 @@ offers both. A running chat cannot be hidden while its pane is open: archiving
 it marks its transcript, which takes effect once the agent exits.
 
 
+## Previewing linked files
+
+Hover over a local-file link in the chat to read it in a floating preview.
+Markdown files are rendered with headings, lists and code blocks; other text
+files use syntax colouring where available. Move into the preview and use the
+mouse wheel to scroll. Moving away or pressing Escape closes it. Clicking the
+original link still opens the file in `$VISUAL` / `$EDITOR`.
+
+Previews read up to 256 KiB of a regular text file. Binary files and files that
+cannot be read show a short message instead.
+
 ## Copying text
 
 Dragging with the left mouse button over any pane selects the text under it and

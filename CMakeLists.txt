@@ -161,6 +161,8 @@ add_library(mico_tui STATIC
   src/views/chat_view.cpp
   src/views/chat_render.cpp
   src/views/markdown.cpp
+  src/views/markdown_style.cpp
+  src/views/file_preview.cpp
   src/views/code.cpp
   src/views/latex.cpp
   src/views/session_pane.cpp

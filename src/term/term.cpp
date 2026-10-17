@@ -35,7 +35,7 @@ const char* const kInit = "\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?2004h
 // OSC 111 restores the terminal's configured background; terminals that do not
 // know it ignore it, as they do OSC 11.
 const char* const kFini =
-    "\x1b[?1004l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[0m\x1b]111\x1b\\\x1b[?1049l";
+    "\x1b[?1004l\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?25h\x1b[0m\x1b]111\x1b\\\x1b[?1049l";
 
 std::string background_seq(Color bg) {
   if (bg == kDefaultColor) return {};

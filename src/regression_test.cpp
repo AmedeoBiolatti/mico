@@ -1484,22 +1484,117 @@ int run_regression_tests() {
   }
 
   {
+    const std::string file = project + "/hover-preview.md";
+    const std::string path = base + "/.claude/projects/hover-preview/hover-preview.jsonl";
+    std::string document = "# FLOATING_MARKDOWN_HEADING\n\n**BOLD_PREVIEW** and `inline code`.\n\n";
+    for (int i = 0; i < 60; i++) document += "PREVIEW_ROW_" + std::to_string(i) + "\n";
+    put(file, document);
+    put(path, "{\"type\":\"user\",\"cwd\":" + js::quote(project) +
+        ",\"sessionId\":\"hover-preview\",\"message\":{\"content\":\"preview the file\"}}\n" +
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":" +
+        js::quote("See [the Markdown file](" + file + ")") + "}]}}\n");
+    App app;
+    app.select_stored(path);
+    Surface sf; sf.resize(120, 32);
+    app.draw(sf);
+    Point link{-1, -1};
+    for (int y = 0; y < sf.height() && link.x < 0; y++)
+      for (int x = 0; x < sf.width(); x++)
+        if (links::url(sf.at(x, y).link) == "file://" + file) { link = {x, y}; break; }
+    check(link.x >= 0 && app.wants_motion(), "visible file links request hover motion reporting");
+    if (link.x >= 0) {
+      const auto mouse = [&](MouseKind kind, Point at) {
+        app.feed({InputEvent::Type::Mouse, {}, {kind, MouseButton::None, at}, {}});
+        app.draw(sf);
+      };
+      const size_t sessions = app.live_sessions().size();
+      mouse(MouseKind::Move, link);
+      check(screen(sf).find("FLOATING_MARKDOWN_HEADING") != std::string::npos &&
+                screen(sf).find("# FLOATING_MARKDOWN_HEADING") == std::string::npos &&
+                screen(sf).find("Wheel: scroll") != std::string::npos,
+            "hovering renders a floating Markdown preview without source markers");
+      check(app.live_sessions().size() == sessions, "hovering a file never launches an editor");
+      Point inside{-1, -1};
+      for (int y = 0; y < sf.height() && inside.x < 0; y++) {
+        std::string row;
+        for (int x = 0; x < sf.width(); x++) text::encode(sf.at(x, y).cp, row);
+        if (row.find("BOLD_PREVIEW") != std::string::npos) {
+          for (int x = 0; x < sf.width(); x++)
+            if (sf.at(x, y).cp == U'B' && (sf.at(x, y).st.a & attr::kBold)) { inside = {x, y}; break; }
+        }
+      }
+      check(inside.x >= 0, "the preview preserves Markdown emphasis");
+      if (inside.x >= 0) {
+        mouse(MouseKind::Move, inside);
+        check(screen(sf).find("FLOATING_MARKDOWN_HEADING") != std::string::npos,
+              "moving into the floating preview keeps it open");
+        for (int i = 0; i < 5; i++) mouse(MouseKind::WheelDown, inside);
+        check(screen(sf).find("FLOATING_MARKDOWN_HEADING") == std::string::npos &&
+                  screen(sf).find("PREVIEW_ROW_20") != std::string::npos &&
+                  screen(sf).find("the Markdown file") != std::string::npos,
+              "the wheel scrolls the preview while the chat stays in place");
+      }
+      mouse(MouseKind::Move, {0, 0});
+      check(screen(sf).find("Wheel: scroll") == std::string::npos, "moving away dismisses the preview");
+      mouse(MouseKind::Move, link);
+      app.feed({InputEvent::Type::Key, {Key::Escape}, {}, {}});
+      app.draw(sf);
+      check(screen(sf).find("Wheel: scroll") == std::string::npos, "Escape dismisses a hover preview");
+      mouse(MouseKind::Move, link);
+      sf.resize(70, 12); app.draw(sf);
+      check(screen(sf).find("preview the file") != std::string::npos,
+            "resizing with a preview open retains the underlying chat");
+    }
+    std::filesystem::remove_all(base + "/.claude/projects/hover-preview");
+  }
+
+  {
+    FilePreview preview;
+    Surface sf; sf.resize(80, 24);
+    const auto show = [&](const std::string& path) {
+      sf.clear();
+      preview.open("file://" + path);
+      preview.render(sf, {0, 0, 80, 24}, {4, 0, 8, 1}, active_theme());
+      return screen(sf);
+    };
+    const std::string binary = project + "/binary-preview.bin";
+    put(binary, std::string("abc\0def", 7));
+    check(show(binary).find("No text preview available") != std::string::npos,
+          "binary links show a message instead of raw bytes");
+    check(show(project + "/missing-preview.md").find("Cannot preview this file") != std::string::npos,
+          "missing files have a readable preview error");
+    const std::string pipe = project + "/preview-pipe";
+    mkfifo(pipe.c_str(), 0600);
+    check(show(pipe).find("Cannot preview this file") != std::string::npos,
+          "a file link to a pipe never blocks the UI");
+    unlink(pipe.c_str());
+  }
+
+  for (int format = 0; format < 5; format++) {
     // File links must show the command's terminal, not an empty chat. Use a
     // reader that stays alive after displaying the actual file, without
     // requiring an editor to be installed in the test environment.
-    const std::string file = project + "/file-link.txt";
+    const std::string name = format >= 3 ? "file-link (100%).txt" : "file-link.txt";
+    const std::string file = project + "/" + name;
     const std::string path = base + "/.claude/projects/file-link/file-link.jsonl";
     put(file, "FILE_LINK_VISIBLE_CONTENT\n");
+    const std::string target = "file://" + project + "/" +
+        (format >= 3 ? "file-link%20%28100%25%29.txt" : name) + "#L1";
+    const std::string answer = format == 0 ? "See file-link.txt:1" :
+        format == 1 ? "See [the file](" + file + ":1)" :
+        format == 2 ? "See [the file](./file-link.txt#L1)" :
+        format == 3 ? "See [the file](<" + file + ":1>)" :
+                      "See [the file](" + target + ")";
     put(path, "{\"type\":\"user\",\"cwd\":" + js::quote(project) +
               ",\"sessionId\":\"file-link\",\"message\":{\"content\":\"open the file\"}}\n" +
-              R"({"type":"assistant","message":{"content":[{"type":"text","text":"See file-link.txt:1"}]}})" "\n");
+              "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":" +
+              js::quote(answer) + "}]}}\n");
     EnvScope visual("VISUAL", "/bin/sh -c 'shift; cat \"$@\"; exec sleep 60' file-reader");
     App app;
     app.select_stored(path);
     Surface sf; sf.resize(120, 32);
     app.draw(sf);
     Point link{-1, -1};
-    const std::string target = "file://" + file + "#L1";
     for (int y = 0; y < sf.height() && link.x < 0; ++y)
       for (int x = 0; x < sf.width(); ++x)
         if (links::url(sf.at(x, y).link) == target) { link = {x, y}; break; }

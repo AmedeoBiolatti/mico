@@ -15,6 +15,7 @@
 #include "adapters/adapters.h"
 #include "base/fs.h"
 #include "base/log.h"
+#include "base/path.h"
 #include "core/away.h"
 #include "core/opener.h"
 #include "core/pty.h"
@@ -26,6 +27,7 @@
 #include "math/math.h"
 #include "term/sixel.h"
 #include "term/encoder.h"
+#include "term/links.h"
 #include "base/text.h"
 #include "views/views.h"
 
@@ -611,11 +613,10 @@ void App::collect_session_fds(std::vector<int>& out) const {
 }
 
 void App::open_in_editor(const std::string& url) {
-  std::string path = url.substr(7);
+  std::string path = file_url_path(url);
   int line = 0;
-  if (const size_t h = path.find("#L"); h != std::string::npos) {
-    line = std::atoi(path.c_str() + h + 2);
-    path.resize(h);
+  if (const size_t h = url.find("#L"); h != std::string::npos) {
+    line = std::atoi(url.c_str() + h + 2);
   }
   // Only an absolute path: the link may come from what an agent wrote, and a
   // "path" like "+!cmd" or "-c..." would be read by the editor as an option.
@@ -1154,10 +1155,61 @@ void App::render(Surface& s) {
   render_tabs(s);
   render_status(s);
   render_command(s);
+  collect_file_links(s);
+  if (file_preview_.active()) file_preview_.render(s, preview_pane_, preview_anchor_, theme());
   if (menu_) render_menu(s);
   if (qr_) render_qr(s);
   if (prompt_) render_prompt(s);
   render_selection(s);
+}
+
+void App::collect_file_links(const Surface& s) {
+  file_links_.clear();
+  for (const auto& placed : placed_) {
+    const Rect pane = inner_of(placed).intersect({0, 0, s.width(), s.height()});
+    for (int y = pane.y; y < pane.bottom(); y++) {
+      for (int x = pane.x; x < pane.right();) {
+        const uint16_t id = s.at(x, y).link;
+        const int start = x++;
+        if (!id || !links::url(id).starts_with("file:///")) continue;
+        while (x < pane.right() && s.at(x, y).link == id) x++;
+        file_links_.push_back({{start, y, x - start, 1}, pane, id});
+      }
+    }
+  }
+  if (!file_preview_.active()) return;
+  bool present = false;
+  for (const auto& hit : file_links_)
+    present |= hit.id == preview_link_ && hit.rect.contains({preview_anchor_.x, preview_anchor_.y});
+  if (!present || menu_ || qr_ || prompt_ || cmd_active_ || selection_) file_preview_.close();
+}
+
+bool App::preview_mouse(const MouseEvent& m) {
+  if (menu_ || qr_ || prompt_ || cmd_active_ || selection_ || drag_ || mouse_capture_) return false;
+  if (file_preview_.active() && file_preview_.rect().contains(m.pos)) {
+    if (m.kind == MouseKind::WheelUp || m.kind == MouseKind::WheelDown) {
+      file_preview_.scroll(m.kind == MouseKind::WheelUp ? -3 : 3);
+      mark_dirty();
+    }
+    // Never activate the chat beneath the floating preview.
+    return true;
+  }
+  if (m.kind == MouseKind::Move && !sel_dragging_) {
+    for (const auto& hit : file_links_) {
+      if (!hit.rect.contains(m.pos)) continue;
+      if (!file_preview_.active() || preview_link_ != hit.id) {
+        file_preview_.open(std::string(links::url(hit.id)));
+        preview_link_ = hit.id;
+        preview_anchor_ = hit.rect;
+        preview_pane_ = hit.pane;
+        mark_dirty();
+      }
+      return true;
+    }
+  }
+  if (file_preview_.active()) { file_preview_.close(); mark_dirty(); }
+  // Motion outside a popup is for hover, not for a raw agent's terminal.
+  return m.kind == MouseKind::Move && !sel_dragging_;
 }
 
 // Splits are draggable, but mouse mode 1002 reports motion only while a button
@@ -1796,6 +1848,7 @@ bool App::divider_press(Point pt) {
 }
 
 void App::handle_mouse(const MouseEvent& m) {
+  if (preview_mouse(m)) return;
   if (drag_) {
     if (m.kind == MouseKind::Release) { drag_.reset(); save_layout(); return; }
     if (m.kind == MouseKind::Drag || m.kind == MouseKind::Move) {
@@ -1960,6 +2013,11 @@ void App::focus_next(int delta) {
 }
 
 void App::handle_key(const KeyEvent& k) {
+  if (file_preview_.active()) {
+    file_preview_.close();
+    mark_dirty();
+    if (k.key == Key::Escape) return;
+  }
   // Ctrl+C over highlighted text copies it, as in any terminal. It must not
   // go on to interrupt the agent, or detach mico, with a selection showing.
   if (sel_has_ && k.is_ctrl('c')) {
@@ -2092,6 +2150,7 @@ void App::handle(const InputEvent& e) {
     case InputEvent::Type::Focus:
       term_focused_ = e.focus_in;
       term_focus_known_ = true;
+      if (!e.focus_in) file_preview_.close();
       break;
     default: break;
   }
@@ -2103,6 +2162,7 @@ void App::handle(const InputEvent& e) {
 // pty view forwards it re-wrapped). It is never replayed as key events, which
 // would turn a pasted "a" into a shortcut.
 void App::handle_paste(const std::string& t) {
+  file_preview_.close();
   if (t.empty()) return;
   // The popup is modal for input, paste included: it narrows the list.
   if (menu_) {

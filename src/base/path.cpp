@@ -8,6 +8,38 @@
 
 namespace mico {
 
+std::string file_url(std::string_view path) {
+  constexpr char hex[] = "0123456789ABCDEF";
+  std::string out = "file://";
+  for (unsigned char c : path) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+        c == '/' || c == '-' || c == '_' || c == '.' || c == '~') out += char(c);
+    else { out += '%'; out += hex[c >> 4]; out += hex[c & 15]; }
+  }
+  return out;
+}
+
+std::string file_url_path(std::string_view url) {
+  if (!url.starts_with("file:///")) return {};
+  url.remove_prefix(7);
+  url = url.substr(0, url.find('#'));
+  const auto hex = [](char c) {
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+         : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+  };
+  std::string out;
+  for (size_t i = 0; i < url.size(); i++) {
+    char c = url[i];
+    if (c == '%' && i + 2 < url.size() && hex(url[i + 1]) >= 0 && hex(url[i + 2]) >= 0) {
+      c = char(hex(url[i + 1]) * 16 + hex(url[i + 2]));
+      i += 2;
+    }
+    if (!c) return {};  // exec arguments cannot contain NUL
+    out += c;
+  }
+  return out;
+}
+
 namespace {
 std::string home_dir() {
   const char* h = getenv("HOME");
