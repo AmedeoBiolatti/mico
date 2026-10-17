@@ -11,6 +11,7 @@
 
 #include <fstream>
 
+#include "base/path.h"
 #include "core/settings.h"
 #include "math/math.h"
 #include "math/picture.h"
@@ -23,6 +24,38 @@ namespace mico::md {
 namespace {
 
 bool is_space(char c) { return c == ' ' || c == '\t'; }
+
+std::string markdown_target(std::string_view target, const std::string& base);
+
+// Read a Markdown destination, keeping balanced parentheses and <paths with
+// spaces>. A title after the destination is not part of the target.
+std::string_view link_destination(std::string_view s, size_t start, size_t& close) {
+  size_t a = start;
+  while (a < s.size() && is_space(s[a])) a++;
+  size_t end = a;
+  if (a < s.size() && s[a] == '<') {
+    end = s.find('>', ++a);
+    if (end == std::string_view::npos) return {};
+    close = end + 1;
+  } else {
+    int depth = 0;
+    while (end < s.size() && !is_space(s[end])) {
+      if (s[end] == '(') depth++;
+      if (s[end] == ')' && depth-- == 0) break;
+      end++;
+    }
+    close = end;
+  }
+  while (close < s.size() && is_space(s[close])) close++;
+  if (close < s.size() && (s[close] == '\'' || s[close] == '"')) {
+    close = s.find(s[close], close + 1);
+    if (close == std::string_view::npos) return {};
+    close++;
+    while (close < s.size() && is_space(s[close])) close++;
+  }
+  if (close >= s.size() || s[close] != ')') return {};
+  return s.substr(a, end - a);
+}
 
 std::string_view trim_left(std::string_view s) {
   size_t i = 0;
@@ -369,27 +402,23 @@ void split_inline(std::string_view s, Ink base, std::vector<Seg>& out, Arena* sc
     } else if (c == '[') {
       size_t close = find("]", i + 1, kBracket);
       if (close != std::string_view::npos && close + 1 < s.size() && s[close + 1] == '(') {
-        size_t paren = s.find(')', close + 2);
+        size_t paren = std::string_view::npos;
+        const std::string_view target = link_destination(s, close + 2, paren);
         // ![alt](src) in running text: a link to the image, marked as one.
         const bool image = i > run_start && s[i - 1] == '!';
-        if (paren != std::string_view::npos && image && scratch) {
+        if (!target.empty() && image && scratch) {
           flush(i - 1);
-          std::string_view target = trim_left(s.substr(close + 2, paren - close - 2));
-          if (const size_t sp = target.find(' '); sp != std::string_view::npos) target = target.substr(0, sp);
           const std::string label = "\xE2\x96\xA3 " + std::string(close > i + 1 ? s.substr(i + 1, close - i - 1) : "image");
           const Str m = scratch->add(label);
-          out.push_back(Seg{m.off | kScratchBit, m.len, Ink::Link, 0, links::intern(url_target(target))});
+          out.push_back(Seg{m.off | kScratchBit, m.len, Ink::Link, 0, links::intern(markdown_target(target, link_base))});
           i = run_start = paren + 1;
           continue;
         }
-        if (paren != std::string_view::npos) {
+        if (!target.empty()) {
           flush(i);
           // Show the label, not the target: a URL inline is noise in a chat.
           // The target is what a click on the label opens.
-          std::string_view target = trim_left(s.substr(close + 2, paren - close - 2));
-          if (const size_t sp = target.find(' '); sp != std::string_view::npos) target = target.substr(0, sp);  // [a](url "title")
-          if (target.starts_with('<') && target.ends_with('>')) target = target.substr(1, target.size() - 2);
-          out.push_back(Seg{uint32_t(i + 1), uint32_t(close - i - 1), Ink::Link, 0, links::intern(url_target(target))});
+          out.push_back(Seg{uint32_t(i + 1), uint32_t(close - i - 1), Ink::Link, 0, links::intern(markdown_target(target, link_base))});
           i = run_start = paren + 1;
           continue;
         }
@@ -1368,6 +1397,43 @@ void render(std::string_view text, uint32_t base, bool in_scratch, int cols, Out
 
 namespace {
 
+std::string markdown_target(std::string_view target, const std::string& base) {
+  if (target.starts_with("www.") || target.find("://") != std::string_view::npos ||
+      target.starts_with("mailto:")) return url_target(target);
+  if (target.empty() || target.front() == '#') return {};
+  std::string line;
+  const auto digits = [](std::string_view s) {
+    return !s.empty() && s.find_first_not_of("0123456789") == std::string_view::npos;
+  };
+  if (const size_t h = target.rfind("#L"); h != std::string_view::npos && digits(target.substr(h + 2))) {
+    line = target.substr(h + 2);
+    target = target.substr(0, h);
+  } else if (const size_t c = target.rfind(':'); c != std::string_view::npos && digits(target.substr(c + 1))) {
+    line = target.substr(c + 1);
+    target = target.substr(0, c);
+    // :line:column: the editor opens at the line.
+    if (const size_t c2 = target.rfind(':'); c2 != std::string_view::npos && digits(target.substr(c2 + 1))) {
+      line = target.substr(c2 + 1);
+      target = target.substr(0, c2);
+    }
+  }
+  // Leave unsupported schemes to the URL allowlist, rather than treating
+  // javascript:... (or another scheme) as a relative filename.
+  if (target.find(':') != std::string_view::npos || target.empty()) return {};
+  std::string path(target);
+  if (path.starts_with("~/")) {
+    const char* home = getenv("HOME");
+    if (!home) return {};
+    path = std::string(home) + path.substr(1);
+  } else if (!path.starts_with('/')) {
+    if (base.empty()) return {};
+    path = resolve_path(base, path);
+  }
+  path = file_url_path("file://" + path);
+  if (path.empty()) return {};
+  return file_url(path) + (line.empty() ? "" : "#L" + line);
+}
+
 // Whether a path names a file, remembered for a few seconds: layout asks again
 // on every relayout, and a file an agent just wrote should still turn up.
 bool is_file(const std::string& path) {
@@ -1447,7 +1513,7 @@ void find_paths(std::string_view s, const std::string& base, const std::vector<L
       abs = base + "/" + abs;
     }
     if (!is_file(abs)) continue;
-    out.push_back(LinkHit{begin, end, "file://" + abs + (line > 0 ? "#L" + std::to_string(line) : "")});
+    out.push_back(LinkHit{begin, end, file_url(abs) + (line > 0 ? "#L" + std::to_string(line) : "")});
   }
 }
 

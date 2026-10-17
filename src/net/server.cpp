@@ -452,8 +452,7 @@ void send_frame(App& app, const Surface& back, Client& c, const std::string& cli
   std::string frame;
 
   // Hand the mouse back to the terminal, or take it again. Also switch
-  // to any-event tracking while a popup menu is open, so hovering a menu
-  // item with no button held still moves the highlight.
+  // to any-event tracking for popup menus and local-file hover previews.
   if (app.wants_mouse() != c.mouse_on || app.wants_motion() != c.mouse_any) {
     c.mouse_on = app.wants_mouse();
     c.mouse_any = app.wants_motion();

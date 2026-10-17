@@ -12,6 +12,7 @@
 #include "base/qr.h"
 #include "ui/picker.h"
 #include "ui/theme.h"
+#include "views/file_preview.h"
 
 namespace mico {
 
@@ -81,7 +82,8 @@ class App {
       render(scratch);
     }
     action_ = AppAction::None;
-    dirty_ = true;
+    if (e.type != InputEvent::Type::Mouse || e.mouse.kind != MouseKind::Move ||
+        mouse_capture_ || drag_ || sel_dragging_) dirty_ = true;
     handle(e);
     return action_;
   }
@@ -259,12 +261,8 @@ class App {
   }
   // True while mico wants mouse reporting. The renderer emits the mode change.
   bool wants_mouse() const { return !selection_; }
-  // Button-event tracking (mode 1002) only reports motion while a button is
-  // held, which is right for everything except a popup menu: browsing one by
-  // hover needs motion with no button down, mode 1003. Scoped to just while a
-  // menu is open, so the ordinary case still avoids the flood of motion
-  // events 1003 sends for the whole terminal.
-  bool wants_motion() const { return bool(menu_); }
+  // Menus and visible file links need motion with no button held (mode 1003).
+  bool wants_motion() const { return bool(menu_) || !file_links_.empty(); }
 
   // Queues text for the system clipboard. Delivered as OSC 52 inside the next
   // frame, so it crosses an ssh connection like everything else.
@@ -453,6 +451,14 @@ class App {
   void handle_paste(const std::string& text);
   void handle_key(const KeyEvent& k);
   void handle_mouse(const MouseEvent& m);
+
+  struct FileLink { Rect rect, pane; uint16_t id; };
+  std::vector<FileLink> file_links_;
+  FilePreview file_preview_;
+  uint16_t preview_link_ = 0;
+  Rect preview_anchor_{}, preview_pane_{};
+  void collect_file_links(const Surface& s);
+  bool preview_mouse(const MouseEvent& m);
 
   // Mouse text selection, in screen coordinates. A left-drag over any pane
   // highlights the cells it covers and copies the text (OSC 52) on release; a
