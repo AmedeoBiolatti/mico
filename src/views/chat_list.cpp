@@ -250,12 +250,21 @@ class ChatList final : public Pane {
     x += p.text_clipped(x, y + 1, word, Style{c, base.bg}, std::max(0, limit - x));
     std::string agent = " · " + agent_label(agent_of(r));
     if (app_->all_folders() && r.project) agent += " · " + r.project->name;
-    if (x + text::str_width(agent) <= limit) x += p.text(x, y + 1, agent, meta);
+    std::string where;
+    if (r.live && !r.live->exited())
+      if (const std::string place = app_->workspace().place_text(*r.live); !place.empty()) where = " \xC2\xB7 " + place;
     // Work it left running in the background, as its footer would say.
+    // Reserve its count before optional location metadata can use the row.
+    std::string background;
     if (r.live && !r.live->exited() && !r.live->background().empty()) {
-      const std::string bg = " \xC2\xB7 " + std::to_string(r.live->background().size()) + " in background" +
-                             background_percent(r.live->background());
-      if (x + text::str_width(bg) <= limit) p.text(x, y + 1, bg, Style{th.working, base.bg});
+      background = " \xC2\xB7 " + std::to_string(r.live->background().size()) + " in background" +
+                   background_percent(r.live->background());
+    }
+    if (background.empty()) agent += where;
+    if (x + text::str_width(agent) + text::str_width(background) <= limit) x += p.text(x, y + 1, agent, meta);
+    if (!background.empty()) {
+      x += p.text_clipped(x, y + 1, background, Style{th.working, base.bg}, std::max(0, limit - x));
+      if (x + text::str_width(where) <= limit) x += p.text(x, y + 1, where, meta);
     }
     if (ww && p.width() - ww > x) p.text(p.width() - ww, y + 1, when, meta);
   }

@@ -114,6 +114,41 @@ int run_api_test() {
   check(!has(got, "draw the loss curve"), "only what is new is sent");
   check(poll_all(c).find("\"chat\"") == std::string::npos, "nothing is sent while nothing changes");
 
+  // Work metadata is cheap to follow; output is read only for a selected
+  // command or subagent belonging to the open parent chat.
+  append(path, R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"panel-command","name":"Bash","input":{"command":"printf panel"}}]}})");
+  append(path, R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"panel-command","content":"panel-output-marker"}]}})");
+  c.receive(R"({"type":"work","path":")" + path + R"(","open":false})");
+  got = poll_all(c);
+  check(has(got, R"("type":"work_state")") && has(got, R"("kind":"terminal")") && !has(got, R"("output":)"),
+        "work follows commands without eagerly sending their output");
+  char tool_key[40];
+  snprintf(tool_key, sizeof tool_key, "tool:%016llx", (unsigned long long)hash_id("panel-command"));
+  c.receive(R"({"type":"work","path":")" + path + R"(","open":true,"item":")" + tool_key + R"("})");
+  check(has(poll_all(c), R"("output":"panel-output-marker")"), "selecting a terminal reads its output");
+  c.receive(R"({"type":"work","path":")" + path + R"(","open":true,"item":"/etc/passwd"})");
+  check(!has(poll_all(c), R"("output":)"), "work selection cannot name arbitrary files");
+
+  const std::string run_dir = path.substr(0, path.size() - 6);
+  mkdir(run_dir.c_str(), 0700);
+  mkdir((run_dir + "/subagents").c_str(), 0700);
+  const std::string child = run_dir + "/subagents/agent-panel-child.jsonl";
+  const std::string meta = run_dir + "/subagents/agent-panel-child.meta.json";
+  append(meta, R"({"toolUseId":"panel-agent","description":"Review the change","agentType":"Explore"})");
+  append(child, R"({"type":"assistant","message":{"content":[{"type":"text","text":"child-answer-marker"}]}})");
+  append(path, R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"panel-agent","name":"Agent","input":{"description":"Review the change"}}]}})");
+  c.receive(R"({"type":"work","path":")" + path + R"(","open":true,"item":"agent:)" + child + R"("})");
+  got = poll_all(c);
+  check(has(got, R"("kind":"agent")") && has(got, "child-answer-marker"),
+        "a selected subagent's conversation appears beside its parent");
+  append(child, R"({"type":"assistant","message":{"content":[{"type":"text","text":"child-update-marker"}]}})");
+  c.receive(R"({"type":"work","path":")" + path + R"(","open":true,"item":"agent:)" + child + R"("})");
+  check(has(poll_all(c), "child-update-marker"), "the selected subagent follows new messages");
+  c.receive(R"({"type":"work","path":")" + path + R"(","open":false})");
+  check(!has(poll_all(c), R"("output":)"), "closing the work panel stops sending detail");
+  unlink(child.c_str()); unlink(meta.c_str());
+  rmdir((run_dir + "/subagents").c_str()); rmdir(run_dir.c_str());
+
   // --- what a client may not do ---------------------------------------------
   c.receive(R"({"type":"open","path":"/etc/passwd"})");
   got = poll_all(c);

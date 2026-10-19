@@ -9,6 +9,7 @@ namespace mico {
 // found by name.
 class ClaudeAdapter final : public Adapter {
  public:
+  bool native_side_questions() const override { return true; }
   std::string_view id() const override { return "claude"; }
   std::string_view name() const override { return "Claude Code"; }
   std::string_view label() const override { return "Claude"; }

@@ -189,6 +189,37 @@ h2 {
 
 /* --------------------------------------------------------------------- main */
 #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+#chat-workspace { display: flex; flex: 1; min-height: 0; min-width: 0; position: relative; }
+#conversation { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; position: relative; }
+#work-panel { width: clamp(300px, 38%, 520px); flex: none; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--surface); }
+.work-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; }
+#work-tabs { display: flex; padding: 0 12px; gap: 4px; border-bottom: 1px solid var(--line); }
+#work-tabs button { flex: 1; padding: 10px 6px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--dim); }
+#work-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
+#work-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#work-list { max-height: 30%; overflow: auto; flex: none; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.work-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; width: 100%; padding: 9px; text-align: left; background: none; border: 1px solid transparent; border-radius: 8px; }
+.work-item:hover { background: var(--panel); }
+.work-item.selected { border-color: var(--accent); background: var(--accent-soft); }
+.work-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-status, .work-info { color: var(--dim); font-size: 12px; }
+.work-item.working .work-status { color: var(--working); }
+.work-item.failed .work-status { color: var(--bad); }
+.work-item.waiting .work-status, #work-toggle.needs-attention { color: var(--waiting); }
+.work-info { grid-column: 1 / -1; }
+.work-done > summary { color: var(--dim); cursor: pointer; padding: 8px; font-size: 12px; }
+#work-detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 16px; }
+#work-title { width: 100%; overflow-wrap: anywhere; font-weight: 600; font-size: 13px; }
+#work-output { flex: 1; min-height: 0; overflow: auto; padding: 0 16px 16px; overflow-wrap: anywhere; font-size: 14px; }
+#work-output pre { white-space: pre; overflow: auto; }
+#btw-form { border-top: 1px solid var(--line); padding: 12px 16px; }
+#btw-history { display: flex; gap: 8px; padding: 8px 16px; }
+#btw-form label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+#btw-form > div { display: flex; gap: 8px; }
+#btw-text { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); padding: 9px; }
+#btw-form button { border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink); padding: 8px 14px; }
+@media (max-width: 1100px) { #work-panel { position: absolute; inset: 0 0 0 auto; width: min(100%, 480px); z-index: 5; box-shadow: var(--shadow); } }
+@media (max-width: 859px) { #work-panel { width: 100%; } }
 #chat-head {
   display: flex; align-items: center; gap: 8px; padding: 8px 14px 8px 8px; border-bottom: 1px solid var(--line);
   background: var(--bg); padding-top: calc(8px + env(safe-area-inset-top)); min-height: 56px;
@@ -198,6 +229,11 @@ h2 {
 #chat-meta { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12.5px; min-width: 0; white-space: nowrap; overflow: hidden; }
 #chat-meta .sep { color: var(--faint); }
 #chat-meta .m-status { font-weight: 600; }
+#chat-meta .place { display: inline-flex; gap: 4px; align-items: center; min-width: 0; cursor: default; }
+#chat-meta .p-repo { font-weight: 600; color: var(--fg, inherit); overflow: hidden; text-overflow: ellipsis; }
+#chat-meta .p-branch, #chat-meta .p-wt, #chat-meta .p-more { border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-size: 11.5px; background: var(--surface); }
+#chat-meta .p-branch { color: var(--accent); }
+#chat-meta .p-more { color: var(--waiting); }
 #chat-meta .chips { display: flex; gap: 4px; overflow: hidden; margin-left: 4px; }
 .chip { border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; font-size: 11.5px; color: var(--dim); background: var(--surface); }
 .icon {

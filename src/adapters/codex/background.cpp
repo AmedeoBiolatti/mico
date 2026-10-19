@@ -60,7 +60,8 @@ void CodexAdapter::read_background(std::string_view raw, uint64_t offset, Backgr
   const std::string_view head = codex_payload_type(raw);
   const bool call = head == "custom_tool_call" || head == "function_call";
   const bool output = head == "custom_tool_call_output" || head == "function_call_output";
-  const bool item = head == "item_completed" || (head.empty() && text::contains(raw, "\"item_completed\""));
+  const bool item = head == "item_completed" || head == "item_started" ||
+                    (head.empty() && text::contains(raw, "\"item_completed\""));
   if (!call && !output && !item && !head.empty()) return;
 
   int64_t at = 0;
@@ -92,6 +93,12 @@ void CodexAdapter::read_background(std::string_view raw, uint64_t offset, Backgr
     c.offset = offset;
     if (name == "exec" && input.is_string()) {
       c.what = first_command(text_of(input));
+    } else if (name == "exec_command") {
+      const std::string args = arguments.is_string() ? text_of(arguments) : std::string(arguments.raw);
+      js::scan_object(args, [&](std::string_view k, const js::Value& v) {
+        if (k == "cmd") c.what = one_line(text_of(v), 160);
+        return true;
+      });
     } else if (name == "wait") {
       std::string args = arguments.is_string() ? text_of(arguments) : std::string(arguments.raw);
       js::scan_object(args, [&](std::string_view k, const js::Value& v) {
@@ -120,6 +127,7 @@ void CodexAdapter::read_background(std::string_view raw, uint64_t offset, Backgr
         const size_t from = kRunning.size();
         const std::string cell = text.substr(from, text.find_first_of(" \n", from) - from);
         t.start("cell " + cell, c);
+        t.event("cell " + cell, text.substr(text.size() > 65536 ? text.size() - 65536 : 0), at);
       }
     }
     each_chunk(text, [&](const std::string& session, bool exited) {
@@ -133,18 +141,31 @@ void CodexAdapter::read_background(std::string_view raw, uint64_t offset, Backgr
         p.kind = "shell";
         if (c.kind == "wait") p.what = id;
         t.start(id, p);
+        t.event(id, text.substr(text.size() > 65536 ? text.size() - 65536 : 0), at);
       }
     });
     return;
   }
 
   if (it.is_object()) {
-    std::string itype, process;
+    std::string itype, process, kind, thread, path;
     js::scan_object(it.raw, [&](std::string_view k, const js::Value& v) {
       if (k == "type") itype = text_of(v);
       else if (k == "process_id") process = text_of(v);
+      else if (k == "kind") kind = text_of(v);
+      else if (k == "agent_thread_id") thread = text_of(v);
+      else if (k == "agent_path") path = text_of(v);
       return true;
     });
+    if (itype == "SubAgentActivity" && (!thread.empty() || !path.empty())) {
+      const std::string id = thread.empty() ? path : thread;
+      if (kind == "completed") t.end(id);
+      else if (kind == "started" || kind == "interacted") {
+        BackgroundTasks::Call c;
+        c.kind = "agent"; c.what = path.empty() ? id : path; c.at_ms = at; c.offset = offset;
+        t.start(id, c);
+      }
+    }
     if (itype == "CommandExecution" && !process.empty()) {
       t.end("process " + process);
       t.calls["ended process " + process].kind = "ended";

@@ -104,6 +104,7 @@ class PiAdapter final : public PiFamilyAdapter {
 // codex's is.
 class OmpAdapter final : public PiFamilyAdapter {
  public:
+  bool can_fork() const override { return false; }
   std::string_view id() const override { return "omp"; }
   std::string_view name() const override { return "Oh My Pi"; }
   std::string_view label() const override { return "OMP"; }

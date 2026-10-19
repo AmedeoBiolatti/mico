@@ -49,6 +49,7 @@ std::map<std::string, std::string> load_codex_names() {
 
 void CodexAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) const {
   std::string buf;
+  std::vector<SessionRef> sessions;
   const std::map<std::string, std::string> names = load_codex_names();
   const std::string root = codex_home() + "/sessions";
   // Layout is sessions/YYYY/MM/DD/rollout-*.jsonl.
@@ -93,6 +94,22 @@ void CodexAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) c
                 else if (k == "cwd") {
                   s.cwd.clear();
                   js::unescape_append(v.body(), s.cwd);
+                }
+                else if (k == "agent_nickname" && s.subagent.empty()) js::unescape_append(v.body(), s.subagent);
+                else if (k == "source" && v.is_object()) {
+                  js::scan_object(v.raw, [&](std::string_view key, const js::Value& sub) {
+                    if (key != "subagent" || !sub.is_object()) return true;
+                    js::scan_object(sub.raw, [&](std::string_view sk, const js::Value& spawn) {
+                      if (sk != "thread_spawn" || !spawn.is_object()) return true;
+                      js::scan_object(spawn.raw, [&](std::string_view field, const js::Value& value) {
+                        if (field == "parent_thread_id") s.parent = std::string(value.body());
+                        else if (field == "agent_path") { s.subagent.clear(); js::unescape_append(value.body(), s.subagent); }
+                        return true;
+                      });
+                      return true;
+                    });
+                    return true;
+                  });
                 }
                 return true;
               });
@@ -146,11 +163,21 @@ void CodexAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) c
             scan(fs::read_prefix(s.path, 96u << 10, buf));
           if (s.id.empty()) return;  // a filename is not a resumable session id
           if (s.cwd.empty()) s.cwd = "(unknown)";
-          add(std::move(s));
+          sessions.push_back(std::move(s));
         });
       });
     });
   });
+  std::map<std::string, std::string> paths;
+  for (const auto& s : sessions) paths[s.id] = s.path;
+  for (auto& s : sessions) {
+    if (!s.parent.empty()) {
+      auto parent = paths.find(s.parent);
+      s.parent = parent == paths.end() ? std::string() : parent->second;
+      if (!s.parent.empty() && s.subagent.empty()) s.subagent = s.id;
+    }
+    add(std::move(s));
+  }
 }
 
 }  // namespace mico

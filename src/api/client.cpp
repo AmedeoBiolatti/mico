@@ -1,9 +1,11 @@
 #include "api/client.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 
 #include "adapters/adapters.h"
+#include "adapters/screen.h"
 #include "base/json.h"
 #include "base/json_write.h"
 #include "core/answers.h"
@@ -64,7 +66,8 @@ void Client::receive(std::string_view message) {
   std::string type, path, rid, agent, cwd, id, text;
   uint64_t key = 0;
   int index = -1;
-  std::string tool, note, file;
+  std::string tool, note, file, item, action;
+  bool panel_open = false;
   uint64_t at = 0, off = 0, len = 0;
   std::string_view chosen;
   bool fork = false;
@@ -78,6 +81,9 @@ void Client::receive(std::string_view message) {
     else if (k == "cwd") cwd = text_of(v);
     else if (k == "id") id = text_of(v);
     else if (k == "text") text = text_of(v);
+    else if (k == "item") item = text_of(v);
+    else if (k == "action") action = text_of(v);
+    else if (k == "open") panel_open = v.is_true();
     else if (k == "key") key = std::strtoull(std::string(v.is_string() ? v.body() : v.raw).c_str(), nullptr, 10);
     else if (k == "fork") fork = v.is_true();
     else if (k == "index" && v.type == js::Type::Number) index = std::atoi(std::string(v.raw).c_str());
@@ -105,6 +111,15 @@ void Client::receive(std::string_view message) {
   if (type == "answer_permission") return answer_permission(rid, key, index, note);
   if (type == "answer") return answer_question(rid, key, tool, chosen);
   if (type == "interrupt") return interrupt(rid, key);
+  if (type == "btw") return btw(rid, key, text, action);
+  if (type == "work") {
+    auto it = chats_.find(path);
+    if (it == chats_.end()) return error("not open: " + path);
+    it->second.work_selected = item;
+    it->second.work_open = panel_open;
+    it->second.work_sent.clear();
+    return;
+  }
   error("unknown message type: " + type);
 }
 
@@ -133,6 +148,7 @@ void Client::poll(std::vector<std::string>& out) {
       if (added) send_events(path, chat, before, before + added, "newer", out);
     }
     send_facts(path, chat, out);
+    send_work(path, chat, out);
   }
 }
 
@@ -154,6 +170,7 @@ void Client::open_chat(const std::string& path) {
   Chat& chat = chats_[path];
   chat.conv = std::make_unique<Conversation>();
   chat.facts.clear();
+  chat.work_sent.clear();
   Conversation& conv = *chat.conv;
   if (!conv.open(path, adapter)) {
     chats_.erase(path);
@@ -166,6 +183,52 @@ void Client::open_chat(const std::string& path) {
   conv.replay_facts();
   send_events(path, chat, 0, conv.events().size(), "tail", queued_);
   send_facts(path, chat, queued_);
+}
+
+void Client::send_work(const std::string& path, Chat& chat, std::vector<std::string>& out) {
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (!chat.work_sent.empty() && now - chat.work_polled_ms < 500) return;
+  chat.work_polled_ms = now;
+  const LiveSession* live = nullptr;
+  for (const auto& s : ws_.live()) if (s->transcript() == path) { live = s.get(); break; }
+  chat.work.refresh(*chat.conv, live, ws_, chat.work_sent.empty());
+  std::string m;
+  jw::Writer w(m);
+  w.begin_object().field("type", "work_state").field("path", path)
+      .field("supports_btw", chat.work.supports_btw()).key("items").begin_array();
+  for (const auto& i : chat.work.items())
+    w.begin_object().field("id", i.id).field("kind", i.kind).field("title", i.title)
+        .field("status", i.status).field("at", i.at).field("info", i.info)
+        .field("path", i.path).field("key", i.key).end_object();
+  w.end_array().field("selected", chat.work_selected);
+  if (chat.work_open) if (const WorkItem* i = chat.work.find(chat.work_selected))
+    w.field("output", chat.work.detail(*i, *chat.conv));
+  w.end_object();
+  if (m == chat.work_sent) return;
+  chat.work_sent = m;
+  out.push_back(std::move(m));
+}
+
+void Client::btw(std::string_view rid, uint64_t key, const std::string& text, const std::string& action) {
+  LiveSession* s = session(key);
+  if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
+  if (!text.empty()) {
+    const std::string error = ws_.ask_side_question(*s, text);
+    return result(rid, error.empty(), error, key);
+  }
+  if (!s->adapter() || !s->adapter()->native_side_questions()) return result(rid, false, "no native side question is open");
+  if (s->needs_input() || s->answer_sending()) return result(rid, false, "answer the agent's question first");
+  BtwPanel panel;
+  const bool shown = s->driver().side_panel(s->vt(), panel);
+  {
+    if (!shown) return result(rid, false, "no side question is open");
+    if (action == "previous") s->pty().write("\x1b[1;2D");
+    else if (action == "next") s->pty().write("\x1b[1;2C");
+    else if (action == "close") s->pty().write("\x1b");
+    else return result(rid, false, "unknown side question action");
+  }
+  result(rid, true, {}, key);
 }
 
 // A picture a chat holds, sent when the page asks: found in the line at byte
@@ -326,6 +389,7 @@ void Client::send_agents(std::vector<std::string>& out) {
   // What could have changed: the set of sessions, or any one of them.
   uint64_t seen = ws_.sessions_version();
   for (const auto& s : ws_.live()) seen = seen * 1000003 + s->generation();
+  seen = seen * 1000003 + ws_.git().version();
   if (seen == agents_seen_ && !agents_sent_.empty()) return;
   agents_seen_ = seen;
   std::string m;
@@ -340,6 +404,40 @@ void Client::send_agents(std::vector<std::string>& out) {
         .field("session_id", s->session_id())
         .field("transcript", s->transcript())
         .field("status", status_name(s->status()));
+    w.key("background").begin_array();
+    if (!s->exited()) for (const BackgroundTask& t : s->background()) {
+      w.begin_object()
+          .field("id", t.id)
+          .field("kind", t.kind)
+          .field("what", t.what)
+          .field("at", t.offset)
+          .field("started_ms", t.started_ms)
+          .field("expires_ms", t.expires_ms)
+          .field("last_event", t.last_event)
+          .field("last_event_ms", t.last_event_ms)
+          .field("events", t.events);
+      if (t.fraction >= 0) w.field("percent", int(std::clamp(t.fraction, 0.0, 1.0) * 100 + 0.5));
+      if (t.done >= 0) w.field("done", t.done);
+      if (t.total >= 0) w.field("total", t.total);
+      if (t.eta_s >= 0) w.field("eta_s", t.eta_s);
+      w.end_object();
+    }
+    w.end_array();
+    // Where it has been working, newest first, one entry per work tree: the
+    // repository, the branch checked out there, and whether it is a linked
+    // work tree rather than the main checkout.
+    w.key("places").begin_array();
+    for (const Workspace::WorkPlace& pl : ws_.places(*s))
+      w.begin_object()
+          .field("dir", pl.dir)
+          .field("top", pl.top)
+          .field("repo", pl.repo)
+          .field("branch", pl.branch)
+          .field("head", pl.head)
+          .field("worktree", pl.worktree)
+          .field("changed", int64_t(pl.changed))
+          .end_object();
+    w.end_array();
     // A dialog the agent is waiting on, read off its screen: the same one the
     // terminal's panel shows.
     PermissionPrompt prompt;
@@ -420,7 +518,9 @@ void Client::send(std::string_view rid, uint64_t key, const std::string& text) {
   LiveSession* s = session(key);
   if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
   if (text.empty()) return result(rid, false, "nothing to send");
-  if (!s->send_parts({MessagePart{false, text}})) return result(rid, false, "the agent is not ready");
+  BtwPanel panel;
+  const bool side = s->driver().side_panel(s->vt(), panel);
+  if (!s->send_parts({MessagePart{false, text}}, side ? "\x1b" : "")) return result(rid, false, "the agent is not ready");
   result(rid, true, {}, key);
 }
 

@@ -1133,7 +1133,7 @@ int run_regression_tests() {
         session.pty().terminate();
       }
 
-      // Claude's /btw panel: shown at the foot of the chat, its keys passed
+      // Claude's /btw panel: shown in Work, its keys passed
       // through, and closed before a message is typed.
       {
         const std::string hist = base + "/.claude/projects/fixture/btw-fixture.jsonl";
@@ -1166,9 +1166,9 @@ int run_regression_tests() {
           usleep(2000);
         }
         std::string sc = screen(psf);
-        check(sc.find("\xE2\x97\x87 btw  what fruit") != std::string::npos &&
+        check(sc.find("Work") != std::string::npos && sc.find("what fruit") != std::string::npos &&
                   sc.find("It was a SIDEANSWER pineapple.") != std::string::npos,
-              "btw: the side answer shows at the foot of the chat");
+              "btw: the side answer shows in the Work panel");
         check(sc.find("not saved in the chat") != std::string::npos, "btw: its keys, and that it is not kept");
         const auto keys = [&]() {
           std::string bytes;
@@ -1194,6 +1194,9 @@ int run_regression_tests() {
         settle(3);
         check(keys() == "\x1b[B", "btw: ↓ scrolls claude's panel");
         // A message while the panel is up closes it first, then goes.
+        KeyEvent close_work;
+        close_work.key = Key::F11;
+        pane->on_key(close_work);
         pane->on_paste("next question");
         KeyEvent enter;
         enter.key = Key::Enter;
@@ -2168,6 +2171,9 @@ os.read(0, 1)
     check(std::any_of(saved.begin(), saved.end(), [](const SessionRef& r) { return r.id == "before-clear"; }) &&
               std::any_of(saved.begin(), saved.end(), [](const SessionRef& r) { return r.id == "after-clear"; }),
           "codex clear: both conversations remain separately available in history");
+    check(std::any_of(saved.begin(), saved.end(), [&](const SessionRef& r) {
+            return r.id == "worker" && r.parent == old_file && r.subagent == "worker";
+          }), "codex subagents retain their parent transcript for the Work panel");
     session.pty().terminate();
   }
 

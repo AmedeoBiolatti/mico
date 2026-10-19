@@ -12,6 +12,7 @@
 #include "base/qr.h"
 #include "ui/picker.h"
 #include "ui/theme.h"
+#include "views/prompt_editor.h"
 #include "views/file_preview.h"
 
 namespace mico {
@@ -536,7 +537,8 @@ class App {
   void render_qr(Surface& s);
 
   struct Prompt {
-    std::string label, action, text, carry;
+    std::string label, action, carry;
+    PromptEditor field;  // edited with the chat box's own keys
   };
   std::optional<Prompt> prompt_;
 

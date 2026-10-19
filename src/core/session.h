@@ -151,6 +151,7 @@ class LiveSession {
 
   Pty& pty() { return pty_; }
   Vt& vt() { return vt_; }
+  const Vt& vt() const { return vt_; }
   const std::string& agent() const { return agent_; }
   const std::string& cwd() const { return cwd_; }
   const std::string& session_id() const { return session_id_; }

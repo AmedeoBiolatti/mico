@@ -68,6 +68,17 @@ class Workspace {
   // reading aside, then the folder it runs in. An agent started in a main
   // checkout often works in another work tree, and only this says so.
   const std::vector<std::string>& work_dirs(const LiveSession& s);
+  // The same, as the work trees those folders are in, one each, newest first:
+  // which repository, which branch, and whether it is a linked work tree.
+  struct WorkPlace {
+    std::string dir, top, repo, branch, head;
+    bool worktree = false;
+    int changed = 0;
+  };
+  std::vector<WorkPlace> places(const LiveSession& s, size_t max = 8);
+  // "repo @ branch", with " +N" when the agent works in N more; empty when
+  // its folder is in no repository. `all` lists every place instead.
+  std::string place_text(const LiveSession& s, bool all = false);
 
   // --- Running agents ------------------------------------------------------
 
@@ -106,6 +117,16 @@ class Workspace {
   // running already reports it, rather than starting a second.
   Started continue_session(const std::string& agent, const std::string& session_id,
                            const std::string& cwd, bool fork, const std::string& prefer = {});
+  // Native /btw where it can be read, otherwise a context-preserving fork.
+  // The fork is reused for follow-up questions and never resumes the parent.
+  std::string ask_side_question(LiveSession& parent, const std::string& text);
+  struct SideQuestion {
+    uint64_t parent = 0, child = 0;
+    std::string question;
+    std::string context;  // the parent's session id; /clear starts another
+    void handoff(Handoff& h) { h.fields(parent, child, question, context); }
+  };
+  const std::vector<SideQuestion>& side_questions() const { return side_questions_; }
   // Runs an arbitrary command. Used for agents mico has no adapter for, for an
   // editor, and for testing the pty plane without starting a real agent.
   LiveSession* start_command(std::vector<std::string> argv, const std::string& cwd);
@@ -170,6 +191,7 @@ class Workspace {
   std::string take_memory_warning() { return std::exchange(memory_warning_, {}); }
 
  private:
+  std::vector<SideQuestion> side_questions_;
   Store store_;
   UsageIndex usage_;
   ChatSearch search_;

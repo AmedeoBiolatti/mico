@@ -17,6 +17,7 @@
 #include "base/log.h"
 #include "base/path.h"
 #include "core/away.h"
+#include "core/clipboard.h"
 #include "core/opener.h"
 #include "core/pty.h"
 #include "core/settings.h"
@@ -861,7 +862,8 @@ void App::notify_state_changed() {
 
 void App::ask(std::string label, std::string action, std::string initial, std::string carry) {
   close_menu();
-  prompt_ = Prompt{std::move(label), std::move(action), std::move(initial), std::move(carry)};
+  prompt_ = Prompt{std::move(label), std::move(action), std::move(carry), {}};
+  prompt_->field.assign(std::move(initial));
 }
 
 // Splits a command line on whitespace, honouring single and double quotes so a
@@ -890,15 +892,16 @@ std::vector<std::string> split_command(const std::string& s) {
 
 void App::prompt_submit() {
   if (!prompt_) return;
-  Prompt p = *prompt_;
+  const Prompt p = std::move(*prompt_);
   prompt_.reset();
+  const std::string& text = p.field.text();
 
   if (p.action == "add_folder") {
-    if (ws_.store().add_folder(p.text)) {
-      set_status("tracking " + p.text);
+    if (ws_.store().add_folder(text)) {
+      set_status("tracking " + text);
       select_project(int(ws_.store().projects().size()) - 1);
     } else {
-      set_status("could not add folder: " + p.text);
+      set_status("could not add folder: " + text);
     }
     return;
   }
@@ -906,7 +909,7 @@ void App::prompt_submit() {
     const size_t nl = p.carry.find('\n');
     if (nl == std::string::npos) return;
     const std::string project = p.carry.substr(0, nl), other = p.carry.substr(nl + 1);
-    std::string name = p.text;
+    std::string name = text;
     while (!name.empty() && name.back() == ' ') name.pop_back();
     while (!name.empty() && name.front() == ' ') name.erase(0, 1);
     if (name.empty()) return;
@@ -929,8 +932,8 @@ void App::prompt_submit() {
   if (p.action == "rename") {
     const size_t tab = p.carry.find('\t');
     if (tab != std::string::npos) {
-      ws_.store().set_custom_name(p.carry.substr(0, tab), p.carry.substr(tab + 1), p.text);
-      set_status(p.text.empty() ? "name cleared" : "renamed to " + p.text);
+      ws_.store().set_custom_name(p.carry.substr(0, tab), p.carry.substr(tab + 1), text);
+      set_status(text.empty() ? "name cleared" : "renamed to " + text);
     }
     return;
   }
@@ -948,21 +951,35 @@ void erase_back(std::string& t, bool word) {
   while (!t.empty() && t.back() == ' ') t.pop_back();
   while (!t.empty() && t.back() != ' ') pop_char();
 }
+
+// Pasted text into a one-line field, as one undoable edit over the selection:
+// a line break becomes a space.
+void paste_line(PromptEditor& e, std::string_view t) {
+  std::string line;
+  for (size_t i = 0; i < t.size();) {
+    const char32_t cp = text::decode(t, i);
+    text::encode(cp == '\n' || cp == '\r' ? U' ' : cp, line);
+  }
+  const size_t from = e.has_selection() ? e.sel_lo() : e.cursor();
+  e.replace(from, e.has_selection() ? e.sel_hi() : from, line);
+}
 }  // namespace
 
 bool App::prompt_key(const KeyEvent& k) {
   if (!prompt_) return false;
-  switch (k.key) {
-    case Key::Escape: prompt_.reset(); return true;
-    case Key::Enter: prompt_submit(); return true;
-    case Key::Backspace: erase_back(prompt_->text, k.ctrl || k.alt); return true;
-    case Key::Char:
-      if (k.ctrl && k.ch == 'u') { prompt_->text.clear(); return true; }
-      if (k.ctrl && k.ch == 'w') { erase_back(prompt_->text, true); return true; }
-      if (!k.ctrl && !k.alt) text::encode(k.ch, prompt_->text);
-      return true;
-    default: return true;  // swallow everything: this is modal
+  PromptEditor& e = prompt_->field;
+  if (k.key == Key::Escape) { prompt_.reset(); return true; }
+  if (k.key == Key::Enter) { prompt_submit(); return true; }
+  std::string copied;
+  if (e.edit_key(k, &copied)) {
+    if (!copied.empty()) copy_to_clipboard(std::move(copied));
+  } else if (k.is_ctrl('v') || k.is_ctrl('V')) {
+    const clip::Content c = clip::read();
+    if (c.kind == clip::Content::Kind::Text) paste_line(e, c.text);
+    else if (c.kind == clip::Content::Kind::Image) set_status("only text can be pasted here");
+    else set_status(c.error.empty() ? "nothing on the clipboard to paste" : c.error);
   }
+  return true;  // swallow everything: this is modal
 }
 
 void App::render_prompt(Surface& s) {
@@ -975,10 +992,43 @@ void App::render_prompt(Surface& s) {
   box.box(Rect{0, 0, w, 4}, Style{theme().border_focus, theme().menu_bg});
   box.text(2, 0, " " + p.label + " ", Style{theme().border_focus, theme().menu_bg, attr::kBold});
 
+  // One line, scrolled sideways to keep the cursor in view, with the cursor
+  // and the selection drawn as the chat box draws them.
   Style field{theme().text, theme().sel_bg};
-  box.fill(Rect{2, 1, w - 4, 1}, field);
-  int used = box.text_clipped(2, 1, p.text, field, w - 5);
-  box.put(2 + used, 1, U'\u258f', Style{theme().accent, field.bg});
+  Painter f = box.sub(Rect{2, 1, w - 4, 1});
+  f.clear(field);
+  const PromptEditor& e = p.field;
+  const std::string_view t = e.text();
+  const size_t at = e.cursor();
+  int need = 1;  // the character under the cursor, or the bar past the end
+  if (at < t.size()) {
+    size_t j = at;
+    need = std::max(1, text::cp_width(text::decode(t, j)));
+  }
+  size_t from = 0;
+  for (int lead = text::str_width(t.substr(0, at)); lead + need > f.width() && from < at;) {
+    size_t j = from;
+    lead -= std::max(0, text::cp_width(text::decode(t, j)));
+    from = j;
+  }
+  const std::string_view shown = t.substr(from);
+  if (e.has_selection()) {
+    const size_t lo = std::max(e.sel_lo(), from) - from, hi = std::max(e.sel_hi(), from) - from;
+    int x = f.text(0, 0, shown.substr(0, lo), field);
+    x += f.text(x, 0, shown.substr(lo, hi - lo), Style{field.fg, field.bg, attr::kReverse});
+    f.text(x, 0, shown.substr(hi), field);
+  } else {
+    const size_t cur = at - from;
+    int x = f.text(0, 0, shown.substr(0, cur), field);
+    if (cur < shown.size()) {
+      size_t after = cur;
+      text::decode(shown, after);
+      x += f.text(x, 0, shown.substr(cur, after - cur), Style{field.bg, theme().accent});
+      f.text(x, 0, shown.substr(after), field);
+    } else {
+      f.put(x, 0, U'\u258f', Style{theme().accent, field.bg});
+    }
+  }
   box.text(2, 2, "enter to run · esc to cancel", Style{theme().dim, theme().menu_bg});
 }
 
@@ -1951,6 +2001,13 @@ void App::handle_mouse(const MouseEvent& m) {
       return;
     }
   }
+  // A click on a chat's title bar says every place it has been working in.
+  if (m.kind == MouseKind::Press && m.button == MouseButton::Left && m.pos.y == hit->rect.y && hit->pane->session()) {
+    if (const std::string all = ws_.place_text(*hit->pane->session(), true); !all.empty()) {
+      set_status("working in: " + all);
+      return;
+    }
+  }
   hit->pane->on_mouse(m, local);
   // A click on a link: opened where the user's terminal is, which only the
   // loop serving that terminal knows.
@@ -2170,7 +2227,7 @@ void App::handle_paste(const std::string& t) {
     return;
   }
   if (prompt_) {
-    for (char c : t) prompt_->text.push_back(c == '\n' || c == '\r' ? ' ' : c);
+    paste_line(prompt_->field, t);
     return;
   }
   if (cmd_active_) {

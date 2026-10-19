@@ -58,9 +58,12 @@
         <button type="button" data-view="normal" title="Short runs of steps open">Normal</button>
         <button type="button" data-view="full" title="Every step, its output and the thinking">Full</button>
       </div>
+      <button id="work-toggle" class="ghost" type="button" aria-controls="work-panel" aria-expanded="false">Work</button>
       <button id="interrupt" class="ghost" type="button" hidden title="Interrupt what it is doing (Esc)">Interrupt</button>
       <button id="stop" class="ghost danger" type="button" hidden>Stop</button>
     </header>
+    <div id="chat-workspace">
+    <div id="conversation">
     <div id="empty">
       <div class="empty-card">
         <div class="logo big">mico</div>
@@ -87,6 +90,23 @@
       <span>A stored chat.</span>
       <button id="resume" type="button" class="primary">Resume</button>
       <button id="fork" type="button">Fork</button>
+    </div>
+    </div>
+    <aside id="work-panel" aria-label="Work" hidden>
+      <header class="work-head"><strong>Work</strong><button id="work-close" class="ghost" type="button" aria-label="Close work panel">Close</button></header>
+      <div id="work-tabs" role="tablist" aria-label="Work type">
+        <button type="button" id="work-tab-agent" role="tab" data-kind="agent" aria-controls="work-content" aria-selected="true">Agents</button>
+        <button type="button" id="work-tab-terminal" role="tab" data-kind="terminal" aria-controls="work-content" aria-selected="false">Terminals</button>
+        <button type="button" id="work-tab-btw" role="tab" data-kind="btw" aria-controls="work-content" aria-selected="false">Btw</button>
+      </div>
+      <div id="work-content" role="tabpanel" aria-labelledby="work-tab-agent">
+        <div id="work-list"></div>
+        <div id="work-detail-head"><span id="work-title"></span><button id="work-source" class="ghost" type="button" hidden>Show in chat</button><button id="work-copy" class="ghost" type="button" hidden>Copy</button></div>
+        <div id="work-output" tabindex="0" aria-label="Selected work output"></div>
+        <div id="btw-history" hidden><button id="btw-previous" class="ghost" type="button">Previous answer</button><button id="btw-next" class="ghost" type="button">Next answer</button></div>
+        <form id="btw-form" hidden><label for="btw-text">Ask a side question</label><div><input id="btw-text" type="text" autocomplete="off" placeholder="Btw…" required><button type="submit" class="primary">Ask</button></div></form>
+      </div>
+    </aside>
     </div>
   </main>
 </div>

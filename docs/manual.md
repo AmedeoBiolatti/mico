@@ -72,6 +72,7 @@ Nothing bound to a keystroke stops them: that needs `mico kill` or `:quit`.
 | `alt-↑` / `alt-↓` | step to the previous / next message you wrote |
 | `F8` | selection mode: hands the mouse back so your terminal can copy |
 | `F10` | detach (works even over a raw pane) |
+| `F11` | open or close the focused chat's Work panel |
 
 Function keys stay global even over a raw pane, which forwards every other
 keystroke to the agent. Without them there is no way back out.
@@ -1656,25 +1657,32 @@ never edited by mico.
 The transcript is also polled when a raw pane is waiting for input. Question
 cards keep the conversation in chat; F2 opens the terminal for other dialogs.
 
-### Side questions (Claude's `/btw`)
+### Work panel and side questions
 
-`/btw <question>` asks Claude something on the side without interrupting
-what it is doing — including while it works. Claude answers in a panel that
-takes its input box's place and **writes nothing to the transcript**: the
-answer exists only on its screen. mico reads that panel off the screen every
-frame, the way it reads the permission dialog, and draws it at the foot of
-the chat as an aside — `◇ btw  <question>`, the answer as markdown (its
-wrapping undone, bold and lists kept), and a key line — until the panel
-closes. In a chat with nothing sent yet it takes the empty page instead.
+Open **Work** in the web chat header, press `F11` in a terminal chat, or
+click its background-work chip. **Agents** shows subagent conversations,
+**Terminals** shows commands, progress and output, and **Btw** holds side
+questions. The main chat keeps its draft and position. On narrow screens
+the panel fills the chat area; closing it returns to the same conversation.
+Only the selected item's output is followed. Terminal output is a bounded
+tail of the recorded output; it is not an interactive shell.
 
-While the box is empty the panel's own keys go through to it: `Esc` closes
-it, `↑`/`↓` scroll a long answer (mico shows what Claude's panel shows, so
-this is how the rest of it comes into view), and `Shift+←`/`→` step through
-the session's earlier side questions. Typing into the box is still yours —
-and sending a message while the panel is open closes it first with an Esc,
-since a panel that took the typing would read `c`, `f` and `x` as its own
-copy, fork and clear keys. An open panel does not count as needing you: the
-answer is already in the chat.
+In the terminal panel, `Tab` changes tabs, `↑`/`↓` select work, `PgUp`/`PgDn`
+scroll its detail, and `Esc` or `F11` closes the panel. Clicking the main
+chat returns typing to its draft. On **Btw**, type a question and press
+`Enter`; in the web panel use its separate **Ask** box.
+
+Claude uses its native `/btw` command. Its answer is read off its screen,
+and the panel keeps answers seen during the current view without adding
+them to the main transcript. `Ctrl+←`/`Ctrl+→` in the terminal panel, or the
+web panel's previous/next buttons, browse Claude's earlier answers.
+Sending an ordinary message closes Claude's native side dialog first.
+
+Codex and pi use a separate fork carrying the current conversation's
+context. The fork answers the side question while the parent continues;
+follow-ups reuse that side conversation. These replies have their own
+transcript and can be opened as a full conversation. Agents that cannot
+fork and whose native side answers cannot be read do not offer this box.
 
 ### Optional questions (Codex)
 

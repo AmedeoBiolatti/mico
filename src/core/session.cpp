@@ -673,6 +673,9 @@ std::vector<MessagePart> LiveSession::take_last_queued() {
 
 void LiveSession::flush_queue() {
   if (queue_.empty() || !spawned_ || pty_.exited()) return;
+  // A newly forked agent must mount its input before the first queued side
+  // question arrives. Before its first output the PTY is still canonical.
+  if (adapter_ && starting() && (!last_output_ms_ || now_ms() - last_output_ms_ < 120)) return;
   if (message_sending() || answer_sending() || busy() || needs_input()) return;
   // One per turn. The last one sent has to have started a turn (the work
   // generation moves) before the next goes; a message that starts none, like
