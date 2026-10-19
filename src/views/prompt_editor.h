@@ -9,6 +9,7 @@
 #include "model/message.h"
 #include "base/text.h"
 #include "base/handoff.h"
+#include "vt/events.h"
 
 namespace mico {
 
@@ -59,6 +60,14 @@ class PromptEditor {
     undo_.clear();
     redo_.clear();
     last_ = Edit::None;
+  }
+
+  // Starts the box over holding `t`, the cursor at its end: a name to edit
+  // rather than a message to write. There is nothing to undo back to.
+  void assign(std::string t) {
+    reset();
+    text_ = std::move(t);
+    cursor_ = text_.size();
   }
 
   // Replaces bytes [from, to) with `with` as one undoable edit and puts the
@@ -306,6 +315,82 @@ class PromptEditor {
       ls = le + 1;
     }
     return out;
+  }
+
+  // --- keys ----------------------------------------------------------------
+  // The editing keys, shared by every box that holds a PromptEditor so they
+  // all edit alike: the arrows (Ctrl a word at a time, Shift extending a
+  // selection), Home and End (Ctrl the whole text), Backspace and Delete (Ctrl
+  // or Alt a word), undo and redo, readline's Ctrl and Alt letters, and
+  // typing. Ctrl+C and Ctrl+X with a selection copy or cut it into `copied`,
+  // for the caller to put on the clipboard. False for any other key (Enter,
+  // Esc, Up and Down, Ctrl+V, a Ctrl or Alt key that is not an edit): what it
+  // does is the box's own business. The Ctrl and Alt letters, and undo with
+  // nothing to undo, are edits only while there is text, so an empty chat box
+  // still hands them to the agent.
+  bool edit_key(const KeyEvent& k, std::string* copied = nullptr) {
+    switch (k.key) {
+      case Key::Left:
+        if (k.ctrl) move_word_left(k.shift);
+        else move_left(k.shift);
+        return true;
+      case Key::Right:
+        if (k.ctrl) move_word_right(k.shift);
+        else move_right(k.shift);
+        return true;
+      case Key::Home:
+        if (k.ctrl) move_doc_start(k.shift);
+        else move_home(k.shift);
+        return true;
+      case Key::End:
+        if (k.ctrl) move_doc_end(k.shift);
+        else move_end(k.shift);
+        return true;
+      // Ctrl+Backspace (and Alt+Backspace, its readline name) a word at a time.
+      case Key::Backspace:
+        if (k.ctrl || k.alt) delete_word_before();
+        else backspace();
+        return true;
+      case Key::Delete:
+        if (k.ctrl) delete_word_after();
+        else del();
+        return true;
+      case Key::Char: break;
+      default: return false;
+    }
+    // Undo and redo work on an empty box too: Esc clearing a draft by
+    // mistake is exactly what Ctrl+Z is for. Ctrl+_ (also Ctrl+/) is the
+    // readline undo; Ctrl+Shift+Z comes through only where reported.
+    if (k.ctrl && ((k.ch == 'z' && !k.shift) || k.ch == 0x7f || k.ch == '_' || k.ch == '/') &&
+        (undo() || !empty()))
+      return true;
+    if (k.ctrl && (k.ch == 'y' || (k.ch == 'z' && k.shift) || k.ch == 'Z') && (redo() || !empty()))
+      return true;
+    if (k.ctrl && copied && has_selection() && (k.ch == 'c' || k.ch == 'x')) {
+      *copied = k.ch == 'x' ? cut_selection() : selected_text();
+      return true;
+    }
+    if (k.ctrl && !empty()) {
+      switch (k.ch) {
+        case 'a': select_all(); return true;
+        case 'e': move_end(false); return true;
+        case 'b': move_left(false); return true;
+        case 'f': move_right(false); return true;
+        case 'u': kill_to_start(); return true;
+        case 'k': kill_to_end(); return true;
+        case 'w': delete_word_before(); return true;
+        case 'd': del(); return true;
+        default: break;
+      }
+    }
+    if (k.alt && !k.ctrl && !empty()) {
+      if (k.ch == 'b') { move_word_left(false); return true; }
+      if (k.ch == 'f') { move_word_right(false); return true; }
+      if (k.ch == 'd') { delete_word_after(); return true; }
+    }
+    if (k.ctrl || k.alt) return false;
+    insert_char(k.ch);
+    return true;
   }
 
   // Up/Down across display rows (wrapped), keeping the visual column. The

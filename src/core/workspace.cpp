@@ -9,6 +9,7 @@
 #include <cstdlib>
 
 #include "adapters/adapters.h"
+#include "adapters/screen.h"
 #include "base/log.h"
 #include "base/text.h"
 #include "core/procmem.h"
@@ -43,10 +44,22 @@ Workspace::Workspace() { store_.scan(); }
 Workspace::~Workspace() = default;
 
 void Workspace::handoff(Handoff& h) {
+  h.fields(side_questions_);
+  std::vector<uint64_t> serials;
+  if (!h.reading()) for (const auto& s : live_) serials.push_back(s->serial());
+  h.fields(serials);
   h.items(live_, [&](std::unique_ptr<LiveSession>& s) {
     if (h.reading()) s = std::make_unique<LiveSession>();
     s->handoff(h);
   });
+  if (h.reading()) for (auto& q : side_questions_) {
+    const auto remap = [&](uint64_t key) {
+      const auto it = std::find(serials.begin(), serials.end(), key);
+      const size_t at = size_t(it - serials.begin());
+      return at < live_.size() ? live_[at]->serial() : uint64_t(0);
+    };
+    q.parent = remap(q.parent); q.child = remap(q.child);
+  }
   // Pending launches and sub-project filing are keyed by session addresses.
   // Carry them by position; a newly allocated session has a new address.
   for (const auto& s : live_) {
@@ -227,6 +240,51 @@ const std::vector<std::string>& Workspace::work_dirs(const LiveSession& s) {
   return c.dirs;
 }
 
+std::vector<Workspace::WorkPlace> Workspace::places(const LiveSession& s, size_t max) {
+  std::vector<WorkPlace> out;
+  for (const std::string& d : work_dirs(s)) {
+    if (out.size() >= max) break;
+    const std::string& top = git_.top_of(d);
+    if (top.empty()) continue;
+    bool seen = false;
+    for (const WorkPlace& w : out) seen = seen || w.top == top;
+    if (seen) continue;
+    const std::string& main = git_.main_of(top);
+    const GitStatus* st = git_.status(top);
+    const std::string& root = main.empty() ? top : main;
+    WorkPlace w;
+    w.dir = d;
+    w.top = top;
+    w.repo = root.substr(root.rfind('/') + 1);
+    if (st) {
+      w.branch = st->branch;
+      w.head = st->head;
+      w.changed = st->files;
+    }
+    w.worktree = !main.empty() && main != top;
+    out.push_back(std::move(w));
+  }
+  return out;
+}
+
+std::string Workspace::place_text(const LiveSession& s, bool all) {
+  const std::vector<WorkPlace> ps = places(s);
+  auto one = [](const WorkPlace& w) {
+    std::string t = w.repo + " @ " + (!w.branch.empty() ? w.branch : w.head.empty() ? "?" : "detached " + w.head);
+    if (w.worktree) t += " (worktree " + w.top.substr(w.top.rfind('/') + 1) + ")";
+    return t;
+  };
+  std::string t;
+  if (all) {
+    for (const WorkPlace& w : ps) t += (t.empty() ? "" : "  |  ") + one(w);
+    return t;
+  }
+  if (ps.empty()) return t;
+  t = one(ps[0]);
+  if (ps.size() > 1) t += " +" + std::to_string(ps.size() - 1);
+  return t;
+}
+
 std::string Workspace::usable_cwd(const std::string& want, const std::string& prefer) const {
   auto usable = [](const std::string& d) {
     struct stat st{};
@@ -374,7 +432,37 @@ std::string Workspace::sub_of(const LiveSession& s) const {
   return {};
 }
 
+std::string Workspace::ask_side_question(LiveSession& parent, const std::string& text) {
+  const Adapter* a = parent.adapter();
+  if (!a || parent.exited()) return "no running agent";
+  if (text.empty()) return "nothing to ask";
+  if (text.find_first_of("\r\n") != std::string::npos) return "a side question must fit on one line";
+  if (a->native_side_questions()) {
+    if (parent.needs_input() || parent.answer_sending()) return "answer the agent's question first";
+    BtwPanel panel;
+    const bool shown = a->side_panel(parent.vt(), panel);
+    return parent.send_parts({MessagePart{false, "/btw " + text}}, shown ? "\x1b" : "")
+        ? std::string() : "still sending the previous message";
+  }
+  if (!a->can_fork()) return "this agent does not support a separate side conversation";
+  if (parent.session_id().empty()) return "send the first chat message before asking a side question";
+  LiveSession* child = nullptr;
+  for (auto& q : side_questions_) if (q.parent == parent.serial() && q.context == parent.session_id()) {
+    for (const auto& s : live_) if (s->serial() == q.child && !s->exited()) child = s.get();
+    if (child) { q.question = text; break; }
+  }
+  if (!child) {
+    const Started r = continue_session(parent.agent(), parent.session_id(), parent.cwd(), true);
+    if (!r.session) return r.error.empty() ? "could not start the side conversation" : r.error;
+    child = r.session;
+    side_questions_.push_back(SideQuestion{parent.serial(), child->serial(), text, parent.session_id()});
+  }
+  child->enqueue({MessagePart{false, "Answer this side question using the conversation context. Do not edit files or continue the main task.\n\n" + text}});
+  return {};
+}
+
 std::string Workspace::title_of(const LiveSession& session) const {
+  for (const auto& q : side_questions_) if (q.child == session.serial()) return "Btw: " + text::oneline(q.question, 80);
   if (const auto* name = store_.custom_name(session.agent(), session.session_id())) return *name;
   for (const auto& project : store_.projects())
     for (const auto& s : project.sessions)

@@ -765,6 +765,54 @@ int run_selftest() {
           "up keeps the visual column on the row above");
   }
 
+  // PromptEditor::edit_key: the keys the chat box and mico's own question
+  // boxes (a chat's name, a sub-project's) share, so a name already in the
+  // box is edited the way a message is rather than only typed onto.
+  {
+    const auto key = [](Key k, bool ctrl = false, bool shift = false, bool alt = false) {
+      KeyEvent e;
+      e.key = k;
+      e.ctrl = ctrl, e.shift = shift, e.alt = alt;
+      return e;
+    };
+    const auto chr = [](char32_t c, bool ctrl = false, bool alt = false) {
+      KeyEvent e;
+      e.key = Key::Char;
+      e.ch = c;
+      e.ctrl = ctrl, e.alt = alt;
+      return e;
+    };
+    PromptEditor e;
+    e.assign("old name");
+    check(e.text() == "old name" && e.cursor() == 8 && !e.can_undo(),
+          "a name to edit starts with the cursor at its end and nothing to undo");
+    check(e.edit_key(key(Key::Left, true)) && e.cursor() == 4, "Ctrl+Left goes back a word");
+    check(e.edit_key(chr('x')) && e.text() == "old xname", "typing goes in at the cursor, not the end");
+    check(e.edit_key(key(Key::Home)) && e.cursor() == 0, "Home");
+    check(e.edit_key(key(Key::Delete)) && e.text() == "ld xname", "Delete removes forward");
+    check(e.edit_key(key(Key::End)) && e.edit_key(key(Key::Backspace, true)) && e.text() == "ld ",
+          "Ctrl+Backspace removes a word");
+    check(e.edit_key(chr('z', true)) && e.text() == "ld xname", "Ctrl+Z undoes it");
+    check(e.edit_key(chr('y', true)) && e.text() == "ld ", "Ctrl+Y redoes it");
+    e.assign("first second");
+    e.edit_key(key(Key::Left, true, true));
+    std::string copied;
+    check(e.edit_key(chr('c', true), &copied) && copied == "second" && e.text() == "first second",
+          "Ctrl+Shift+Left selects a word and Ctrl+C copies it");
+    copied.clear();
+    check(e.edit_key(chr('x', true), &copied) && copied == "second" && e.text() == "first ",
+          "Ctrl+X cuts it");
+    check(e.edit_key(chr('a', true)) && e.selected_text() == "first ", "Ctrl+A selects everything");
+    check(e.edit_key(chr('n')) && e.text() == "n", "typing over a selection replaces it");
+    check(e.edit_key(chr('b', false, true)) && e.cursor() == 0, "Alt+B goes back a word");
+    check(!e.edit_key(key(Key::Enter)) && !e.edit_key(key(Key::Escape)) && !e.edit_key(key(Key::Up)) &&
+              !e.edit_key(chr('v', true)) && !e.edit_key(chr('c', true), &copied),
+          "Enter, Esc, Up, Ctrl+V and Ctrl+C with nothing selected are the box's own");
+    e.reset();
+    check(!e.edit_key(chr('a', true)) && !e.edit_key(chr('z', true)),
+          "an empty box with no history leaves Ctrl keys to its owner (the agent)");
+  }
+
   // Diff classification.
   {
     Arena scratch, src;

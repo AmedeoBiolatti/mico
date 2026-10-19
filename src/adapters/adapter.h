@@ -267,6 +267,8 @@ class Adapter {
   // A panel whose content never reaches the transcript (claude's /btw), so the
   // screen is the only place to read it. False when none is open.
   virtual bool side_panel(const Vt& vt, BtwPanel& out) const { return false; }
+  virtual bool native_side_questions() const { return false; }
+  virtual bool can_fork() const { return true; }
   // True while the agent compacts its context: a wait of its own, which can
   // run for minutes.
   virtual bool compacting(const Vt& vt) const { return false; }

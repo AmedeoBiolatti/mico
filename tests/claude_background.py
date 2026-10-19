@@ -17,6 +17,8 @@ import sys
 import tempfile
 import time
 
+from web_socket import WebSocket, free_port
+
 binary = str(Path(sys.argv[1] if len(sys.argv) > 1 else 'build/mico').resolve())
 SESSION = '7a6b5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d'
 W, H = 160, 40
@@ -89,6 +91,8 @@ with tempfile.TemporaryDirectory(prefix='mico-background-') as directory:
     config.mkdir(parents=True)
     (config / 'folders').write_text(f'{work}\n')
     (config / 'view').write_text(f'tab Sessions\nfolder {work}\n')
+    port = free_port()
+    (config / 'web').write_text(f'on {port}\n')
     env = dict(os.environ, HOME=directory, XDG_CONFIG_HOME=str(root / 'config'),
                XDG_STATE_HOME=str(root / 'state'), XDG_RUNTIME_DIR=directory,
                PATH=f'{root / "bin"}:{os.environ.get("PATH", "")}', FIXTURE_TRANSCRIPT=str(transcript),
@@ -161,9 +165,45 @@ with tempfile.TemporaryDirectory(prefix='mico-background-') as directory:
         send(2, f'\x1b[<0;{col + 1};{row + 1}M\x1b[<0;{col + 1};{row + 1}m'.encode())
         s = wait_screen('the task list', lambda s: '45% · 45/100 · 2m 05s left' in s and '30% · 3/10' in s)
         send(2, b'\x1b')
+
+        # A web client sees the same live tasks and progress, even when it
+        # connects after the commands have already started.
+        web = WebSocket(port, (config / 'web-token').read_text().strip())
+        assert web.status == 101, 'web socket did not open'
+        web.send({'type': 'open', 'path': str(transcript)})
+        work_states = []
+
+        def web_tasks():
+            messages = web.messages(1.2)
+            work_states.extend(m for m in messages if m['type'] == 'work_state')
+            agents = [a for m in messages if m['type'] == 'agents' for a in m['agents']]
+            return next((a['background'] for a in agents if a['session_id'] == SESSION), None)
+
+        tasks = web_tasks()
+        assert tasks is not None and {t['id'] for t in tasks} == {'tm1', 'tb1'}, 'web did not receive the tasks'
+        monitor = next(t for t in tasks if t['id'] == 'tm1')
+        command = next(t for t in tasks if t['id'] == 'tb1')
+        assert monitor['kind'] == 'monitor' and monitor['what'] == 'watch the bake', monitor
+        assert (monitor['percent'], monitor['done'], monitor['total'], monitor['eta_s']) == (45, 45, 100, 125), monitor
+        assert command['kind'] == 'shell' and command['percent'] == 30, command
+
+        # Progress invalidates the agents message without terminal output.
+        (root / 'tmp' / f'claude-{os.getuid()}' / '-work' / SESSION / 'tasks/tb1.output').write_text('[6/10] Building b.o\n')
+        wait_for('web progress update', lambda: any(t['id'] == 'tb1' and t.get('percent') == 60
+                                                   for t in web_tasks() or []))
+        item = next(i for i in work_states[-1]['items'] if i['kind'] == 'terminal' and i['title'] == 'make -j8')
+        web.send({'type': 'work', 'path': str(transcript), 'item': item['id'], 'open': True})
+        def log_shown(completed=False):
+            web_tasks()
+            return any('[6/10]' in m.get('output', '') and (not completed or
+                       any(i['id'] == item['id'] and i['status'] == 'done' for i in m['items'])) for m in work_states)
+        wait_for('the selected task output', log_shown)
         (root / 'end').touch()
+        wait_for('web tasks ending', lambda: web_tasks() == [])
+        wait_for('the completed task output', lambda: log_shown(True))
+        web.sock.close()
         s = wait_screen('the work ending', lambda s: 'in background' not in s and 'running ▾' not in s)
-        print('claude background: monitor and command shown while they run, gone when they end passed')
+        print('claude background: terminal and web tasks, progress updates and completion passed')
     finally:
         client.close()
         daemon.terminate()

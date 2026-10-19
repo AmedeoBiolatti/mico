@@ -55,6 +55,7 @@ const st = {
   loadingOlder: false,
   view: store.get("view", "normal"),  // minimal | normal | full
   pics: new Map(),      // what an image asked for waits on, until it arrives
+  work: { open: false, tab: "agent", selected: "", items: [], output: "", supports_btw: false },
 };
 
 const STATUS = { working: "working", waiting: "needs you", idle: "ready", exited: "stopped" };
@@ -74,7 +75,10 @@ function connect() {
   ws.onopen = () => {
     st.backoff = 500;
     setConn(true);
-    if (st.chat && st.chat.path) send({ type: "open", path: st.chat.path });
+    if (st.chat && st.chat.path) {
+      send({ type: "open", path: st.chat.path });
+      if (st.work.open) requestWork();
+    }
     else if (startChat && !st.chat) openChat(startChat, "");
   };
   ws.onmessage = (e) => receive(JSON.parse(e.data));
@@ -118,6 +122,7 @@ function receive(m) {
     case "agents": st.agents = m.agents; agentsChanged(); break;
     case "chat": if (st.chat && m.path === st.chat.path) addEvents(m); break;
     case "chat_state": if (st.chat && m.path === st.chat.path) applyState(m); break;
+    case "work_state": if (st.chat && m.path === st.chat.path) applyWork(m); break;
     case "result": {
       const then = st.pending.get(m.rid);
       st.pending.delete(m.rid);
@@ -251,9 +256,12 @@ function renderAgents() {
     b.type = "button";
     b.append(el("span", `dot lead ${a.status}`));
     b.append(el("span", "t", a.title || `New ${a.agent} chat`));
-    b.append(el("span", "w", STATUS[a.status] || a.status));
-    b.append(el("span", "m", `${a.agent} · ${base(a.cwd)}`));
-    b.title = a.cwd;
+    const tasks = backgroundTasks(a);
+    b.append(el("span", "w", tasks.length && a.status === "idle" ? "running" : STATUS[a.status] || a.status));
+    const ps = a.places || [];
+    const where = ps.length ? `${ps[0].repo}${ps[0].branch ? " @ " + ps[0].branch : ""}${ps.length > 1 ? ` +${ps.length - 1}` : ""}` : base(a.cwd);
+    b.append(el("span", "m", `${a.agent} · ${where}${tasks.length ? ` · ${tasks.length} in background` : ""}`));
+    b.title = ps.length ? ps.map(placeLine).join("\n\n") : a.cwd;
     if (isCurrent(a.transcript, a.key)) b.classList.add("current");
     b.onclick = () => openAgent(a);
     box.append(b);
@@ -446,6 +454,7 @@ function openChat(path, title, key) {
   st.loadingOlder = false;
   st.calls.clear();
   st.pics.clear();
+  st.work = { ...st.work, selected: "", items: [], output: "", supports_btw: false };
   $("events").replaceChildren();
   $("older").hidden = true;
   $("latest").hidden = true;
@@ -457,6 +466,7 @@ function openChat(path, title, key) {
   renderHead();
   renderSide();
   showChatScreen();
+  renderWork();
 }
 
 function chatId() { return st.chat ? (st.chat.path || `key:${st.chat.key}`) : ""; }
@@ -474,6 +484,7 @@ function liveAgent() {
 
 function renderHead() {
   const open = !!st.chat;
+  renderWorkToggle(open ? liveAgent() : null);
   $("chat-head").hidden = !open;
   $("chat").hidden = !open;
   $("empty").hidden = open;
@@ -490,6 +501,7 @@ function renderHead() {
   // A dialog waiting on you takes the message box's place: what is typed
   // then would be typed into the dialog.
   $("prompt").hidden = !a || !!a.permission;
+  if (wasHidden && !$("prompt").hidden) sizePrompt();
   $("resume-bar").hidden = !!a || !found;
   if (a) $("prompt-text").placeholder = `Message ${a.agent}…`;
   if (a && wasHidden && !st.chat.path && !coarse.matches) $("prompt-text").focus();
@@ -498,13 +510,37 @@ function renderHead() {
   setTitle();
 }
 
+// Where an agent works: the repo and branch it was last at, and, when it has
+// been in more than one work tree, a count; hovering lists them all.
+function placeLine(p) {
+  const wt = p.worktree ? " (worktree)" : "";
+  const br = p.branch || (p.head ? `detached ${p.head}` : "no branch");
+  const ch = p.changed ? ` · ${p.changed} changed` : "";
+  return `${p.repo} · ${br}${wt}${ch}\n${p.top}`;
+}
+
+function placeEl(a) {
+  const ps = a.places || [];
+  if (!ps.length) return el("span", "", base(a.cwd));
+  const p = ps[0];
+  const box = el("span", "place");
+  box.append(el("span", "p-repo", p.repo));
+  box.append(el("span", "p-branch", p.branch || p.head || "detached"));
+  if (p.worktree) box.append(el("span", "p-wt", "worktree"));
+  if (ps.length > 1) box.append(el("span", "p-more", `+${ps.length - 1}`));
+  box.title = ps.length > 1
+    ? "Working in:\n\n" + ps.map(placeLine).join("\n\n")
+    : placeLine(p);
+  return box;
+}
+
 function renderMeta(a, found) {
   const box = $("chat-meta");
   box.replaceChildren();
   const sep = () => el("span", "sep", "·");
   if (a) {
     box.append(el("span", `dot ${a.status}`), el("span", "m-status", STATUS[a.status] || a.status));
-    box.append(sep(), el("span", "", a.agent), sep(), el("span", "", base(a.cwd)));
+    box.append(sep(), el("span", "", a.agent), sep(), placeEl(a));
   } else {
     box.append(el("span", "m-status", "Stored chat"));
     if (found) box.append(sep(), el("span", "", found.chat.agent), sep(), el("span", "", ago(found.chat.mtime)));
@@ -528,6 +564,145 @@ function renderHint(a) {
   else if (a.status === "working") h.textContent = "The agent is working: a message now steers it.";
   else h.textContent = "";
 }
+
+function backgroundTasks(a) { return a && a.status !== "exited" ? a.background || [] : []; }
+
+function renderWorkToggle(a) {
+  const active = st.work.items.filter(i => i.status === "working" || i.status === "failed" || i.status === "waiting");
+  const n = Math.max(active.length, backgroundTasks(a).length);
+  const need = active.filter(i => i.status === "waiting").length;
+  $("work-toggle").textContent = n ? `Work · ${n}${need ? " !" : ""}` : "Work";
+  $("work-toggle").classList.toggle("needs-attention", need > 0);
+  $("work-toggle").title = need ? `${need} side conversation${need === 1 ? " needs" : "s need"} you` : "Subagents, terminals and side questions";
+  $("work-toggle").setAttribute("aria-expanded", String(st.work.open));
+}
+
+function requestWork() {
+  if (st.chat && st.chat.path) send({ type: "work", path: st.chat.path, item: st.work.selected, open: st.work.open });
+}
+
+function openWork(kind, id) {
+  st.work.open = true;
+  if (kind) st.work.tab = kind;
+  if (id !== undefined) st.work.selected = id;
+  renderWork();
+  requestWork();
+}
+
+function closeWork() {
+  st.work.open = false;
+  renderWork();
+  requestWork();
+  $("work-toggle").focus();
+}
+
+function applyWork(m) {
+  const w = st.work;
+  w.items = m.items || [];
+  w.supports_btw = !!m.supports_btw;
+  if (m.selected === w.selected && m.output !== undefined) w.output = m.output;
+  if (w.awaitingBtw) {
+    const reply = w.items.find(i => i.kind === "btw" && i.title === w.awaitingBtw);
+    if (reply) { w.awaitingBtw = ""; w.selected = reply.id; w.output = ""; requestWork(); }
+  }
+  renderWork();
+}
+
+let workListSig = "", workOutputSig = "";
+function renderWork() {
+  const w = st.work;
+  $("work-panel").hidden = !w.open || !st.chat;
+  renderWorkToggle(liveAgent());
+  if (!w.open || !st.chat) return;
+  const items = w.items.filter(i => i.kind === w.tab);
+  if (!items.some(i => i.id === w.selected)) {
+    w.selected = items.length ? items[0].id : "";
+    w.output = "";
+    requestWork();
+  }
+  const selected = items.find(i => i.id === w.selected);
+  for (const b of $("work-tabs").children) {
+    const on = b.dataset.kind === w.tab;
+    b.setAttribute("aria-selected", String(on));
+    b.tabIndex = on ? 0 : -1;
+  }
+  $("work-content").setAttribute("aria-labelledby", `work-tab-${w.tab}`);
+  $("btw-form").hidden = w.tab !== "btw" || !w.supports_btw || !liveAgent();
+  $("btw-history").hidden = $("btw-form").hidden || !items.some(i => i.id.startsWith("btw:"));
+  const sig = JSON.stringify([w.tab, w.selected, items, w.supports_btw]);
+  if (sig !== workListSig) {
+    workListSig = sig;
+    const list = $("work-list"), wasOpen = list.querySelector("details")?.open || false;
+    list.replaceChildren();
+    const done = el("details", "work-done");
+    done.open = wasOpen || !!(selected && selected.status === "done");
+    done.append(el("summary", "", "Completed"));
+    for (const i of items) {
+      const b = el("button", `work-item ${i.status}${i.id === w.selected ? " selected" : ""}`);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(i.id === w.selected));
+      b.append(el("span", "work-item-title", i.title), el("span", "work-status", i.status === "working" ? "running" : i.status));
+      if (i.info) b.append(el("span", "work-info", i.info));
+      b.onclick = () => { w.selected = i.id; w.output = ""; renderWork(); requestWork(); };
+      (i.status === "done" ? done : list).append(b);
+    }
+    if (done.children.length > 1) list.append(done);
+    if (!items.length) list.append(el("p", "dim-note", w.tab === "btw" ? (w.supports_btw ? "Ask a quick question while the main task continues." : "This agent does not offer /btw side questions.") : `No ${w.tab === "agent" ? "subagents" : "terminal commands"} in this chat yet.`));
+  }
+  $("work-title").textContent = selected ? selected.title : "";
+  $("work-source").hidden = !selected || (selected.kind === "btw" && !selected.path);
+  $("work-source").textContent = selected && selected.path ? "Open conversation" : "Show in chat";
+  $("work-copy").hidden = !w.output;
+  const outputSig = JSON.stringify([w.selected, w.output]);
+  if (outputSig !== workOutputSig) {
+    const output = $("work-output");
+    const same = output.dataset.item === w.selected;
+    const bottom = output.scrollHeight - output.scrollTop - output.clientHeight < 60;
+    workOutputSig = outputSig;
+    output.dataset.item = w.selected;
+    output.replaceChildren();
+    if (w.output) {
+      if (w.tab === "terminal") output.append(el("pre", "block", w.output.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")));
+      else output.append(markdown(w.output));
+    } else if (selected) output.append(el("p", "dim-note", selected.status === "working" ? "Waiting for output…" : "Loading…"));
+    if (!same) output.scrollTop = w.tab === "terminal" ? output.scrollHeight : 0;
+    else if (bottom && w.tab === "terminal") output.scrollTop = output.scrollHeight;
+  }
+}
+
+$("work-toggle").onclick = () => st.work.open ? closeWork() : openWork();
+$("work-close").onclick = closeWork;
+for (const b of $("work-tabs").children) {
+  b.onclick = () => { st.work.tab = b.dataset.kind; st.work.selected = ""; st.work.output = ""; renderWork(); requestWork(); };
+  b.onkeydown = (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const tabs = [...$("work-tabs").children], n = tabs.indexOf(b);
+    const next = tabs[(n + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+    next.click(); next.focus();
+  };
+}
+$("work-copy").onclick = () => copyText(st.work.output);
+$("work-source").onclick = () => {
+  const item = st.work.items.find(i => i.id === st.work.selected);
+  if (item && item.path) { closeWork(); openChat(item.path, item.title, item.key || null); return; }
+  const source = item && $("events").querySelector(`[data-at="${Number(item.at)}"]`);
+  if (source) { if (narrow.matches) closeWork(); source.scrollIntoView({ block: "center" }); }
+  else toast("Load older messages to see where this work started.");
+};
+$("btw-form").onsubmit = (e) => {
+  e.preventDefault();
+  const a = liveAgent(), input = $("btw-text"), text = input.value.trim();
+  if (!a || !text) return;
+  command({ type: "btw", key: a.key, text }, () => { st.work.awaitingBtw = text; input.value = ""; });
+};
+for (const action of ["previous", "next"]) $("btw-" + action).onclick = () => {
+  const a = liveAgent();
+  if (a) command({ type: "btw", key: a.key, action });
+};
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && st.work.open) { e.preventDefault(); e.stopImmediatePropagation(); closeWork(); }
+}, true);
 
 // What the agent is doing, at the foot of the chat.
 function renderActivity(a) {
@@ -1022,7 +1197,8 @@ function chartOne(spec) {
     counts.forEach((c, i) => root.append(svg("rect", { x: X(lo + (i / bins) * (hi - lo)), y: Y(c), width: (W - L - R) / bins - 1, height: H - B - Y(c), fill: PALETTE[0] })));
   } else {
     // line, scatter, spark: the series against x, or their index.
-    const pts = series.map((s) => s.y.map((y, i) => [s.x && s.x.length > i ? s.x[i] : (spec.x && num(spec.x).length > i ? num(spec.x)[i] : i), y]));
+    const sharedX = num(spec.x);
+    const pts = series.map((s) => s.y.map((y, i) => [s.x && s.x.length > i ? s.x[i] : (sharedX.length > i ? sharedX[i] : i), y]));
     const xs = pts.flat().map((p) => p[0]), ys = pts.flat().map((p) => p[1]).filter((y) => !spec.log_y || y > 0);
     if (!xs.length || !ys.length) return wrap;
     const ylo = Math.min(...ys), yhi = Math.max(...ys);
@@ -1090,6 +1266,7 @@ function notice(text, bad, detail) {
 
 function toolCall(ev) {
   const d = el("details", "tool");
+  d.dataset.at = String(ev.at);
   const sum = el("summary");
   sum.append(el("span", "ico", TOOL_ICON[ev.name] || "·"), el("span", "name", ev.name || "tool"));
   sum.append(el("span", "sum", ev.summary || ""), el("span", "st"));
@@ -1104,23 +1281,22 @@ function toolCall(ev) {
 
 // A run of tool calls is one group, folded to a line: "4 tool calls".
 function groupHeader(g) {
-  const calls = g.querySelectorAll("details.tool");
-  const failed = g.querySelectorAll("details.tool.failed").length;
-  const running = g.querySelectorAll("details.tool.running").length;
+  const { calls, failed, running } = g._counts;
   const sum = g.firstChild;
-  sum.replaceChildren(document.createTextNode(`${calls.length} tool call${calls.length === 1 ? "" : "s"}`));
+  sum.replaceChildren(document.createTextNode(`${calls} tool call${calls === 1 ? "" : "s"}`));
   if (running) sum.append(el("span", "flag run", ` · ${running} running`));
   if (failed) sum.append(el("span", "flag bad", ` · ${failed} failed`));
 }
 
 function newGroup() {
   const g = el("details", "ev tools");
+  g._counts = { calls: 0, running: 0, failed: 0 };
   g.open = true;
   g.append(el("summary"), el("div", "tools-body"));
   return g;
 }
 
-function toolResult(ev) {
+function toolResult(ev, groups) {
   const call = ev.tool && st.calls.get(ev.tool);
   const text = ev.text || "";
   if (!call) {
@@ -1138,13 +1314,17 @@ function toolResult(ev) {
     if (text) call.append(el("div", "answer", text));
     return { node: null };
   }
-  call.classList.remove("running");
+  const g = call.closest("details.tools");
+  if (g) {
+    g._counts.running -= Number(call.classList.contains("running"));
+    g._counts.failed += Number(ev.ok === false) - Number(call.classList.contains("failed"));
+    groups.add(g);
+  }
+  call.classList.remove("running", "ok", "failed");
   call.classList.add(ev.ok === false ? "failed" : "ok");
   const out = el("pre", "out block" + (ev.ok === false ? " err" : ""), text || "(no output)");
   call.append(out);
   if (ev.ok === false) call.open = true;
-  const g = call.closest("details.tools");
-  if (g) groupHeader(g);
   return { node: null };
 }
 
@@ -1237,18 +1417,22 @@ function markOptional(d) {
 // which a following tool call joins.
 function buildEvents(events, last) {
   const frag = document.createDocumentFragment();
+  const groups = new Set();
   let group = last || null;
   let visible = 0;
   for (const ev of events) {
     if (ev.k === "tool_call") {
       if (!group) { group = newGroup(); frag.append(group); }
-      group.querySelector(".tools-body").append(toolCall(ev));
-      groupHeader(group);
+      const call = toolCall(ev);
+      group.querySelector(".tools-body").append(call);
+      group._counts.calls++;
+      group._counts.running += Number(call.classList.contains("running"));
+      groups.add(group);
       visible++;
       continue;
     }
     if (ev.k === "tool_result") {
-      const r = toolResult(ev);
+      const r = toolResult(ev, groups);
       if (r.node) { frag.append(r.node); group = null; visible++; }
       continue;
     }
@@ -1285,6 +1469,7 @@ function buildEvents(events, last) {
     }
     if (n) { frag.append(n); visible++; }
   }
+  for (const g of groups) groupHeader(g);
   return { frag, visible };
 }
 
@@ -1295,12 +1480,25 @@ function lastGroup() {
 }
 
 const box = () => $("chat");
-function scrollToBottom() { box().scrollTop = box().scrollHeight; }
+let scrollQueued = false;
+function scrollToBottom() {
+  if (scrollQueued) return;
+  scrollQueued = true;
+  requestAnimationFrame(() => {
+    scrollQueued = false;
+    box().scrollTop = box().scrollHeight;
+  });
+}
 
 function addEvents(m) {
   const list = $("events");
   const chat = box();
   const wasBottom = st.atBottom;
+  if (m.where === "tail") {
+    // An open after a reconnect replaces the window; appending the same
+    // tail again duplicates messages and makes each reconnection heavier.
+    list.replaceChildren(); st.calls.clear(); st.pics.clear();
+  }
   if (m.where === "older") {
     const { frag } = buildEvents(m.events, null);
     // Long histories fold their long runs of tool calls; what is live stays open.
@@ -1308,10 +1506,14 @@ function addEvents(m) {
       if (g.querySelectorAll("details.tool").length > 4 && !g.querySelector(".running")) g.open = false;
     }
     // Keep what is on screen where it is as history goes in above it.
+    const top = chat.scrollTop;
     const before = chat.scrollHeight;
     applyView(frag);
     list.prepend(frag);
-    chat.scrollTop += chat.scrollHeight - before;
+    // The browser may already have anchored the old content during layout.
+    // Use the position captured before the prepend, rather than adding the
+    // same height to an automatically adjusted scrollTop a second time.
+    chat.scrollTop = top + chat.scrollHeight - before;
     st.loadingOlder = false;
   } else {
     const { frag, visible } = buildEvents(m.events, m.where === "newer" ? lastGroup() : null);

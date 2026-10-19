@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(mico VERSION 0.1.8 LANGUAGES CXX)
+project(mico VERSION 0.1.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -131,6 +131,7 @@ add_library(mico_core STATIC
   src/core/procmem.cpp
   src/core/scope.cpp
   src/core/conversation.cpp
+  src/core/work.cpp
   src/core/web_access.cpp
 )
 target_link_libraries(mico_core PUBLIC mico_adapters mico_vt PRIVATE util)
@@ -273,6 +274,8 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_answers.py $<TARGET_FILE:mico>)
   add_test(NAME web-ui
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_ui.py $<TARGET_FILE:mico>)
+  add_test(NAME work-fork
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/work_fork.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-reset
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_reset.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-update
@@ -301,6 +304,6 @@ if(Python3_FOUND)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(daemon-input daemon-reset daemon-update web-answers web-ui daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
+  set_tests_properties(daemon-input daemon-reset daemon-update web-answers web-ui work-fork daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

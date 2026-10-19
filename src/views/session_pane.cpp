@@ -11,11 +11,13 @@
 #include <vector>
 
 #include "core/session.h"
+#include "core/work.h"
 #include "vt/keys.h"
 #include "base/text.h"
 #include "vt/vt.h"
 #include "ui/app.h"
 #include "views/chat_render.h"
+#include "views/markdown_style.h"
 #include "views/completion.h"
 #include "views/outline.h"
 #include "base/progress.h"
@@ -71,6 +73,7 @@ class SessionPane final : public Pane {
              reply_live_, reply_.call_id, reply_.index, reply_.question, reply_.answer,
              perm_key_, perm_note_, note_perm_, answering_question_, raw_scroll_, permission_cursor);
     h.fields(question_focus_, suspended_prompt_, prompt_suspended_);
+    h.fields(work_open_, work_focus_, work_tab_, work_selected_, work_prompt_);
     if (h.reading()) {
       refresh_permission();
       perm_pick_.set_cursor(permission_cursor);
@@ -78,7 +81,9 @@ class SessionPane final : public Pane {
   }
 
   std::string title() const override {
-    return (app_ ? app_->session_title(*s_) : s_->label()) +
+    std::string where = app_ ? app_->workspace().place_text(*s_) : std::string();
+    if (!where.empty()) where = " \xC2\xB7 " + where;
+    return (app_ ? app_->session_title(*s_) : s_->label()) + where +
            (effective_view() == View::Raw ? " · terminal" : "");
   }
 
@@ -100,7 +105,20 @@ class SessionPane final : public Pane {
   bool showing_raw() const { return effective_view() == View::Raw; }
 
   void render(Painter& p, bool focused) override {
-    refresh_background_list();
+    work_rect_ = Rect{};
+    if (work_open_ && !showing_raw() && p.width() >= 100) {
+      const int w = std::clamp(p.width() / 3, 36, 64);
+      work_rect_ = Rect{p.width() - w, 0, w, p.height()};
+      Painter main = p.sub(Rect{0, 0, p.width() - w, p.height()});
+      render_main(main, focused && !work_focus_);
+    } else render_main(p, focused && !work_focus_);
+    if (work_open_ && !showing_raw()) {
+      if (work_rect_.w == 0) { work_rect_ = Rect{0, 0, p.width(), p.height()}; work_focus_ = true; }
+      render_work(p.sub(work_rect_), focused && work_focus_);
+    }
+  }
+
+  void render_main(Painter& p, bool focused) {
     const Theme& th = app_->theme();
     // On screen counts as seen, focused or not: a chat open beside the list
     // is being read.
@@ -230,11 +248,7 @@ class SessionPane final : public Pane {
       } else {
         msg = s_->origin().empty() ? "Start a conversation" : "Opening your conversation…";
       }
-      if (btw_live_) {
-        // A side question before the first message: no transcript, so no
-        // chat to put it under — it takes the empty page instead, as text.
-        render_btw_plain(body, th);
-      } else {
+      {
         const int ey = std::max(0, body.height() / 3);
         body.text_clipped(2, ey, msg, Style{err ? th.err : th.text, th.panel, attr::kBold}, body.width() - 4);
         if (!err && body.height() > ey + 2)
@@ -371,8 +385,8 @@ class SessionPane final : public Pane {
 
   // --- side questions (/btw) ----------------------------------------------
   // Claude answers "/btw …" in a panel of its own that never reaches the
-  // transcript. It is read off the screen every frame and drawn at the foot
-  // of the chat; while the box is empty, the panel's keys go through to it.
+  // transcript. New side answers open the shared Work panel; the main
+  // transcript keeps its own scroll position and draft.
   void refresh_btw() {
     btw_live_ = s_->spawned() && !s_->exited() && !perm_live_ &&
                 screen_side_panel();
@@ -380,43 +394,14 @@ class SessionPane final : public Pane {
       if (chat_.aside_shown()) chat_.set_aside({}, {}, {});
       return;
     }
-    std::string status;
-    if (btw_.answering) status = "answering\xE2\x80\xA6";
-    else {
-      status = "Esc close \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 scroll";
-      if (btw_.questions.size() > 1)
-        status += " \xC2\xB7 \xE2\x87\xA7\xE2\x86\x90/\xE2\x86\x92 side question " +
-                  std::to_string(btw_.current + 1) + " of " + std::to_string(btw_.questions.size());
-      status += " \xC2\xB7 not saved in the chat";
-    }
-    chat_.set_aside(btw_.questions[size_t(btw_.current)], btw_.answer, status);
-  }
-
-  void render_btw_plain(Painter p, const Theme& th) {
-    const int w = std::max(8, p.width() - 6);
-    int y = 1;
-    std::vector<text::Span> spans;
-    const std::string head = "\xE2\x97\x87 btw  " + btw_.questions[size_t(btw_.current)];
-    text::wrap_spans(head, w, spans, 4);
-    for (const auto& sp : spans)
-      p.text_clipped(2, y++, std::string_view(head).substr(sp.off, sp.len),
-                     Style{th.accent, th.panel, attr::kBold}, w);
-    // The answer as drawn text; markup stays visible rather than guessed at.
-    std::string_view a = btw_.answering ? std::string_view("answering\xE2\x80\xA6") : std::string_view(btw_.answer);
-    while (!a.empty() && y < p.height() - 1) {
-      const size_t nl = a.find('\n');
-      const std::string_view line = a.substr(0, nl);
-      text::wrap_spans(line, w - 2, spans);
-      if (spans.empty()) y++;
-      for (const auto& sp : spans) {
-        if (y >= p.height() - 1) break;
-        p.text_clipped(4, y++, line.substr(sp.off, sp.len), Style{th.text, th.panel}, w - 2);
+    const std::string current = btw_.questions[size_t(btw_.current)];
+    if (current != work_last_btw_) {
+      work_last_btw_ = current;
+      if (prompt_.empty() || work_open_) {
+        work_open_ = true; work_tab_ = 2; work_selected_ = "btw:" + current;
       }
-      if (nl == std::string_view::npos) break;
-      a.remove_prefix(nl + 1);
     }
-    if (y < p.height())
-      p.text_clipped(4, y, "Esc close \xC2\xB7 not saved in the chat", Style{th.dim, th.panel, attr::kItalic}, w);
+    if (chat_.aside_shown()) chat_.set_aside({}, {}, {});
   }
 
   bool permission_takes_note(int i) const { return mico::permission_takes_note(perm_, i); }
@@ -767,6 +752,11 @@ class SessionPane final : public Pane {
   // bracketed paste when the agent asked for one, so multi-line text is not a
   // burst of Enters. In chat view it lands in the prompt box, newlines and all.
   bool on_paste(std::string_view t) override {
+    if (work_open_ && work_focus_ && work_tab_ == 2) {
+      const std::string line = text::oneline(t, 2000);
+      for (size_t at = 0; at < line.size();) work_prompt_.insert_char(text::decode(line, at));
+      return true;
+    }
     if (showing_raw()) {
       s_->pty().write(encode_paste(std::string(t), s_->vt().bracketed_paste()));
       return true;
@@ -784,6 +774,11 @@ class SessionPane final : public Pane {
     // F2 toggles the plane. It has to be a key no agent uses, because in raw
     // view everything else is forwarded verbatim.
     if (k.key == Key::F2) { toggle_view(); return true; }
+    if (k.key == Key::F11 && !showing_raw()) {
+      work_open_ = !work_open_; work_focus_ = work_open_;
+      return true;
+    }
+    if (work_open_ && work_focus_ && !showing_raw() && work_key(k)) return true;
     if (s_->answer_sending()) {
       if (k.key == Key::Escape) {
         s_->cancel_answer();
@@ -1028,23 +1023,9 @@ class SessionPane final : public Pane {
         s_->pty().write("\x1b");
         app_->set_status("sent esc to the agent");
         return true;
-      case Key::Left:
-        if (k.ctrl) prompt_.move_word_left(k.shift);
-        else prompt_.move_left(k.shift);
-        return true;
-      case Key::Right:
-        if (k.ctrl) prompt_.move_word_right(k.shift);
-        else prompt_.move_right(k.shift);
-        return true;
-      case Key::Home:
-        if (k.ctrl) prompt_.move_doc_start(k.shift);
-        else prompt_.move_home(k.shift);
-        return true;
       case Key::End:
         if (prompt_.empty()) return chat_.on_key(k);
-        if (k.ctrl) prompt_.move_doc_end(k.shift);
-        else prompt_.move_end(k.shift);
-        return true;
+        break;
       case Key::Up:
         if (prompt_.empty() && !k.shift && unqueue_to_prompt()) return true;
         if (!k.shift && history_step(-1)) return true;
@@ -1062,67 +1043,29 @@ class SessionPane final : public Pane {
         submit_prompt();
         return true;
       }
-      // Ctrl+Backspace (and Alt+Backspace, its readline name) a word at a time.
-      case Key::Backspace:
-        if (k.ctrl || k.alt) prompt_.delete_word_before();
-        else prompt_.backspace();
-        return true;
-      case Key::Delete:
-        if (k.ctrl) prompt_.delete_word_after();
-        else prompt_.del();
-        return true;
       case Key::Char:
         // Ctrl+J inserts a literal newline — Enter still sends.
         if (k.ctrl && (k.ch == 'j' || k.ch == 'J')) { prompt_.insert_newline(); return true; }
-        // Undo and redo work on an empty box too: Esc clearing a draft by
-        // mistake is exactly what Ctrl+Z is for. Ctrl+_ (also Ctrl+/) is the
-        // readline undo; Ctrl+Shift+Z comes through only where reported.
-        // With text in the box they are the box's even with nothing to undo,
-        // like the other editing keys; an empty box with no history still
-        // forwards them.
-        if (k.ctrl && ((k.ch == 'z' && !k.shift) || k.ch == 0x7f || k.ch == '_' || k.ch == '/') &&
-            (prompt_.undo() || !prompt_.empty()))
-          return true;
-        if (k.ctrl && (k.ch == 'y' || (k.ch == 'z' && k.shift) || k.ch == 'Z') &&
-            (prompt_.redo() || !prompt_.empty()))
-          return true;
-        // With text selected in the box, Ctrl+C and Ctrl+X copy and cut it.
-        // Without, Ctrl+C still interrupts the agent.
-        if (k.ctrl && prompt_.has_selection() && (k.ch == 'c' || k.ch == 'x')) {
-          std::string t = k.ch == 'x' ? prompt_.cut_selection() : prompt_.selected_text();
-          if (!t.empty()) app_->copy_to_clipboard(std::move(t));
-          return true;
-        }
-        // The classically-named editing keys apply while the box holds text.
-        // An empty box still forwards every Ctrl combination to the agent, so
-        // an interrupt or the agent's own binding is never swallowed.
-        if (k.ctrl && !prompt_.empty()) {
-          switch (k.ch) {
-            case 'a': prompt_.select_all(); return true;
-            case 'e': prompt_.move_end(false); return true;
-            case 'b': prompt_.move_left(false); return true;
-            case 'f': prompt_.move_right(false); return true;
-            case 'u': prompt_.kill_to_start(); return true;
-            case 'k': prompt_.kill_to_end(); return true;
-            case 'w': prompt_.delete_word_before(); return true;
-            case 'd': prompt_.del(); return true;
-            default: break;
-          }
-        }
-        if (k.alt && !k.ctrl && !prompt_.empty()) {
-          if (k.ch == 'b') { prompt_.move_word_left(false); return true; }
-          if (k.ch == 'f') { prompt_.move_word_right(false); return true; }
-          if (k.ch == 'd') { prompt_.delete_word_after(); return true; }
-        }
-        if (k.ctrl && (k.ch == 'v' || k.ch == 'V')) { paste_clipboard(); return true; }
-        // Alt+Enter arrives as ESC CR: queue rather than send.
-        if (k.alt && (k.ch == '\r' || k.ch == '\n')) { queue_prompt(); return true; }
-        if (k.ctrl) { s_->pty().write(encode_key(k, false)); return true; }
-        prompt_.insert_char(k.ch);
-        return true;
+        break;
       default:
-        return false;
+        break;
     }
+    // With text selected in the box, Ctrl+C and Ctrl+X copy and cut it.
+    // Without, Ctrl+C still interrupts the agent.
+    std::string copied;
+    if (prompt_.edit_key(k, &copied)) {
+      if (!copied.empty()) app_->copy_to_clipboard(std::move(copied));
+      return true;
+    }
+    if (k.key != Key::Char) return false;
+    if (k.ctrl && (k.ch == 'v' || k.ch == 'V')) { paste_clipboard(); return true; }
+    // Alt+Enter arrives as ESC CR: queue rather than send.
+    if (k.alt && (k.ch == '\r' || k.ch == '\n')) { queue_prompt(); return true; }
+    // Every Ctrl combination the box did not take goes to the agent, so an
+    // interrupt or the agent's own binding is never swallowed.
+    if (k.ctrl) { s_->pty().write(encode_key(k, false)); return true; }
+    prompt_.insert_char(k.ch);
+    return true;
   }
 
   // Enter on the box: the message goes to the agent, or waits with a reason.
@@ -1141,29 +1084,19 @@ class SessionPane final : public Pane {
     chat_.to_bottom();
   }
 
-  std::string take_url() override { return chat_.take_url(); }
-
-  // The background list, while it is open, follows the tasks: a progress
-  // read, a task started or ended after it opened.
-  void refresh_background_list() {
-    if (!bg_list_open_) return;
-    Picker* picker = app_->pane_picker(this);
-    if (!picker) {
-      bg_list_open_ = false;
-      return;
-    }
-    std::vector<PickItem> items = background_items(s_->background(), app_->theme());
-    const auto same = [](const PickItem& a, const PickItem& b) { return a.label == b.label && a.detail == b.detail && a.id == b.id; };
-    if (!std::equal(items.begin(), items.end(), picker->items().begin(), picker->items().end(), same))
-      picker->set_items(std::move(items));
+  std::string take_url() override {
+    auto url = work_chat_.take_url();
+    return url.empty() ? chat_.take_url() : url;
   }
-  bool bg_list_open_ = false;
 
   // At the strip's right end, what the agent runs in the background, as its
   // own footer says it ("2 monitors still running"): a chip that lists them.
   void draw_background(Painter& p, const Theme& th) {
-    if (s_->background().empty()) return;
-    const std::string text = background_summary(s_->background()) + " running" + background_percent(s_->background()) + " ";
+    bool need = false;
+    for (const auto& q : app_->workspace().side_questions()) if (q.parent == s_->serial() && q.context == s_->session_id())
+      for (const auto& child : app_->workspace().live()) if (child->serial() == q.child && child->needs_input()) need = true;
+    const std::string text = need ? "Work ! F11 " : s_->background().empty() ? "Work F11 " :
+        background_summary(s_->background()) + " running" + background_percent(s_->background()) + " ";
     const int w = text::str_width(text) + 3;
     int used = 0;
     for (const auto& c : chips_) used = std::max(used, c.rect.x + c.rect.w);
@@ -1176,6 +1109,11 @@ class SessionPane final : public Pane {
   }
 
   bool on_mouse(const MouseEvent& m, Point local) override {
+    if (work_open_ && work_rect_.contains(local) && !showing_raw()) {
+      work_focus_ = true;
+      return work_mouse(m, Point{local.x - work_rect_.x, local.y - work_rect_.y});
+    }
+    if (m.kind == MouseKind::Press) work_focus_ = false;
     if (!showing_raw() && comp_rect_.w > 0 && comp_rect_.contains(local)) {
       const Picker::Result r =
           comp_.picker().on_mouse(m, Point{local.x - comp_rect_.x, local.y - comp_rect_.y});
@@ -1188,9 +1126,7 @@ class SessionPane final : public Pane {
         if (local.x >= c.rect.x && local.x < c.rect.x + c.rect.w) {
           const Point chip{m.pos.x - local.x + c.rect.x, m.pos.y};
           if (c.key == "background") {
-            app_->open_picker_above(this, chip, "Running in the background \xC2\xB7 enter shows where it started",
-                                    background_items(s_->background(), app_->theme()));
-            bg_list_open_ = true;
+            work_open_ = true; work_focus_ = true; work_tab_ = s_->background().empty() ? 0 : 1;
             return true;
           }
           open_chip_picker(app_, this, chip, chat_.state(), c.key, !s_->exited(), s_->agent());
@@ -1234,6 +1170,16 @@ class SessionPane final : public Pane {
   }
 
   std::vector<MenuItem> context_menu(Point local) override {
+    if (work_open_ && work_rect_.contains(local)) {
+      std::vector<MenuItem> items;
+      if (const auto* i = work_.find(work_selected_)) {
+        items.push_back(MenuItem{"Copy output", "work_copy"});
+        if (!i->path.empty()) items.push_back(MenuItem{"Open conversation", "work_full"});
+        else if (i->kind != "btw") items.push_back(MenuItem{"Show in chat", "work_source"});
+      }
+      items.push_back(MenuItem{"Close Work panel", "work", true, false, false, "", "F11"});
+      return items;
+    }
     // A right-click on a state chip opens that chip's menu, the same as a
     // left-click does.
     if (!showing_raw() && chip_row_ >= 0 && local.y == chip_row_) {
@@ -1262,6 +1208,7 @@ class SessionPane final : public Pane {
       items = chat_.context_menu(Point{local.x, local.y - body_top_});
       if (!items.empty()) items.push_back(MenuItem::sep());
       items.push_back(MenuItem{"Outline\xE2\x80\xA6", "outline", true, false, false, "", "Ctrl+G"});
+      items.push_back(MenuItem{"Work panel", "work", true, false, work_open_, "", "F11"});
     }
     // Forking a live session branches from wherever it is now. The id has to
     // be known, which for codex means waiting for its rollout to be found.
@@ -1277,6 +1224,15 @@ class SessionPane final : public Pane {
   }
 
   void on_action(const std::string& a) override {
+    if (a == "work") { work_open_ = !work_open_; work_focus_ = work_open_; return; }
+    if (a == "work_copy" || a == "work_full" || a == "work_source") {
+      if (const auto* i = work_.find(work_selected_)) {
+        if (a == "work_copy") app_->copy_to_clipboard(work_.detail(*i, chat_.conversation()));
+        else if (a == "work_full" && !i->path.empty()) app_->open_at(i->path, 0, {});
+        else { chat_.reveal(i->at, {}); work_focus_ = false; }
+      }
+      return;
+    }
     if (a == "toggle_view") { toggle_view(); return; }
     if (a.starts_with("bg:")) {
       // Where the task was started: the call, in this chat.
@@ -1410,6 +1366,193 @@ class SessionPane final : public Pane {
   }
 
  private:
+  WorkSet work_;
+  ChatRenderer work_chat_;
+  bool work_open_ = false, work_focus_ = false;
+  int work_tab_ = 0, work_scroll_ = 0, work_width_ = 0;
+  std::string work_selected_, work_last_btw_, work_text_, work_laid_out_;
+  PromptEditor work_prompt_;
+  Rect work_rect_{}, work_body_{};
+  std::vector<std::pair<int, std::string>> work_hits_;
+  int64_t work_detail_ms_ = 0;
+  Arena work_arena_;
+  std::vector<md::Seg> work_segs_, work_inline_;
+  std::vector<md::Line> work_rows_;
+  std::vector<text::Span> work_spans_;
+  md::Work work_layout_;
+
+  const char* work_kind() const { return work_tab_ == 0 ? "agent" : work_tab_ == 1 ? "terminal" : "btw"; }
+  std::vector<const WorkItem*> work_items() const {
+    std::vector<const WorkItem*> out;
+    for (const auto& i : work_.items()) if (i.kind == work_kind()) out.push_back(&i);
+    return out;
+  }
+  void select_work(const std::string& id) {
+    if (id == work_selected_) return;
+    work_selected_ = id; work_scroll_ = 0; work_detail_ms_ = 0; work_text_.clear();
+    work_laid_out_.clear();
+  }
+
+  void render_work(Painter p, bool focused) {
+    const Theme& th = app_->theme();
+    p.clear(Style{th.text, th.panel});
+    p.vline(0, 0, p.height(), U'│', Style{focused ? th.border_focus : th.border, th.panel});
+    p.text_clipped(2, 0, "Work", Style{th.accent, th.panel, attr::kBold}, p.width() - 4);
+    if (p.width() > 25) p.text(p.width() - 13, 0, "F11 close", Style{th.dim, th.panel});
+    for (int n = 0; n < 3; n++) {
+      const int x = 2 + n * std::max(1, (p.width() - 3) / 3);
+      p.text_clipped(x, 2, n == 0 ? "Agents" : n == 1 ? "Terminals" : "Btw",
+                     Style{n == work_tab_ ? th.accent : th.dim, th.panel, n == work_tab_ ? attr::kBold : attr::kNone},
+                     std::max(1, (p.width() - 3) / 3 - 1));
+    }
+    work_.refresh(chat_.conversation(), s_, app_->workspace());
+    const auto items = work_items();
+    if (std::none_of(items.begin(), items.end(), [&](const WorkItem* i) { return i->id == work_selected_; }))
+      select_work(items.empty() ? std::string() : items.front()->id);
+    work_hits_.clear();
+    int y = 4;
+    const int list_end = std::min(p.height() / 2, 14);
+    // Keep the selected item in the visible part of a long list.
+    size_t start = 0;
+    for (size_t n = 0; n < items.size(); n++) if (items[n]->id == work_selected_) {
+      const size_t visible = size_t(std::max(1, (list_end - 4) / 2));
+      if (n >= visible) start = n - visible + 1;
+    }
+    for (size_t n = start; n < items.size() && y + 1 < list_end; n++) {
+      const WorkItem& i = *items[n];
+      const bool on = i.id == work_selected_;
+      if (on) p.fill(Rect{1, y, p.width() - 1, 2}, Style{th.text, th.panel_alt});
+      const Color fg = i.status == "failed" ? th.err : i.status == "waiting" ? th.attention : i.status == "working" ? th.working : th.dim;
+      p.text_clipped(2, y, (on ? "› " : "  ") + i.title, Style{on ? th.accent : th.text, on ? th.panel_alt : th.panel}, p.width() - 4);
+      p.text_clipped(4, y + 1, i.info.empty() ? (i.status == "waiting" ? "needs you" : i.status) : i.info,
+                     Style{fg, on ? th.panel_alt : th.panel}, p.width() - 6);
+      work_hits_.push_back({y, i.id}); y += 2;
+    }
+    if (items.empty()) {
+      p.text_clipped(2, y++, work_tab_ == 2 ? (work_.supports_btw() ? "Ask a side question below." : "This agent has no /btw command.") : "No work here yet.", Style{th.dim, th.panel}, p.width() - 4);
+    }
+    p.hline(1, y, p.width() - 1, U'─', Style{th.border, th.panel});
+    const bool native_btw = work_tab_ == 2 && s_->adapter() && s_->adapter()->native_side_questions();
+    const int footer = work_tab_ == 2 && work_.supports_btw() ? native_btw ? 3 : 2 : 1;
+    work_body_ = Rect{2, y + 1, std::max(1, p.width() - 4), std::max(1, p.height() - y - footer - 2)};
+    const WorkItem* item = work_.find(work_selected_);
+    if (item && item->kind == "agent" && !item->path.empty()) {
+      work_chat_.open(item->path, s_->adapter());
+      work_chat_.set_base_dir(s_->cwd()); work_chat_.poll_growth();
+      Painter body = p.sub(work_body_);
+      work_chat_.render(body, th, app_->filters());
+    } else if (item) {
+      const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+      if (now - work_detail_ms_ >= 500) {
+        work_detail_ms_ = now;
+        work_text_ = work_.detail(*item, chat_.conversation());
+      }
+      if (work_text_ != work_laid_out_ || work_body_.w != work_width_) {
+        work_laid_out_ = work_text_; work_width_ = work_body_.w;
+        work_rows_.clear(); work_segs_.clear(); work_arena_.clear();
+        const Str text = work_arena_.add(work_text_);
+        md::Out out{2000, &work_arena_, &work_segs_, &work_rows_, &work_spans_, &work_inline_, &work_layout_};
+        if (item->kind == "terminal") md::render_output(work_text_, text.off, true, work_width_, out, nullptr);
+        else md::render(work_text_, text.off, true, work_width_, out);
+      }
+      const int max_scroll = std::max(0, int(work_rows_.size()) - work_body_.h);
+      work_scroll_ = std::clamp(work_scroll_, 0, max_scroll);
+      const int first = item->kind == "terminal" ? max_scroll - work_scroll_ : work_scroll_;
+      for (int row = 0; row < work_body_.h && first + row < int(work_rows_.size()); row++) {
+        const md::Line& line = work_rows_[size_t(first + row)];
+        int x = work_body_.x + line.indent;
+        for (uint16_t n = 0; n < line.seg_count; n++) {
+          const md::Seg& seg = work_segs_[line.seg_first + n];
+          if (seg.ink == md::Ink::MathImage) continue;
+          x += p.text(x, work_body_.y + row, work_arena_.view(Str{seg.off & ~md::kScratchBit, seg.len}),
+                      ink_style(Style{th.text, th.panel}, seg.ink, th));
+        }
+      }
+    }
+    p.text_clipped(2, p.height() - 1, "Tab tabs · ↑↓ select · PgUp/Dn scroll · Esc close", Style{th.dim, th.panel}, p.width() - 4);
+    if (work_tab_ == 2 && work_.supports_btw()) {
+      const std::string prompt = "btw › " + work_prompt_.text();
+      p.text_clipped(2, p.height() - 2, prompt, Style{focused ? th.accent : th.text, th.panel}, p.width() - 4);
+      if (native_btw) p.text_clipped(2, p.height() - 3, "not saved in the chat", Style{th.dim, th.panel}, p.width() - 4);
+    }
+  }
+
+  bool work_key(const KeyEvent& k) {
+    if (k.key == Key::Escape) { work_open_ = false; work_focus_ = false; return true; }
+    if (k.key == Key::Tab || k.key == Key::BackTab) {
+      work_tab_ = (work_tab_ + (k.key == Key::Tab ? 1 : 2)) % 3; select_work({}); return true;
+    }
+    if (work_tab_ == 2 && btw_live_ && k.ctrl && (k.key == Key::Left || k.key == Key::Right)) {
+      s_->pty().write(k.key == Key::Left ? "\x1b[1;2D" : "\x1b[1;2C"); return true;
+    }
+    if (work_tab_ == 2 && btw_live_ && work_prompt_.empty() && !k.ctrl && !k.alt) {
+      if (k.key == Key::Up || k.key == Key::Down) {
+        s_->pty().write(k.key == Key::Up ? "\x1b[A" : "\x1b[B"); return true;
+      }
+      if (k.shift && (k.key == Key::Left || k.key == Key::Right)) {
+        s_->pty().write(k.key == Key::Left ? "\x1b[1;2D" : "\x1b[1;2C"); return true;
+      }
+    }
+    if (work_tab_ == 2 && work_.supports_btw() &&
+        (k.key == Key::Char || k.key == Key::Backspace || k.key == Key::Delete || k.key == Key::Left || k.key == Key::Right)) {
+      work_prompt_.edit_key(k); return true;
+    }
+    if (k.key == Key::Enter && work_tab_ == 2 && !work_prompt_.empty()) {
+      const std::string text = text::oneline(work_prompt_.text(), 2000);
+      const std::string error = app_->workspace().ask_side_question(*s_, text);
+      if (error.empty()) work_prompt_.reset();
+      else app_->set_status(error);
+      return true;
+    }
+    if (k.key == Key::Enter) if (const auto* i = work_.find(work_selected_); i && i->key && !i->path.empty()) {
+      app_->open_at(i->path, 0, {}); return true;
+    }
+    const auto items = work_items();
+    if ((k.key == Key::Up || k.key == Key::Down) && !items.empty()) {
+      int at = 0;
+      for (size_t n = 0; n < items.size(); n++) if (items[n]->id == work_selected_) at = int(n);
+      at = std::clamp(at + (k.key == Key::Up ? -1 : 1), 0, int(items.size()) - 1);
+      select_work(items[size_t(at)]->id); return true;
+    }
+    if (k.key == Key::PageUp || k.key == Key::PageDown || k.key == Key::Home || k.key == Key::End) {
+      const WorkItem* item = work_.find(work_selected_);
+      if (item && item->kind == "agent" && !item->path.empty()) work_chat_.on_key(k);
+      else {
+        const int step = std::max(1, work_body_.h - 2);
+        const bool terminal = work_tab_ == 1;
+        if (k.key == Key::Home) work_scroll_ = terminal ? 100000 : 0;
+        else if (k.key == Key::End) work_scroll_ = terminal ? 0 : 100000;
+        else work_scroll_ = std::max(0, work_scroll_ + ((k.key == Key::PageUp) == terminal ? step : -step));
+      }
+      return true;
+    }
+    if (k.is('s')) if (const auto* i = work_.find(work_selected_); i && i->kind != "btw") {
+      chat_.reveal(i->at, {}); work_focus_ = false; return true;
+    }
+    return true;  // panel navigation must never type into the main task
+  }
+
+  bool work_mouse(const MouseEvent& m, Point local) {
+    if (m.kind == MouseKind::Press && local.y == 0 && local.x >= work_rect_.w - 13) {
+      work_open_ = false; work_focus_ = false; return true;
+    }
+    if (m.kind == MouseKind::Press && local.y == 2) {
+      work_tab_ = std::clamp((local.x - 2) / std::max(1, (work_rect_.w - 3) / 3), 0, 2);
+      select_work({}); return true;
+    }
+    if (m.kind == MouseKind::Press) for (const auto& hit : work_hits_)
+      if (local.y == hit.first || local.y == hit.first + 1) { select_work(hit.second); return true; }
+    if (work_body_.contains(local)) {
+      const WorkItem* i = work_.find(work_selected_);
+      if (i && i->kind == "agent" && !i->path.empty()) return work_chat_.on_mouse(m, Point{local.x - work_body_.x, local.y - work_body_.y});
+      if (m.kind == MouseKind::WheelUp || m.kind == MouseKind::WheelDown) {
+        const bool up = m.kind == MouseKind::WheelUp;
+        work_scroll_ = std::max(0, work_scroll_ + (up == (work_tab_ == 1) ? 3 : -3));
+      }
+    }
+    return true;
+  }
+
   void toggle_view() {
     if (!s_->adapter()) return;
     if (s_->answer_sending()) {

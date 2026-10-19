@@ -438,6 +438,120 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
         check(page.eval("document.querySelectorAll('#events .translation-warning script').length === 0 && "
                         "!!document.querySelector('#events .translation-warning .code-bar button')"),
               'original content is inert and has a copy button')
+
+        # The shared panel keeps the parent chat and its draft intact while
+        # changing between subagent messages, terminal output and Btw replies.
+        agent = {'key': 'clear-fixture', 'status': 'idle', 'agent': 'claude', 'cwd': cwd,
+                 'transcript': str(codex), 'title': 'Work fixture', 'background': [
+                     {'id': 'cell 3', 'kind': 'shell', 'what': 'build', 'percent': 45},
+                     {'id': 'monitor-1', 'kind': 'monitor', 'what': 'watch the bake'}]}
+        items = [
+            {'id': 'terminal-1', 'kind': 'terminal', 'title': 'make <img src=x onerror=alert(1)>', 'status': 'working',
+             'at': 0, 'info': '45% · 45/100 · 2m 05s left'},
+            {'id': 'agent-1', 'kind': 'agent', 'title': 'Review the change', 'status': 'working', 'at': 0, 'info': 'Explore'},
+            {'id': 'btw-1', 'kind': 'btw', 'title': 'Why this approach?', 'status': 'done', 'at': 0, 'info': ''},
+            {'id': 'terminal-done', 'kind': 'terminal', 'title': 'previous build', 'status': 'done', 'at': 0, 'info': ''}]
+        for width, height, touch in ((1200, 900, False), (390, 800, True)):
+            if touch:
+                page.call('Page.close')
+                page = Page(debug_port, '')
+                page.open(f'{base}&chat={codex}', width, height, touch)
+                check(page.wait("!!document.querySelector('#events .translation-warning')"), 'the phone chat loaded')
+            page.eval("window.panelMessages = []; st.ws.onmessage = null; st.ws = {readyState: WebSocket.OPEN, send: m => panelMessages.push(JSON.parse(m))}")
+            page.eval(f"st.chat.key = 'clear-fixture'; receive({json.dumps({'type': 'agents', 'agents': [agent]})}); "
+                      f"receive({json.dumps({'type': 'work_state', 'path': str(codex), 'items': items, 'selected': '', 'supports_btw': True})})")
+            check(page.wait("document.querySelector('#agents .m')?.textContent.includes('2 in background')"),
+                  f'background work remains visible in the sidebar at {width}px')
+            page.eval("window.mainEvent = document.getElementById('events').firstElementChild; "
+                      "document.getElementById('prompt-text').value = 'Keep this main draft'; openWork('terminal')")
+            page.eval(f"receive({json.dumps({'type': 'work_state', 'path': str(codex), 'items': items, 'selected': 'terminal-1', 'supports_btw': True, 'output': '<script>inert terminal output</script>'})})")
+            check(page.eval("!document.getElementById('work-panel').hidden && "
+                            "document.querySelector('#work-list .work-info').textContent.includes('45/100') && "
+                            "document.querySelector('#work-output pre').textContent.includes('<script>inert terminal output</script>')"),
+                  f'terminal progress and output show in the panel at {width}px')
+            check(page.eval("document.querySelectorAll('#work-panel img, #work-panel script').length === 0 && "
+                            "document.documentElement.scrollWidth <= innerWidth && "
+                            "document.getElementById('work-panel').getBoundingClientRect().bottom <= innerHeight"),
+                  f'the panel fits the screen and keeps output inert at {width}px')
+            page.eval("document.getElementById('work-tab-agent').click()")
+            page.eval(f"receive({json.dumps({'type': 'work_state', 'path': str(codex), 'items': items, 'selected': 'agent-1', 'supports_btw': True, 'output': '**Assistant**: Found the problem.'})})")
+            check(page.eval("document.querySelector('#work-output strong').textContent === 'Assistant' && "
+                            "document.getElementById('events').firstElementChild === window.mainEvent && "
+                            "document.getElementById('prompt-text').value === 'Keep this main draft'"),
+                  'reading a subagent preserves the parent transcript and draft')
+            page.eval("document.getElementById('work-tab-btw').click()")
+            page.eval(f"receive({json.dumps({'type': 'work_state', 'path': str(codex), 'items': items, 'selected': 'btw-1', 'supports_btw': True, 'output': 'Because **it stays responsive**.'})})")
+            check(page.eval("!document.getElementById('btw-form').hidden && "
+                            "document.querySelector('#work-output strong').textContent === 'it stays responsive'"),
+                  'Btw replies use the same panel with a separate composer')
+            page.eval("window.panelMessages = []; window.savedWS = st.ws; "
+                      "st.ws = {readyState: WebSocket.OPEN, send: m => panelMessages.push(JSON.parse(m))}; "
+                      "document.getElementById('btw-text').value = 'What about caching?'; "
+                      "document.getElementById('btw-form').requestSubmit()")
+            check(page.eval("panelMessages.some(m => m.type === 'btw' && m.key === 'clear-fixture' && m.text === 'What about caching?') && "
+                            "document.getElementById('prompt-text').value === 'Keep this main draft'"),
+                  'a side question is sent separately from the main draft')
+            page.eval("st.ws = savedWS")
+            if os.environ.get('MICO_WEB_SCREENSHOTS'):
+                shot = page.call('Page.captureScreenshot', format='png')['data']
+                Path(os.environ['MICO_WEB_SCREENSHOTS'] + f'-{width}.png').write_bytes(base64.b64decode(shot))
+            page.eval("document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}))")
+            check(page.eval("document.getElementById('work-panel').hidden && "
+                            "document.activeElement.id === 'work-toggle' && "
+                            "document.getElementById('prompt-text').value === 'Keep this main draft'"),
+                  'Escape closes the panel and restores focus without changing the draft')
+
+        # Count the actual work, avoiding timing thresholds that depend on
+        # the machine: shared chart x values and tool groups must be linear.
+        chart_work = page.eval("""(() => {
+          const n = 2000, x = Array.from({length: n}, (_, i) => i);
+          const code = JSON.stringify({type: 'line', x, series: [{y: x}, {x: [0, 10], y: [1, 2]}]});
+          const map = Array.prototype.map;
+          let visits = 0, node;
+          Array.prototype.map = function (...args) { visits += this.length; return map.apply(this, args); };
+          try { node = chartNode(code); } finally { Array.prototype.map = map; }
+          const lines = [...node.querySelectorAll('polyline')];
+          return {visits, points: lines.map(l => l.getAttribute('points').split(' ').length)};
+        })()""")
+        check(chart_work and chart_work['visits'] < 40000 and chart_work['points'] == [2000, 2],
+              f'chart coordinates are converted in linear work: {chart_work}')
+        tool_work = page.eval("""(() => {
+          st.calls.clear();
+          const events = Array.from({length: 1000}, (_, i) => [
+            {k: 'tool_call', name: 'exec', tool: String(i)},
+            {k: 'tool_result', tool: String(i), text: 'out', ok: i !== 2}
+          ]).flat();
+          events.pop();
+          const query = Element.prototype.querySelectorAll;
+          let visits = 0, frag;
+          Element.prototype.querySelectorAll = function (...args) {
+            const result = query.apply(this, args); visits += result.length; return result;
+          };
+          try { ({frag} = buildEvents(events, null)); } finally { Element.prototype.querySelectorAll = query; }
+          const group = frag.firstChild;
+          const first = group.firstChild.textContent;
+          buildEvents([{k: 'tool_result', tool: '999', text: 'done'}], group);
+          return {visits, first, final: group.firstChild.textContent};
+        })()""")
+        check(tool_work and tool_work['visits'] < 10000 and '1000 tool calls' in tool_work['first'] and
+              '1 running' in tool_work['first'] and '1 failed' in tool_work['first'] and
+              'running' not in tool_work['final'] and '1 failed' in tool_work['final'],
+              f'large tool groups update their totals in linear work: {tool_work}')
+        anchor = page.eval("""(async () => {
+          closeWork(); st.chat.start = true; st.calls.clear(); $('events').replaceChildren();
+          const events = n => Array.from({length:n}, (_,i) => ({k:'assistant', text:'Message '+i+' paragraph text. '.repeat(20)}));
+          addEvents({where:'tail', start:true, events:events(100)});
+          addEvents({where:'tail', start:true, events:events(100)});
+          if ($('events').children.length !== 100) return 100000;
+          await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+          const c=$('chat'); c.scrollTop=500; st.atBottom=false;
+          await new Promise(requestAnimationFrame);
+          const anchor=$('events').children[20], before=anchor.getBoundingClientRect().top;
+          addEvents({where:'older', start:true, events:events(50)});
+          await new Promise(requestAnimationFrame);
+          return anchor.getBoundingClientRect().top-before;
+        })()""")
+        check(anchor is not None and abs(anchor) < 1, f'loading older history keeps the reading position: {anchor}')
         page.call('Page.close')
 
         if not failures:

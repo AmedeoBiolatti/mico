@@ -7,6 +7,7 @@
 
 #include "core/conversation.h"
 #include "core/workspace.h"
+#include "core/work.h"
 
 // mico's state protocol: one client's view of a Workspace, as messages. It
 // carries state, not frames, so a client draws it however it likes — a web
@@ -21,6 +22,8 @@
 //   agents     {agents: [{key, agent, title, cwd, session_id,  whenever a running
 //               transcript, status, queued: [text]}]}          agent changed
 //               status: "working" | "idle" | "waiting" | "exited"
+//               background: [{id, kind, what, at, started_ms, expires_ms,
+//                 last_event, last_event_ms, events, percent?, done?, total?, eta_s?}]
 //               permission: {title: [text], question, options: [text],
 //               details: [text], disabled: [bool], cursor, amend, plan},
 //               only while the agent shows a permission dialog or a plan
@@ -33,6 +36,8 @@
 //   error      {message}
 //   image      {path, at, off, media, data}                   answers `image`
 //   file_image {path, file, media, data | error}              answers `file_image`
+//   work_state {path, items: [{id, kind, title, status, at, info, path, key}],
+//               supports_btw, selected, output?}              work panel snapshot
 //   event: {k, at, text?, name?, summary?, detail?, tool?, ok?}
 //     k: "user" | "assistant" | "thinking" | "tool_call" | "tool_result" |
 //        "task" | "question" | "turn_end" | "notice" | "queue_add" |
@@ -66,6 +71,8 @@
 //                                      lists, per question, the option
 //                                      indexes picked, [[1], [0, 2]]
 //   interrupt {rid, key}               Esc to the agent: stop what it is doing
+//   work {path, item, open}            subscribe to the selected work's detail
+//   btw {rid, key, text?, action?}     side question; action: previous|next|close
 namespace mico::api {
 
 inline constexpr int kProtocol = 1;
@@ -88,6 +95,10 @@ class Client {
   struct Chat {
     std::unique_ptr<Conversation> conv;
     std::string facts;  // the chat_state last sent
+    WorkSet work;
+    std::string work_selected, work_sent;
+    bool work_open = false;
+    int64_t work_polled_ms = 0;
   };
 
   void open_chat(const std::string& path);
@@ -116,6 +127,8 @@ class Client {
   void send_events(const std::string& path, Chat& chat, size_t from, size_t to, std::string_view where,
                    std::vector<std::string>& out);
   void send_facts(const std::string& path, Chat& chat, std::vector<std::string>& out);
+  void send_work(const std::string& path, Chat& chat, std::vector<std::string>& out);
+  void btw(std::string_view rid, uint64_t key, const std::string& text, const std::string& action);
 
   Workspace& ws_;
   std::vector<std::string> queued_;  // answers and chats opened, for the next poll

@@ -64,9 +64,24 @@ def question():
 
 draw, n = permission() if mode == 'permission' else question() if mode == 'question' else (lambda: os.write(1, b'> '), 0)
 open(os.path.join(root, 'ready'), 'w').close()
+buffer = b''
 while True:
     key = os.read(0, 1024)
     log(key)
+    if mode == 'btw':
+        if key == b'\x1b':
+            os.write(1, b'\x1b[2J\x1b[H> ')
+            buffer = b''
+            continue
+        buffer += key
+        if b'\r' in buffer:
+            line, buffer = buffer.split(b'\r', 1)
+            if line.startswith(b'/btw '):
+                question = line[5:].decode()
+                os.write(1, ('\x1b[2J\x1b[H    \x1b[1m/btw ' + question + '\x1b[0m\r\n\r\n'
+                             '      A side answer, while the main task continues.\r\n\r\n'
+                             '    Esc to close\r\n').encode())
+        continue
     if key == b'\x1b[B' and n:
         cursor = min(cursor + 1, n - 1)
     elif key == b'\x1b[A' and n:
@@ -270,6 +285,30 @@ try:
           'the second option was chosen: ' + repr(keys_of(root)))
     ws.wait('the question to be answered', lambda m: m.get('type') == 'chat_state' and not m.get('waiting'))
     check(ws.ask(type='answer', key=key, tool=tool, chosen=[[0]])['ok'] is False, 'an answered question cannot be answered again')
+finally:
+    daemon.kill()
+    daemon.wait()
+    shutil.rmtree(root, ignore_errors=True)
+
+# ---- a native Btw side question, read from the agent screen
+root, ws, key, chat, daemon = run('btw')
+try:
+    ws.send({'type': 'open', 'path': chat})
+    ws.wait('side question support', lambda m: m.get('type') == 'work_state' and m.get('supports_btw'))
+    check(ws.ask(type='btw', key=key, text='Why this approach?')['ok'], 'the Btw command is accepted')
+    work = ws.wait('the side answer', lambda m: m.get('type') == 'work_state' and
+                   any(i['kind'] == 'btw' for i in m['items']))
+    item = next(i for i in work['items'] if i['kind'] == 'btw')
+    ws.send({'type': 'work', 'path': chat, 'item': item['id'], 'open': True})
+    ws.wait('the selected side answer', lambda m: m.get('type') == 'work_state' and
+            'A side answer' in m.get('output', ''))
+    check('Why this approach?' not in Path(chat).read_text(), 'native side questions stay outside the main transcript')
+    check(ws.ask(type='send', key=key, text='Continue the main task')['ok'], 'the main composer remains usable')
+    end = time.monotonic() + 5
+    while time.monotonic() < end and not any('Continue the main task' in line for line in keys_of(root)):
+        ws.pump(0.2)
+    check(any(line == "b'\\x1b'" for line in keys_of(root)), 'a main message closes the native side dialog before typing')
+    check(any('Continue the main task' in line for line in keys_of(root)), 'the main message reaches the parent')
 finally:
     daemon.kill()
     daemon.wait()
