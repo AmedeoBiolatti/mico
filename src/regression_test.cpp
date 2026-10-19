@@ -501,17 +501,21 @@ int run_regression_tests() {
     check(first.spawn({"/bin/sleep", "5"}, project, 80, 24) && second.spawn({"/bin/sleep", "5"}, project, 80, 24),
           "fds: two agents start");
     const auto fds_of = [](pid_t pid) {
-      std::vector<std::string> out;
       const std::string dir = "/proc/" + std::to_string(pid) + "/fd";
-      // Once it is sleep, it has exec'd, and what it holds is what it keeps:
-      // listed after that, never before.
+      // The executable link changes before the dynamic loader closes its
+      // library descriptors. Wait for sleep to settle; inherited descriptors
+      // would stay open for its whole lifetime and still fail this check.
+      size_t count = 0;
       for (int i = 0; i < 200; i++) {
         std::error_code ec;
-        if (std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", ec).filename() == "sleep") break;
+        if (std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", ec).filename() == "sleep") {
+          count = 0;
+          for ([[maybe_unused]] const auto& e : std::filesystem::directory_iterator(dir)) count++;
+          if (count == 3) break;
+        }
         usleep(5000);
       }
-      for (const auto& e : std::filesystem::directory_iterator(dir)) out.push_back(e.path().filename());
-      return out.size();
+      return count;
     };
     check(fds_of(second.pid()) == 3, "fds: an agent holds only its terminal");
     close(leak[0]);
