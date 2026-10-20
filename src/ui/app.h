@@ -202,6 +202,7 @@ class App {
   // Starting an agent: which one, then where (F7, :new). A command given
   // skips to where.
   void open_new_agent(std::string command = {});
+  void open_new_chat();
   // Adding a sub-project to the folder `project`: which folder it runs in —
   // the project's own, or one under it — then its name.
   void pick_subproject_folder(const std::string& project);

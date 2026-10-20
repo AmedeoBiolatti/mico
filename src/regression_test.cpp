@@ -1285,7 +1285,7 @@ int run_regression_tests() {
           for (char c : t) app.feed(InputEvent{InputEvent::Type::Key, KeyEvent{Key::Char, char32_t(c)}, {}, {}});
         };
         const auto press = [&](Key k) { app.feed(InputEvent{InputEvent::Type::Key, KeyEvent{k}, {}, {}}); };
-        const size_t running = app.live_sessions().size();
+        size_t running = app.live_sessions().size();
         app.open_switcher();
         app.draw(sf);
         check(screen(sf).find("Go to chat") != std::string::npos && screen(sf).find("Resume fixture") != std::string::npos,
@@ -1307,7 +1307,7 @@ int run_regression_tests() {
         chats->on_key({Key::End});
         chats->on_key({Key::Enter});
         app.draw(sf);
-        check(screen(sf).find("New agent") != std::string::npos &&
+        check(screen(sf).find("New chat") != std::string::npos &&
                   screen(sf).find("codex") != std::string::npos && app.live_sessions().size() == running,
               "New chat: Enter offers the agent chooser and starts nothing");
         press(Key::Escape);
@@ -1324,9 +1324,28 @@ int run_regression_tests() {
           type("codex");
           press(Key::Enter);
           app.draw(sf);
-          check(screen(sf).find("Run codex in") != std::string::npos && app.live_sessions().size() == running,
-                "New chat: clicking offers Codex and then its working folder");
-          press(Key::Escape);
+          check(screen(sf).find("Run codex in") == std::string::npos &&
+                    app.live_sessions().size() == running + 1 && app.selected_live() &&
+                    app.selected_live()->cwd() == project,
+                "New chat: clicking and choosing Codex starts in the current project without a folder prompt");
+          running = app.live_sessions().size();
+        }
+
+        for (const std::string sub : {"chat-web", "chat-notes"}) {
+          const std::string cwd = sub == "chat-web" ? project + "/web" : project;
+          check(app.store().add_subproject(project, sub, cwd), "New chat: add a sub-project fixture");
+          app.select_sub(sub);
+          chats->render(cp, true);
+          chats->on_key({Key::End});
+          chats->on_key({Key::Enter});
+          type("codex");
+          press(Key::Enter);
+          check(app.live_sessions().size() == running + 1 && app.selected_live() &&
+                    app.selected_live()->cwd() == cwd && app.live_sub(*app.selected_live()) == sub,
+                "New chat: Enter starts in the selected sub-project and preserves its membership");
+          running = app.live_sessions().size();
+          app.select_sub("");
+          app.store().remove_subproject(project, sub);
         }
 
         // F7: an agent, or any command, then where. Backspace on an empty

@@ -404,7 +404,7 @@ class ChatList final : public Pane {
     const int at = menu_index();
     const Row* r = at >= 0 ? &rows_[size_t(at)] : nullptr;
 
-    if (a == "new_chat") { app_->open_new_agent(); return; }
+    if (a == "new_chat") { app_->open_new_chat(); return; }
     if (a == "copy_path" && r) {
       const std::string path = r->live ? r->live->transcript() : r->stored ? r->stored->path : std::string();
       if (path.empty()) return;
@@ -593,7 +593,7 @@ class ChatList final : public Pane {
   // Enter / single-click opens and resumes. Arrow navigation only previews.
   void activate(int i) {
     if (i == int(rows_.size())) {
-      app_->open_new_agent();
+      app_->open_new_chat();
       return;
     }
     if (i < 0 || i >= int(rows_.size())) return;
