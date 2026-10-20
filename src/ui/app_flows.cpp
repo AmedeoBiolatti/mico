@@ -94,9 +94,10 @@ void App::open_flow(std::string flow, std::string title, std::string footer, std
   o.footer_text = std::move(footer);
   // In a folder or command step Tab puts the item in the query to go on
   // from; the switcher has nothing to go on to.
-  o.tab_completes = flow != "switch";
+  o.tab_completes = flow != "switch" && flow != "chat_agent";
   o.back_on_empty = flow == "agent_dir";
   o.query_placeholder = flow == "switch"  ? "a chat, a folder or an agent"
+                        : flow == "chat_agent" ? "an agent type"
                         : flow == "agent" ? "an agent, or any command"
                         : flow == "agent_dir" ? "a tracked folder, or ~/ or / to browse"
                                                : "a path";
@@ -154,6 +155,11 @@ void App::open_new_agent(std::string command) {
   open_flow("agent_dir", std::move(title),
             "enter run here \xC2\xB7 tab open folder \xC2\xB7 \xE2\x8C\xAB back \xC2\xB7 esc close",
             std::move(command));
+}
+
+void App::open_new_chat() {
+  open_flow("chat_agent", "New chat",
+            "enter start \xC2\xB7 esc close", selected_cwd());
 }
 
 void App::pick_subproject_folder(const std::string& project) {
@@ -230,6 +236,7 @@ std::vector<PickItem> App::flow_items(const std::string& flow, const std::string
     if (!on_path(id.c_str())) it.hint = "not on PATH";
     out.push_back(std::move(it));
   }
+  if (flow == "chat_agent") return out;
   for (const auto& c : recent_commands_) {
     if (is_agent(c)) continue;
     PickItem it;
@@ -435,6 +442,11 @@ void App::flow_chosen(const PickItem& it) {
           open_selected_chat();
           return;
         }
+    return;
+  }
+  if (flow == "chat_agent") {
+    close_menu();
+    spawn_agent(it.id.substr(4), carry);
     return;
   }
   if (flow == "agent") {
