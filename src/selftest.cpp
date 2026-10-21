@@ -1260,6 +1260,28 @@ int run_selftest() {
     check(ev.size() == 1 && ev[0].kind == EventKind::Notice && !ev[0].ok && !ev[0].detail.empty(),
           "unknown codex subagent activities remain inspectable");
 
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}})", a, ev);
+    check(ev.empty(), "codex agent routing metadata does not produce a warning");
+    codex_adapter().parse(
+        R"({"type":"response_item","payload":{"type":"agent_message","author":"/root/reviewer","recipient":"/root","channel":"final","content":[{"type":"input_text","text":"Review complete.\nLooks good."}]}})", a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Peer &&
+              a.view(ev[0].name) == "/root/reviewer" && a.view(ev[0].summary) == "/root" &&
+              a.view(ev[0].text) == "Review complete.\nLooks good.",
+          "codex agent messages preserve attribution and text without ending the turn");
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"response_item","payload":{"type":"agent_message","author":"/root","recipient":"/root/reviewer","content":[{"type":"input_text","text":"Payload:"},{"type":"encrypted_content","encrypted_content":"opaque"}]}})", a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Peer &&
+              a.view(ev[0].text) == "Payload:\n[Encrypted content unavailable]",
+          "codex encrypted peer content has an explicit placeholder without a translation warning");
+    ev.clear();
+    codex_adapter().parse(
+        R"({"type":"response_item","payload":{"type":"agent_message","content":[{"type":"future_audio","data":"opaque"}]}})", a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Notice && !ev[0].ok,
+          "codex unknown peer content still produces an inspectable warning");
+
     // Unknown conversation formats produce diagnostics rather than holes.
     for (const Adapter* adapter : {&codex_adapter(), &omp_adapter()}) {
       ev.clear();
