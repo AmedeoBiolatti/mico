@@ -267,7 +267,16 @@ was.
   screen Enter is a new line and ↑ sends; with a keyboard, Enter sends.
 - **The list** filters as you type (`/` focuses it), folds folders (remembered),
   shows what is running first with its state — working, ready, needs you — and
-  counts the agents that need you in the browser tab's title.
+  counts the agents that need you in the browser tab's title. A folder shows
+  this week's chats (a few at least) and folds the older ones behind **Show N
+  older**; archived chats are hidden, with **Show N archived** at the foot of
+  the list to see them, dimmed.
+- **A chat's actions** — open, rename, archive or unarchive, copy path, resume,
+  fork, stop its agent — open from a long press on its row (a phone), a
+  right-click (a desk), or the **⋯** beside the open chat's title. The same
+  actions the terminal's list has, through the same marks: a name or an
+  archive made here shows there, and the other way round. Archiving stops the
+  chat's agent when it is idle, as the terminal does, and is refused mid-turn.
 - **The chat** renders markdown — headings, nested and numbered lists, task
   lists, tables, quotes, code blocks with a Copy button, links — folds a run of
   tool calls into one line ("4 tool calls · 1 failed"), shows a failed call's

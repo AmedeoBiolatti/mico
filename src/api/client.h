@@ -20,8 +20,10 @@
 //               chats: [{agent, id, path, title, cwd, mtime,    listing changed
 //               bytes, sub, archived}]}]}
 //   agents     {agents: [{key, agent, title, cwd, session_id,  whenever a running
-//               transcript, status, queued: [text]}]}          agent changed
+//               transcript, status, archived, queued: [text]}]} agent changed
 //               status: "working" | "idle" | "waiting" | "exited"
+//               archived: the chat is put away; a client hides the row once
+//               the agent has exited, as the listing hides its stored row
 //               background: [{id, kind, what, at, started_ms, expires_ms,
 //                 last_event, last_event_ms, events, percent?, done?, total?, eta_s?}]
 //               permission: {title: [text], question, options: [text],
@@ -62,6 +64,11 @@
 //                                      tracked folder
 //   resume {rid, agent, id, fork}      a stored chat
 //   stop   {rid, key}
+//   rename {rid, agent, id, title}     mico's own name for a chat, over the
+//                                      agent's title; "" clears it
+//   archive {rid, agent, id, on}       put a chat away (on) or bring it back.
+//                                      Archiving stops the chat's agent when
+//                                      it is idle; mid-turn it is refused
 //   send   {rid, key, text}            a message to a running agent
 //   answer_permission {rid, key, index, note?}
 //                                      choice `index` of the dialog the agent
@@ -108,6 +115,8 @@ class Client {
   void start(std::string_view rid, const std::string& agent, const std::string& cwd);
   void resume(std::string_view rid, const std::string& agent, const std::string& id, bool fork);
   void stop(std::string_view rid, uint64_t key);
+  void rename(std::string_view rid, const std::string& agent, const std::string& id, const std::string& title);
+  void archive(std::string_view rid, const std::string& agent, const std::string& id, bool on);
   void send(std::string_view rid, uint64_t key, const std::string& text);
   void answer_permission(std::string_view rid, uint64_t key, int index, const std::string& note);
   void answer_question(std::string_view rid, uint64_t key, const std::string& tool, std::string_view chosen);
@@ -119,6 +128,8 @@ class Client {
   // chat the workspace knows: a client never names an arbitrary file.
   const Adapter* chat_adapter(const std::string& path) const;
   LiveSession* session(uint64_t key) const;
+  // Whether a chat the listings name — stored, or running — is `id` of `agent`.
+  bool known_chat(const std::string& agent, const std::string& id) const;
   bool tracked_dir(const std::string& dir) const;
 
   void send_folders(std::vector<std::string>& out);

@@ -254,7 +254,8 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
     return;
   }
   if (type != "response_item" && type != "event_msg") {
-    if (type != "session_meta" && type != "turn_context" && type != "world_state" && type != "token_usage_record")
+    if (type != "session_meta" && type != "turn_context" && type != "world_state" && type != "token_usage_record" &&
+        type != "inter_agent_communication_metadata")
       translation_warning(arena, out, "codex", "record " + std::string(type), raw);
     return;
   }
@@ -372,7 +373,7 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
   if (type != "response_item") return;
 
   std::string_view pt, role, channel, phase;
-  js::Value content{}, summary{}, name{}, call_id{}, input{}, arguments{}, output{}, metadata{};
+  js::Value content{}, summary{}, name{}, call_id{}, input{}, arguments{}, output{}, metadata{}, author{}, recipient{};
   js::scan_object(payload, [&](std::string_view k, const js::Value& v) {
     if (k == "type") pt = v.body();
     else if (k == "role") role = v.body();
@@ -386,11 +387,48 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
     else if (k == "input") input = v;
     else if (k == "arguments") arguments = v;
     else if (k == "output") output = v;
+    else if (k == "author") author = v;
+    else if (k == "recipient") recipient = v;
     return true;
   });
 
   Event e;
-  if (pt == "message") {
+  if (pt == "agent_message") {
+    if (content.type == js::Type::Null) {
+      translation_warning(arena, out, "codex", "missing agent message content", raw);
+      return;
+    }
+    // Routing metadata is a separate record. The message itself belongs in
+    // the peer view, without starting or ending a human conversation turn.
+    e.kind = EventKind::Peer;
+    if (author.is_string()) e.name = arena.add_json(author);
+    if (recipient.is_string()) e.summary = arena.add_json(recipient);
+    if (content.is_array()) {
+      std::string shown;
+      js::scan_array(content.raw, [&](const js::Value& block) {
+        std::string_view kind;
+        js::scan_object(block.raw, [&](std::string_view k, const js::Value& v) {
+          if (k == "type") kind = v.body();
+          return true;
+        });
+        if (!shown.empty()) shown += '\n';
+        if (kind == "encrypted_content") {
+          shown += "[Encrypted content unavailable]";
+        } else {
+          const std::string single = "[" + std::string(block.raw) + "]";
+          const js::Value blocks{single, js::Type::Array};
+          warn_content(arena, out, "codex", blocks);
+          shown += arena.view(add_content(arena, blocks));
+        }
+        return shown.size() < Arena::kMaxText;
+      });
+      e.text = arena.add(shown);
+    } else {
+      warn_content(arena, out, "codex", content);
+      e.text = add_content(arena, content);
+    }
+    if (e.text.empty()) return;
+  } else if (pt == "message") {
     if (role != "user" && role != "assistant" && role != "developer" && role != "system") {
       translation_warning(arena, out, "codex", "message role " + std::string(role), raw);
       return;
