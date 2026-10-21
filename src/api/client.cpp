@@ -8,6 +8,7 @@
 #include "adapters/screen.h"
 #include "base/json.h"
 #include "base/json_write.h"
+#include "base/text.h"
 #include "core/answers.h"
 #include "core/images.h"
 #include "base/base64.h"
@@ -66,8 +67,8 @@ void Client::receive(std::string_view message) {
   std::string type, path, rid, agent, cwd, id, text;
   uint64_t key = 0;
   int index = -1;
-  std::string tool, note, file, item, action;
-  bool panel_open = false;
+  std::string tool, note, file, item, action, title;
+  bool panel_open = false, on = false;
   uint64_t at = 0, off = 0, len = 0;
   std::string_view chosen;
   bool fork = false;
@@ -84,6 +85,8 @@ void Client::receive(std::string_view message) {
     else if (k == "item") item = text_of(v);
     else if (k == "action") action = text_of(v);
     else if (k == "open") panel_open = v.is_true();
+    else if (k == "on") on = v.is_true();
+    else if (k == "title") title = text_of(v);
     else if (k == "key") key = std::strtoull(std::string(v.is_string() ? v.body() : v.raw).c_str(), nullptr, 10);
     else if (k == "fork") fork = v.is_true();
     else if (k == "index" && v.type == js::Type::Number) index = std::atoi(std::string(v.raw).c_str());
@@ -107,6 +110,8 @@ void Client::receive(std::string_view message) {
   if (type == "start") return start(rid, agent, cwd);
   if (type == "resume") return resume(rid, agent, id, fork);
   if (type == "stop") return stop(rid, key);
+  if (type == "rename") return rename(rid, agent, id, title);
+  if (type == "archive") return archive(rid, agent, id, on);
   if (type == "send") return send(rid, key, text);
   if (type == "answer_permission") return answer_permission(rid, key, index, note);
   if (type == "answer") return answer_question(rid, key, tool, chosen);
@@ -390,6 +395,7 @@ void Client::send_agents(std::vector<std::string>& out) {
   uint64_t seen = ws_.sessions_version();
   for (const auto& s : ws_.live()) seen = seen * 1000003 + s->generation();
   seen = seen * 1000003 + ws_.git().version();
+  seen = seen * 1000003 + ws_.store().version();  // a rename, an archive mark
   if (seen == agents_seen_ && !agents_sent_.empty()) return;
   agents_seen_ = seen;
   std::string m;
@@ -403,7 +409,8 @@ void Client::send_agents(std::vector<std::string>& out) {
         .field("cwd", s->cwd())
         .field("session_id", s->session_id())
         .field("transcript", s->transcript())
-        .field("status", status_name(s->status()));
+        .field("status", status_name(s->status()))
+        .field("archived", ws_.store().archived(s->agent(), s->session_id()));
     w.key("background").begin_array();
     if (!s->exited()) for (const BackgroundTask& t : s->background()) {
       w.begin_object()
@@ -512,6 +519,40 @@ void Client::stop(std::string_view rid, uint64_t key) {
   if (!s) return result(rid, false, "no agent " + std::to_string(key));
   ws_.close(s);
   result(rid, true, {}, key);
+}
+
+bool Client::known_chat(const std::string& agent, const std::string& id) const {
+  if (agent.empty() || id.empty()) return false;
+  for (const auto& p : ws_.store().projects())
+    for (const auto& s : p.sessions)
+      if (s.agent == agent && s.id == id) return true;
+  for (const auto& s : ws_.live())
+    if (s->agent() == agent && s->session_id() == id) return true;
+  return false;
+}
+
+void Client::rename(std::string_view rid, const std::string& agent, const std::string& id,
+                    const std::string& title) {
+  if (!known_chat(agent, id)) return result(rid, false, "no chat " + agent + " " + id);
+  // One line, as a row shows it; a blank name is no name.
+  ws_.store().set_custom_name(agent, id, text::oneline(title, 0));
+  result(rid, true);
+}
+
+void Client::archive(std::string_view rid, const std::string& agent, const std::string& id, bool on) {
+  if (!known_chat(agent, id)) return result(rid, false, "no chat " + agent + " " + id);
+  if (on) {
+    // As the chat list does it: an archived chat is put away, so its agent
+    // is stopped; the chat is in its transcript and resuming brings it back.
+    // Not mid-turn, though: stopping it there would throw the turn away.
+    for (const auto& s : ws_.live()) {
+      if (s->agent() != agent || s->session_id() != id || s->exited()) continue;
+      if (s->busy()) return result(rid, false, "the agent is still working: wait, or stop it first");
+      ws_.close(s.get());
+    }
+  }
+  ws_.store().set_archived(agent, id, on);
+  result(rid, true);
 }
 
 void Client::send(std::string_view rid, uint64_t key, const std::string& text) {

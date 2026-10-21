@@ -48,6 +48,7 @@ const st = {
   filter: "",
   collapsed: new Set(store.get("collapsed", [])),
   showAll: new Set(),   // folders listed in full
+  showArchived: false,  // archived chats listed too, dimmed
   newFor: null,         // the folder whose "start an agent" row is open
   drafts: new Map(),    // chat id -> an unsent message
   atBottom: true,
@@ -245,7 +246,8 @@ function matches(text) {
 function renderAgents() {
   const box = $("agents");
   box.replaceChildren();
-  const list = st.agents.filter((a) => matches(`${a.title || ""} ${a.agent} ${a.cwd}`));
+  const list = st.agents.filter((a) => !(a.archived && a.status === "exited" && !st.showArchived) &&
+                                       matches(`${a.title || ""} ${a.agent} ${a.cwd}`));
   $("running-sec").hidden = !list.length && !!st.filter;
   if (!list.length) box.append(el("div", "dim-note", "Nothing running."));
   // The ones that want you first.
@@ -263,6 +265,8 @@ function renderAgents() {
     b.append(el("span", "m", `${a.agent} · ${where}${tasks.length ? ` · ${tasks.length} in background` : ""}`));
     b.title = ps.length ? ps.map(placeLine).join("\n\n") : a.cwd;
     if (isCurrent(a.transcript, a.key)) b.classList.add("current");
+    if (a.archived) b.classList.add("archived");
+    holdMenu(b, () => chatActions(subjectOfAgent(a)));
     b.onclick = () => openAgent(a);
     box.append(b);
   }
@@ -290,12 +294,42 @@ function newRow(path, name) {
   return row;
 }
 
+// How many of a group's chats to show before "Show older": the ones touched
+// this week, a few at least and never a wall. The rest are a click away.
+const RECENT_S = 7 * 86400;
+function foldAt(list) {
+  if (st.showArchived) return list.length;  // asked for everything
+  const now = Date.now() / 1000;
+  let n = 0;
+  while (n < list.length && n < 8 && (n < 3 || now - list[n].mtime < RECENT_S || agentFor(list[n]))) n++;
+  return n;
+}
+
+function moreRow(list, limit, show) {
+  const rest = list.length - limit;
+  const older = limit < list.length && Date.now() / 1000 - list[limit].mtime >= RECENT_S;
+  const more = el("button", "more", `Show ${rest} ${older ? "older" : "more"}`);
+  more.type = "button";
+  more.onclick = show;
+  return more;
+}
+
+function renderArchivedToggle() {
+  let n = 0;
+  for (const f of st.folders) n += f.chats.filter((c) => c.archived).length;
+  const b = $("archived-toggle");
+  b.hidden = !n;
+  b.textContent = st.showArchived ? "Hide archived" : `Show ${n} archived`;
+  b.setAttribute("aria-pressed", String(st.showArchived));
+}
+
 function renderFolders() {
   const box = $("folders");
   box.replaceChildren();
+  renderArchivedToggle();
   let shown = 0;
   for (const f of st.folders) {
-    const chats = f.chats.filter((c) => !c.archived);
+    const chats = st.showArchived ? f.chats : f.chats.filter((c) => !c.archived);
     const hits = chats.filter((c) => matches(`${c.title || ""} ${c.agent}`));
     if (st.filter && !hits.length && !matches(f.name)) continue;
     shown++;
@@ -325,16 +359,11 @@ function renderFolders() {
     if (open) {
       const subs = (f.subs || []).filter((sp) => sp.path !== f.path);
       const known = new Set(subs.map((sp) => sp.name));
-      const limit = st.showAll.has(f.path) || st.filter ? Infinity : 8;
       // Chats of the folder itself, then each sub-project with its own.
       const own = hits.filter((c) => !c.sub || !known.has(c.sub));
+      const limit = st.showAll.has(f.path) || st.filter ? own.length : foldAt(own);
       for (const c of own.slice(0, limit)) div.append(chatRow(c));
-      if (own.length > limit) {
-        const more = el("button", "more", `Show ${own.length - limit} more`);
-        more.type = "button";
-        more.onclick = () => { st.showAll.add(f.path); renderFolders(); };
-        div.append(more);
-      }
+      if (own.length > limit) div.append(moreRow(own, limit, () => { st.showAll.add(f.path); renderFolders(); }));
       for (const sp of subs) {
         const mine = chats.filter((c) => c.sub === sp.name);
         const shownHere = hits.filter((c) => c.sub === sp.name);
@@ -362,14 +391,10 @@ function renderFolders() {
         sdiv.append(shead);
         if (st.newFor === sp.path) sdiv.append(newRow(sp.path, sp.name));
         if (sopen) {
-          const slimit = st.showAll.has(sk) || st.filter ? Infinity : 8;
+          const slimit = st.showAll.has(sk) || st.filter ? shownHere.length : foldAt(shownHere);
           for (const c of shownHere.slice(0, slimit)) sdiv.append(chatRow(c));
-          if (shownHere.length > slimit) {
-            const more = el("button", "more", `Show ${shownHere.length - slimit} more`);
-            more.type = "button";
-            more.onclick = () => { st.showAll.add(sk); renderFolders(); };
-            sdiv.append(more);
-          }
+          if (shownHere.length > slimit)
+            sdiv.append(moreRow(shownHere, slimit, () => { st.showAll.add(sk); renderFolders(); }));
           if (!shownHere.length && !st.filter) sdiv.append(el("div", "dim-note", "No chats yet."));
         }
         div.append(sdiv);
@@ -383,17 +408,187 @@ function renderFolders() {
 
 function chatRow(c) {
   const live = agentFor(c);
-  const b = el("button", "row" + (st.chat && c.path === st.chat.path ? " current" : ""));
+  const b = el("button", "row" + (st.chat && c.path === st.chat.path ? " current" : "") + (c.archived ? " archived" : ""));
   b.type = "button";
   if (live) b.append(el("span", `dot lead ${live.status}`));
   else b.append(el("span", "nolead"));
   b.append(el("span", "t", c.title || "(untitled)"));
-  b.append(el("span", "w", live ? STATUS[live.status] : ago(c.mtime)));
+  b.append(el("span", "w", live ? STATUS[live.status] : c.archived ? "archived" : ago(c.mtime)));
   b.append(el("span", "m", c.agent));
   b.title = c.title || "";
+  holdMenu(b, () => chatActions(subjectOfChat(c)));
   b.onclick = () => openChat(c.path, c.title);
   return b;
 }
+
+$("archived-toggle").onclick = () => { st.showArchived = !st.showArchived; renderSide(); };
+
+// ------------------------------------------------------------- chat actions
+
+// What the actions act on: a chat as the listing names it (its agent and the
+// agent's session id), whether it is stored or running.
+function subjectOfChat(c) {
+  const live = agentFor(c);
+  return { agent: c.agent, id: c.id, path: c.path, title: c.title, archived: !!c.archived, live: live || null };
+}
+function subjectOfAgent(a) {
+  return { agent: a.agent, id: a.session_id, path: a.transcript, title: a.title, archived: !!a.archived,
+           live: a.status === "exited" ? null : a, key: a.key };
+}
+function currentSubject() {
+  const a = liveAgent();
+  if (a) return subjectOfAgent(a);
+  const found = st.chat && findChat(st.chat.path);
+  return found ? subjectOfChat(found.chat) : null;
+}
+
+// The actions of a chat, as the chat list's own menu offers them, and only
+// those that apply: a name and an archive mark need the chat to be named,
+// resuming needs it stopped, stopping needs it running.
+function chatActions(s) {
+  const items = [{ title: s.title || "(untitled)" }];
+  items.push({ label: "Open", run: () => (s.live ? openAgent(s.live) : openChat(s.path, s.title)) });
+  if (s.id) {
+    items.push({ label: "Rename…", run: () => renameSheet(s) });
+    items.push(s.archived ? { label: "Unarchive", run: () => setArchived(s, false) }
+                          : { label: "Archive", run: () => setArchived(s, true) });
+  }
+  if (s.path) items.push({ label: "Copy path", run: async () => toast((await copyText(s.path)) ? "Copied" : "Could not copy", false) });
+  if (s.id) {
+    items.push("-");
+    if (!s.live) items.push({ label: "Resume chat", run: () => continueSubject(s, false) });
+    items.push({ label: "Fork into a new chat", run: () => continueSubject(s, true) });
+  }
+  if (s.live) {
+    items.push("-");
+    items.push({ label: "Stop agent", danger: true, run: () => stopAgent(s.live) });
+  }
+  return items;
+}
+
+function setArchived(s, on) {
+  command({ type: "archive", agent: s.agent, id: s.id, on }, () => toast(on ? "Archived" : "Unarchived"));
+}
+
+function continueSubject(s, fork) {
+  command({ type: "resume", agent: s.agent, id: s.id, fork }, (r) => {
+    toast(fork ? "Forked into a new chat" : "Resuming…");
+    st.openKey = r.key;
+    agentsChanged();
+  });
+}
+
+function stopAgent(a) {
+  if (!confirm(`Stop ${a.agent}?\n\nIts chat stays; you can resume it.`)) return;
+  command({ type: "stop", key: a.key }, () => toast("Stopped"));
+}
+
+// Rename, in the sheet itself: a field, prefilled with the name it has.
+function renameSheet(s) {
+  const form = el("form", "sheet-form");
+  const input = el("input");
+  input.type = "text";
+  input.value = s.title || "";
+  input.placeholder = "Chat name";
+  input.maxLength = 200;
+  input.setAttribute("aria-label", "Chat name");
+  const save = el("button", "", "Save");
+  save.type = "submit";
+  form.append(input, save);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const title = input.value.trim();
+    closeSheet();
+    command({ type: "rename", agent: s.agent, id: s.id, title }, () => toast(title ? `Renamed to ${title}` : "Name cleared"));
+  };
+  openSheet([{ title: "Rename chat" }, { node: form }]);
+  input.focus();
+  input.select();
+}
+
+// The sheet: at the pointer on a desk, from the bottom on a phone. Items are
+// {label, run, danger?}, {title}, {node}, or "-" for a rule.
+let sheetFrom = null;  // what had focus, to give it back
+let sheetAt = 0;       // when it opened: the lift after a long press is not a tap on the backdrop
+function openSheet(items, x, y) {
+  const box = $("sheet");
+  box.replaceChildren();
+  for (const it of items) {
+    if (it === "-") { box.append(el("hr")); continue; }
+    if (it.node) { box.append(it.node); continue; }
+    if (it.title !== undefined) { box.append(el("div", "sheet-title", it.title)); continue; }
+    const b = el("button", "sheet-item" + (it.danger ? " danger" : ""), it.label);
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    b.onclick = () => { closeSheet(); it.run(); };
+    box.append(b);
+  }
+  if (box.hidden) sheetFrom = document.activeElement;
+  sheetAt = Date.now();
+  box.hidden = false;
+  $("sheet-back").hidden = false;
+  const at = !narrow.matches && x !== undefined;
+  box.classList.toggle("at", at);
+  $("sheet-back").classList.toggle("dim", !at);  // a sheet dims the page; a menu does not
+  if (at) {
+    const r = box.getBoundingClientRect();
+    box.style.setProperty("--sheet-x", Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px");
+    box.style.setProperty("--sheet-y", Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px");
+  }
+  const first = box.querySelector("button, input");
+  if (first && !coarse.matches) first.focus();
+}
+
+function closeSheet() {
+  const box = $("sheet");
+  if (box.hidden) return;
+  box.hidden = true;
+  $("sheet-back").hidden = true;
+  box.replaceChildren();
+  if (sheetFrom && sheetFrom.isConnected && !coarse.matches) sheetFrom.focus();
+  sheetFrom = null;
+}
+$("sheet-back").onclick = () => { if (Date.now() - sheetAt > 500) closeSheet(); };
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("sheet").hidden) { e.preventDefault(); e.stopImmediatePropagation(); closeSheet(); }
+}, true);
+
+// A row's actions open on a long press (a phone) or a right-click (a desk):
+// never on a tap, since opening a chat resumes its agent, and "tap it, then
+// archive it" would start what was meant to be put away.
+function holdMenu(b, actions) {
+  let timer = 0, x = 0, y = 0, held = false;
+  const cancel = () => { if (timer) clearTimeout(timer); timer = 0; };
+  const open = (cx, cy) => {
+    held = true;
+    if (!cx && !cy) { const r = b.getBoundingClientRect(); cx = r.left + 24; cy = r.bottom; }  // from the keyboard
+    openSheet(actions(), cx, cy);
+  };
+  b.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    held = false;
+    x = e.clientX;
+    y = e.clientY;
+    cancel();
+    timer = setTimeout(() => { timer = 0; open(e.clientX, e.clientY); }, 450);
+  });
+  b.addEventListener("pointermove", (e) => { if (timer && Math.hypot(e.clientX - x, e.clientY - y) > 8) cancel(); });
+  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) b.addEventListener(ev, cancel);
+  // The click that follows a long press is the press, not a tap.
+  b.addEventListener("click", (e) => { if (held) { held = false; e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+  b.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    cancel();
+    if ($("sheet").hidden) open(e.clientX, e.clientY);
+  });
+}
+
+$("chat-menu").onclick = (e) => {
+  const s = currentSubject();
+  if (!s) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  openSheet(chatActions(s), r.left, r.bottom + 4);
+};
 
 // The theme: Auto follows the system, the rest are the terminal's own.
 const THEMES = ["auto", "light", "dark", "dracula", "warm", "contrast"];
@@ -491,10 +686,11 @@ function renderHead() {
   if (!open) { $("prompt").hidden = true; $("resume-bar").hidden = true; setTitle(); return; }
   const a = liveAgent();
   const found = findChat(st.chat.path);
-  if (!st.chat.title && found) st.chat.title = found.chat.title;
+  if (found && found.chat.title) st.chat.title = found.chat.title;
   $("chat-title").textContent = (a && a.title) || st.chat.title || "Chat";
   renderMeta(a, found);
   $("stop").hidden = !a;
+  $("chat-menu").hidden = !a && !found;
   $("interrupt").hidden = !(a && a.status === "working");
   const wasHidden = $("prompt").hidden;
   renderPermission(a);

@@ -155,6 +155,10 @@ h2 {
 .row.agent .w { color: var(--working); }
 .row.agent.waiting .w { color: var(--waiting); font-weight: 600; }
 .row .nolead { grid-row: 1 / span 2; width: 8px; }
+/* A long press opens the row's actions: no text selection, no native callout. */
+.row { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.row.archived .t, .row.archived .m { color: var(--dim); }
+.row.archived .w { font-style: italic; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--exited); flex: none; }
 .dot.working { background: var(--working); animation: pulse 1.4s ease-in-out infinite; }
 .dot.waiting { background: var(--waiting); }
@@ -186,6 +190,40 @@ h2 {
 .more {
   background: none; border: 0; color: var(--accent); padding: 6px 8px 6px 28px; font-size: 13px; text-align: left; width: 100%;
 }
+
+/* The actions of a chat: a menu at the pointer on a desk, a sheet from the
+   bottom on a phone. */
+#sheet-back { position: fixed; inset: 0; z-index: 20; }
+#sheet-back.dim { background: rgba(0, 0, 0, .25); }
+#sheet {
+  position: fixed; z-index: 21; background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; min-width: 220px;
+  max-width: min(360px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto;
+}
+#sheet.at { left: var(--sheet-x, 8px); top: var(--sheet-y, 8px); }
+#sheet:not(.at) {
+  left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); max-width: none; border-radius: 16px;
+}
+.sheet-title {
+  font-weight: 600; padding: 8px 12px 6px; color: var(--dim); font-size: 12.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sheet-item {
+  text-align: left; background: none; border: 0; border-radius: 8px; padding: 10px 12px; min-height: 40px;
+  font-size: 14px; width: 100%; color: var(--ink);
+}
+.sheet-item:hover, .sheet-item:focus-visible { background: color-mix(in srgb, var(--line) 55%, transparent); }
+.sheet-item.danger { color: var(--bad); }
+#sheet hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+.sheet-form { display: flex; gap: 8px; padding: 4px 8px 8px; }
+.sheet-form input {
+  flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  border-radius: 8px; padding: 9px 12px; font-size: 16px;
+}
+.sheet-form button {
+  border: 0; border-radius: 999px; padding: 0 16px; background: var(--accent); color: var(--accent-ink); font-weight: 650;
+}
+@media (pointer: coarse) { .sheet-item { min-height: 48px; font-size: 15px; } }
 
 /* --------------------------------------------------------------------- main */
 #main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }

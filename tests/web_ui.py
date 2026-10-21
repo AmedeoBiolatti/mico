@@ -386,6 +386,97 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
         check(app.attrs.get('data-screen') == 'list' and len(find(phone, 'button', 'row')) == 3,
               'a phone opened on nothing shows the list')
 
+        # A chat's actions: a right-click on its row (a long press on a phone)
+        # opens a sheet; rename and archive go through the daemon and come
+        # back in the listing. Opening a chat resumes its agent, so none of
+        # this goes through a tap.
+        page = Page(debug_port, '')
+        page.open(base, 1200, 900, False)
+        check(page.wait("document.querySelectorAll('#folders .row').length >= 3"), 'the list is up for its actions')
+        row_of = lambda title: ("[...document.querySelectorAll('#folders .row')]"
+                                f".find(r => r.querySelector('.t').textContent === {json.dumps(title)})")
+        menu_on = lambda title: page.eval(f"(() => {{ const r = {row_of(title)}; if (!r) return false; "
+                                          "r.dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, "
+                                          "clientX: 120, clientY: 300})); return !document.getElementById('sheet').hidden; })()")
+        items = lambda: page.eval("[...document.querySelectorAll('#sheet .sheet-item')].map(b => b.textContent)")
+        check(menu_on('Markdown fixture chat') and items() == ['Open', 'Rename…', 'Archive', 'Copy path', 'Resume chat',
+                                                                  'Fork into a new chat'],
+              f'a right-click on a stored chat offers its actions: {items()}')
+        check(page.eval("document.getElementById('sheet').classList.contains('at') && "
+                        "document.getElementById('sheet').getBoundingClientRect().left >= 100"),
+              'on a desk the menu opens at the pointer')
+        page.eval("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+        check(page.eval("document.getElementById('sheet').hidden"), 'Escape closes it')
+        check(menu_on('Markdown fixture chat') and page.eval(
+            "(() => { [...document.querySelectorAll('#sheet .sheet-item')].find(b => b.textContent === 'Rename…').click(); "
+            "const i = document.querySelector('#sheet input'); if (!i) return false; i.value = 'Renamed fixture'; "
+            "document.querySelector('#sheet form').requestSubmit(); return true; })()"), 'Rename… offers a field')
+        check(page.wait(f"!!{row_of('Renamed fixture')}"), 'the new name comes back in the listing')
+        check(page.eval(f"!{row_of('Markdown fixture chat')}"), 'in place of the old one')
+        check(menu_on('Renamed fixture') and page.eval(
+            "(() => { [...document.querySelectorAll('#sheet .sheet-item')].find(b => b.textContent === 'Archive').click(); return true; })()")
+              and page.wait(f"!{row_of('Renamed fixture')} && document.getElementById('sheet').hidden"),
+              'Archive puts the chat away')
+        toggle = "document.getElementById('archived-toggle')"
+        check(page.eval(f"!{toggle}.hidden && {toggle}.textContent === 'Show 1 archived'"),
+              'the list says how many are put away')
+        page.eval(f"{toggle}.click()")
+        check(page.wait(f"{row_of('Renamed fixture')}?.classList.contains('archived')"), 'shown again on request, marked')
+        check(page.eval(f"{toggle}.textContent === 'Hide archived' && {row_of('Renamed fixture')}.querySelector('.w').textContent === 'archived'"),
+              'the row says it is archived')
+        check(menu_on('Renamed fixture') and items()[2] == 'Unarchive' and page.eval(
+            "(() => { [...document.querySelectorAll('#sheet .sheet-item')].find(b => b.textContent === 'Unarchive').click(); return true; })()")
+              and page.wait(f"{row_of('Renamed fixture')} && !{row_of('Renamed fixture')}.classList.contains('archived')"),
+              'Unarchive brings it back')
+        check(page.wait(f"{toggle}.hidden"), 'and the toggle goes with the last archived chat')
+        check(menu_on('Renamed fixture') and page.eval(
+            "(() => { [...document.querySelectorAll('#sheet .sheet-item')].find(b => b.textContent === 'Rename…').click(); "
+            "document.querySelector('#sheet input').value = ''; document.querySelector('#sheet form').requestSubmit(); return true; })()")
+              and page.wait(f"!!{row_of('Markdown fixture chat')}"), 'an empty name gives the chat its own title back')
+        # A long press, as a phone does it: the sheet opens before the finger lifts, and the lift is not a tap.
+        check(page.eval(f"(() => {{ const r = {row_of('Pictures fixture')}; const o = {{bubbles: true, pointerType: 'touch', clientX: 50, clientY: 400}}; "
+                        "r.dispatchEvent(new PointerEvent('pointerdown', o)); return true; })()")
+              and page.wait("!document.getElementById('sheet').hidden", 3), 'a long press opens the actions')
+        page.eval(f"(() => {{ const r = {row_of('Pictures fixture')}; "
+                  "r.dispatchEvent(new PointerEvent('pointerup', {bubbles: true, pointerType: 'touch'})); "
+                  "document.getElementById('sheet-back').click(); r.click(); })()")
+        check(page.eval("!document.getElementById('sheet').hidden && !st.chat && "
+                        "document.querySelector('#sheet .sheet-title').textContent === 'Pictures fixture'"),
+              'the lift after it neither closes the sheet nor opens the chat')
+        page.eval("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+        # The same actions from the open chat's own ⋯, and a running list that
+        # puts an archived, exited agent away as the terminal's list does.
+        page.eval(f"{row_of('Markdown fixture chat')}.click()")
+        check(page.wait("document.querySelectorAll('#events .ev').length >= 4 && !document.getElementById('chat-menu').hidden"),
+              'the chat opens with its ⋯')
+        page.eval("document.getElementById('chat-menu').click()")
+        check(page.eval("document.querySelector('#sheet .sheet-title')?.textContent") == 'Markdown fixture chat' and
+              'Rename…' in items(), 'the ⋯ offers the open chat its actions')
+        page.eval("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+        page.eval("st.ws.onmessage = null")  # what follows is injected; the daemon's own listing must not replace it
+        gone = {'key': 'gone', 'agent': 'claude', 'status': 'exited', 'archived': True, 'cwd': cwd,
+                'transcript': '/nowhere/gone.jsonl', 'session_id': 'gone-id', 'title': 'Gone agent'}
+        page.eval(f"st.showArchived = false; receive({json.dumps({'type': 'agents', 'agents': [gone, dict(gone, key='kept', archived=False, title='Kept agent')]})})")
+        check(page.wait("document.querySelectorAll('#agents .row').length === 1") and
+              page.eval("document.querySelector('#agents .row .t').textContent") == 'Kept agent',
+              'a stopped agent whose chat is archived leaves the running list; one not archived stays')
+        page.eval(f"{toggle}.hidden = false; st.showArchived = true; renderSide()")
+        check(page.wait("document.querySelectorAll('#agents .row').length === 2"), 'until archived chats are shown')
+        # Old chats fold: this week's show, a few at least, the rest behind one row.
+        now = time.time()
+        many = [{'agent': 'claude', 'id': f'old-{i}', 'path': f'/nowhere/old-{i}.jsonl', 'title': f'Chat {i}', 'cwd': cwd,
+                 'mtime': now - (i * 3600 if i < 2 else 10 * 86400 + i), 'bytes': 1, 'sub': '', 'archived': False}
+                for i in range(12)]
+        # Headless Chrome may hold the frame the sidebar is drawn in until one is asked for.
+        page.eval(f"(async () => {{ st.showArchived = false; st.agents = []; receive({json.dumps({'type': 'folders', 'folders': [{'path': cwd, 'name': 'project', 'subs': [], 'chats': many}]})}); "
+                  "await new Promise(r => requestAnimationFrame(r)); })()")
+        check(page.wait("document.querySelectorAll('#folders .row').length === 3") and
+              page.eval("document.querySelector('#folders .more')?.textContent") == 'Show 9 older',
+              'a folder shows this week\'s chats, three at least, and folds the older ones')
+        page.eval("document.querySelector('#folders .more').click()")
+        check(page.wait("document.querySelectorAll('#folders .row').length === 12"), 'which one click unfolds')
+        page.call('Page.close')
+
         # Pictures, a chart, an equation, and how much of the work shows.
         page = Page(debug_port, '')
         page.open(f'{base}&chat={chat2}', 1200, 900, False)

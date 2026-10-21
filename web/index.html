@@ -43,6 +43,7 @@
       <section>
         <h2>Folders</h2>
         <div id="folders"></div>
+        <button id="archived-toggle" class="more" type="button" hidden>Show archived</button>
       </section>
     </div>
   </aside>
@@ -61,6 +62,7 @@
       <button id="work-toggle" class="ghost" type="button" aria-controls="work-panel" aria-expanded="false">Work</button>
       <button id="interrupt" class="ghost" type="button" hidden title="Interrupt what it is doing (Esc)">Interrupt</button>
       <button id="stop" class="ghost danger" type="button" hidden>Stop</button>
+      <button id="chat-menu" class="ghost" type="button" aria-label="Chat actions" aria-haspopup="menu" title="Rename, archive, fork…">⋯</button>
     </header>
     <div id="chat-workspace">
     <div id="conversation">
@@ -110,5 +112,7 @@
     </div>
   </main>
 </div>
+<div id="sheet-back" hidden></div>
+<div id="sheet" role="menu" aria-label="Chat actions" hidden></div>
 </body>
 </html>

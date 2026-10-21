@@ -149,6 +149,28 @@ int run_api_test() {
   unlink(child.c_str()); unlink(meta.c_str());
   rmdir((run_dir + "/subagents").c_str()); rmdir(run_dir.c_str());
 
+  // --- mico's own marks on a chat: a name, an archive flag ---------------------
+  c.receive(R"({"type":"rename","rid":"m1","agent":"claude","id":")" + id + R"(","title":" Loss  curves\n"})");
+  got = poll_all(c);
+  check(has(got, R"("rid":"m1","ok":true)") && has(got, R"("title":"Loss curves")"),
+        "a rename answers, and the listing comes again under the new name");
+  c.receive(R"({"type":"archive","rid":"m2","agent":"claude","id":")" + id + R"(","on":true})");
+  got = poll_all(c);
+  check(has(got, R"("rid":"m2","ok":true)") && has(got, R"("archived":true)"),
+        "archiving marks the chat in the listing");
+  c.receive(R"({"type":"archive","rid":"m3","agent":"claude","id":")" + id + R"(","on":false})");
+  got = poll_all(c);
+  check(has(got, R"("rid":"m3","ok":true)") && has(got, R"("archived":false)"), "and unarchiving clears the mark");
+  c.receive(R"({"type":"rename","rid":"m4","agent":"claude","id":")" + id + R"(","title":""})");
+  got = poll_all(c);
+  check(has(got, R"("rid":"m4","ok":true)") && has(got, R"("title":"draw the loss curve")"),
+        "an empty name gives the chat its own title back");
+  c.receive(R"({"type":"archive","rid":"m5","agent":"claude","id":"no-such-chat","on":true})");
+  got = poll_all(c);
+  check(has(got, R"("rid":"m5","ok":false)") && has(got, "no chat"), "a chat the listing does not name cannot be marked");
+  c.receive(R"({"type":"rename","rid":"m6","agent":"","id":"","title":"x"})");
+  check(has(poll_all(c), R"("rid":"m6","ok":false)"), "nor one with no agent and id");
+
   // --- what a client may not do ---------------------------------------------
   c.receive(R"({"type":"open","path":"/etc/passwd"})");
   got = poll_all(c);
