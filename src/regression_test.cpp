@@ -213,6 +213,29 @@ int run_regression_tests() {
           "stopped orphans and Monitor events are task activity, not user text");
   }
 
+  // What passes between agents is their work: shown with the steps, and put
+  // away with them at Minimal, which keeps the conversation alone.
+  {
+    const std::string path = base + "/peer-density.jsonl";
+    put(path,
+        R"({"type":"session_meta","payload":{"id":"peer-density","cwd":"/tmp"}})" "\n"
+        R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"PEERASK"}]}})" "\n"
+        R"({"type":"response_item","payload":{"type":"agent_message","author":"/root/match_evidence_review","recipient":"/root","content":[{"type":"input_text","text":"PEERTEXT"}]}})" "\n"
+        R"({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"PEERANSWER"}]}})" "\n");
+    ChatRenderer chat;
+    chat.open(path, &codex_adapter());
+    Surface sf; sf.resize(100, 20);
+    Painter painter(sf, {0, 0, 100, 20});
+    chat.render(painter, Theme{}, Filters{});
+    check(screen(sf).find("match_evidence_review") != std::string::npos && screen(sf).find("PEERTEXT") != std::string::npos,
+          "an agent's message to another shows at Normal density, with who sent it to whom");
+    Filters minimal; minimal.density = Density::Minimal;
+    chat.render(painter, Theme{}, minimal);
+    check(screen(sf).find("match_evidence_review") == std::string::npos && screen(sf).find("PEERTEXT") == std::string::npos &&
+              screen(sf).find("PEERASK") != std::string::npos && screen(sf).find("PEERANSWER") != std::string::npos,
+          "and is put away at Minimal, which keeps the conversation");
+  }
+
   {
     const std::string wrapped = "<pasted_content id=\"9253\">\ndid you receive the answer?\n</pasted_content id=\"9253\">";
     auto cleaned = [&](const std::string& input) {

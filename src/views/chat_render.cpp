@@ -308,7 +308,8 @@ bool ChatRenderer::visible(size_t i, const Filters& f) const {
     case EventKind::ToolCall: return f.show_tools() && (!activity_tool_ || e.tool_id != activity_tool_);
     case EventKind::TaskStatus: return f.show_tools() || !e.ok;
     case EventKind::Question: return true;
-    case EventKind::Peer: return true;
+    // What passes between agents is their work: Minimal keeps the conversation.
+    case EventKind::Peer: return f.show_tools();
     // A tool's image (a screenshot) shows with tool calls; the user's always.
     case EventKind::Image: return !e.tool_id || f.show_tools();
     case EventKind::ToolResult:

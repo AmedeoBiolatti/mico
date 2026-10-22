@@ -516,7 +516,8 @@ details.tool .out.err { border-color: var(--bad); }
   .newrow button { padding: 9px 16px; font-size: 14px; }
   .row { min-height: 52px; }
 }
-#events[data-view="minimal"] .ev.thinking, #events[data-view="minimal"] .ev.notice:not(.bad) { display: none; }
+#events[data-view="minimal"] .ev.thinking, #events[data-view="minimal"] .ev.notice:not(.bad),
+#events[data-view="minimal"] .ev.peer { display: none; }
 
 /* Pictures, charts and equations */
 figure.pic { margin: 10px 0; }

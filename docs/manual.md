@@ -1189,7 +1189,8 @@ chat. What passes between the agents is drawn as messages rather than as
 tool output or as turns of yours: a session's message to a subagent (omp's
 `<irc>` envelope), a subagent's message back, and an omp subagent's result
 when it finishes (`✉ MarketReview · completed · 4m49s`, then its report).
-Each is shown whole up to eight lines; a click opens a longer one. omp's
+Each is shown whole up to eight lines, at every density but Minimal, which
+keeps the conversation alone; a click opens a longer one. omp's
 `write` to `agent://<name>` reads as `→ <name>: <message>`.
 
 A subagent's chat has a **Parent chat** button where a saved chat has
