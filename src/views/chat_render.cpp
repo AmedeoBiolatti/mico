@@ -156,6 +156,7 @@ void ChatRenderer::toggle(uint64_t id) {
 }
 
 void ChatRenderer::reset() {
+  selection_view_ = {};
   activity_tool_ = 0;
   roles_.clear();
   fold_of_.clear();
@@ -1758,6 +1759,9 @@ void ChatRenderer::seek_from_bar(int thumb_top) {
 
 void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
   last_h_ = p.height();
+  selection_view_.area = p.rect();
+  selection_view_.key = conv_.path();
+  selection_view_.rows.clear();
   p.clear(Style{th.text, th.panel});
 
   if (!conv_.file().is_open()) {
@@ -1840,6 +1844,16 @@ void ChatRenderer::render(Painter& p, const Theme& th, const Filters& f) {
   // the bottom edge.
   const int first = std::max(0, total - p.height() - scroll_);
   last_pad_ = 0;
+
+  // Save identities for the frame before trim_window() can drop its layout.
+  // File offsets stay stable when older transcript lines are indexed.
+  int into = 0;
+  if (first < total)
+    for (int i = first; i > 0 && rows_[size_t(i - 1)].src_line == rows_[size_t(first)].src_line; --i) ++into;
+  for (int i = first; i < std::min(total, first + p.height()); ++i) {
+    if (i > first) into = rows_[size_t(i)].src_line == rows_[size_t(i - 1)].src_line ? into + 1 : 0;
+    selection_view_.rows.push_back({conv_.file().line_offset(rows_[size_t(i)].src_line), into});
+  }
 
   question_hits_.clear();
   link_hits_.clear();

@@ -103,6 +103,12 @@ class SessionPane final : public Pane {
     return View::Chat;
   }
   bool showing_raw() const { return effective_view() == View::Raw; }
+  const TextSelectionView* text_selection_view(Point at) const override {
+    if (showing_raw()) return nullptr;
+    if (work_open_)
+      if (const auto* view = work_chat_.text_selection_view(at)) return view;
+    return s_->transcript().empty() ? nullptr : chat_.text_selection_view(at);
+  }
 
   void render(Painter& p, bool focused) override {
     work_rect_ = Rect{};
