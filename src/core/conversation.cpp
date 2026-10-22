@@ -95,6 +95,7 @@ void Conversation::clear_facts() {
 // Images in a line, whichever agent wrote it: one Image event each, a tool
 // result's carrying its tool's id. Their pixels stay in the file.
 void Conversation::add_images(std::string_view line, size_t before) {
+  if (!adapter_->owns_images(line)) return;
   const std::vector<LineImage> images = line_images(line);
   if (images.empty()) return;
   uint64_t tool = 0;

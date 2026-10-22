@@ -73,6 +73,10 @@ std::vector<LineImage> line_images(std::string_view line) {
   std::vector<LineImage> out;
   if (!text::contains(line, "\"image")) return out;  // both patterns hold it
   each_image(line, [&](const std::string& media, std::string_view data) {
+    // Claude's tool-result records carry the result twice, in the message
+    // and in a toolUseResult mirror: the same bytes again are the same image.
+    for (const LineImage& seen : out)
+      if (seen.len == data.size() && line.substr(seen.at, seen.len) == data) return true;
     out.push_back(LineImage{media, size_t(data.data() - line.data()), data.size()});
     return out.size() < 64;
   });
