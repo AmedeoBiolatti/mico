@@ -225,6 +225,20 @@ void CodexAdapter::observe(std::string_view raw, SessionState& st) const {
   });
 }
 
+// Pictures in a compacted record are copies: the replacement history it
+// carries is for the model, and the chat has already shown them where they
+// were. An event_msg is a mirror of a response_item the same way.
+bool CodexAdapter::owns_images(std::string_view raw) const {
+  bool copy = false;
+  js::scan_keys(raw, [&](std::string_view k, std::string_view rest) {
+    if (k != "type") return true;
+    const std::string_view type = js::string_body(rest);
+    copy = type == "compacted" || type == "event_msg";
+    return false;
+  });
+  return !copy;
+}
+
 void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>& out) const {
   // Codex writes "type" before "payload", so the 60% of a rollout that is
   // token counts, world state and event mirrors is rejected after three

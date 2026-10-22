@@ -6086,6 +6086,24 @@ int run_selftest() {
     check(transcript_image(pi_line, 0, &media, &data) && media == "image/webp", "images: pi's image objects are found");
     check(count_images(R"({"text":"a message saying \"type\":\"image\" in prose"})") == 0,
           "images: text that mentions an image block is not one");
+    // Claude writes a tool result twice in its record: in the message, and in
+    // a toolUseResult mirror. One picture, not two; two different ones stay.
+    const std::string image_block =
+        R"({"type":"image","source":{"type":"base64","media_type":"image/png","data":")" + png_b64 + R"("}})";
+    const std::string mirrored = R"({"type":"user","message":{"content":[{"type":"tool_result","content":[)" + image_block +
+                                 R"(]}]},"toolUseResult":[)" + image_block + "]}";
+    check(count_images(mirrored) == 1, "images: a tool result's toolUseResult mirror is not a second image");
+    const std::string other = png_b64.substr(0, png_b64.size() - 8) + "AAAAAAAA";
+    const std::string two = R"({"content":[)" + image_block + "," +
+                            R"({"type":"image","source":{"type":"base64","media_type":"image/png","data":")" + other + R"("}}]})";
+    check(count_images(two) == 2, "images: two different images in a line are two");
+    // codex's compacted record repeats the history, pictures included, and
+    // an event_msg mirrors a response_item: neither draws them again.
+    check(!codex_adapter().owns_images(R"({"timestamp":"t","type":"compacted","payload":{"message":"..."}})") &&
+              !codex_adapter().owns_images(R"({"timestamp":"t","type":"event_msg","payload":{"type":"item_completed"}})") &&
+              codex_adapter().owns_images(R"({"timestamp":"t","type":"response_item","payload":{"type":"custom_tool_call_output"}})") &&
+              claude_adapter().owns_images(mirrored),
+          "images: codex's compacted history and event mirrors do not draw their pictures again");
 
     math::configure(math::Config{true, 10, 20, 0x56B6C2});
     const math::Image* pic = math::picture("test:png", [&](std::string& b) { b = bytes; return true; }, 40, 10, "[image]");

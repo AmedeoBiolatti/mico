@@ -17,6 +17,7 @@ class CodexAdapter final : public Adapter {
   // transcript.cpp
   void parse(std::string_view raw, Arena& arena, std::vector<Event>& out) const override;
   void observe(std::string_view raw, SessionState& st) const override;
+  bool owns_images(std::string_view raw) const override;
   void seed_state(SessionState& st) const override;
 
   // tools.cpp

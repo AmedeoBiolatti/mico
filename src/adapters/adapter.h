@@ -133,6 +133,12 @@ class Adapter {
   // and would otherwise be rejected before anyone looked at them.
   virtual void observe(std::string_view raw, SessionState& st) const {}
 
+  // Whether images found in this line are the line's own. Images are read
+  // from every line whatever parse() made of it; a record that only mirrors
+  // another (codex's event_msg copy of a command's output) says no, or its
+  // pictures would be drawn twice.
+  virtual bool owns_images(std::string_view raw) const { return true; }
+
   // Fills `st` with the fields this agent reports, values left empty. Lets the
   // chip bar appear before the first turn, so model/effort can be set on a
   // fresh session the way omp's harness does it.
