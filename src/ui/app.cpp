@@ -1969,6 +1969,7 @@ void App::handle_mouse(const MouseEvent& m) {
     // A fresh press drops the old highlight and arms a new selection.
     cancel_selection();
     sel_dragging_ = true;
+    sel_ctrl_ = m.ctrl;
     sel_anchor_ = sel_cursor_ = m.pos;
     sel_area_ = hit ? inner_of(*hit) : Rect{m.pos.x, m.pos.y, 1, 1};
     if (hit) {
@@ -2031,9 +2032,15 @@ void App::handle_mouse(const MouseEvent& m) {
   // A click on a link: opened where the user's terminal is, which only the
   // loop serving that terminal knows.
   if (std::string url = hit->pane->take_url(); !url.empty()) {
-    // A file opens in the editor, beside the chat, on the machine the file is
-    // on: the daemon's. A web link opens where the user is.
-    if (url.starts_with("file://")) open_in_editor(url);
+    // Ctrl+click uses the client's system opener. Plain file clicks open an
+    // editor beside the chat, on the daemon's machine.
+    if (url.starts_with("file://")) {
+      if (sel_ctrl_ || m.ctrl) {
+        // The editor's line fragment is not part of the file's name. Decode
+        // and re-encode so spaces, # and percent signs remain unambiguous.
+        if (const std::string path = file_url_path(url); !path.empty()) open_url_ = file_url(path);
+      } else open_in_editor(url);
+    }
     else if (url.starts_with("mico-chat:")) open_chat_at(url.substr(10));
     else open_url_ = std::move(url);
   }
@@ -2044,6 +2051,7 @@ void App::handle_mouse(const MouseEvent& m) {
 
 void App::cancel_selection() {
   sel_dragging_ = false;
+  sel_ctrl_ = false;
   sel_has_ = false;
   sel_copy_pending_ = false;
   sel_pane_ = nullptr;
@@ -2171,6 +2179,19 @@ void App::handle_key(const KeyEvent& k) {
   // Ctrl+L redraws everything, the usual terminal escape hatch for a screen
   // left dirty by something outside the program.
   if (k.is_ctrl('l')) { force_redraw(); return; }
+
+  // Previous/next region, in the same order as Alt+1/2/3. Handle this before
+  // the pane gets the key, including while editing a draft or in raw view.
+  if (k.alt && !k.ctrl && !k.shift && (k.key == Key::Left || k.key == Key::Right)) {
+    const int delta = k.key == Key::Left ? -1 : 1;
+    if (compact_) {
+      compact_show(Screen(std::clamp(int(screen_) + delta, int(Screen::Folders), int(Screen::Main))));
+    } else if (!placed_.empty()) {
+      focus_ = placed_[size_t(std::clamp(int(focus_) + delta, 0, int(placed_.size()) - 1))].index;
+      mark_dirty();
+    }
+    return;
+  }
 
   // Alt+1, 2, 3 (or Ctrl+1, 2, 3, where the terminal can send them): the
   // folders, the chats, the chat itself (where its message box takes the
