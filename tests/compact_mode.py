@@ -4,8 +4,8 @@
 Against an isolated daemon, two tracked folders and a stand-in for claude,
 driven by taps as a phone's terminal sends them: the chats come first, ‹
 goes back to the folders, a folder goes on to its chats, a chat opens it,
-≡ opens the menu, Alt+1/2/3 and Ctrl+1/2/3 move between the three. A wide client gets the
-side-by-side layout as before.
+≡ opens the menu, Alt+1/2/3, Ctrl+1/2/3 and Alt+Left/Right move between the three.
+A wide client gets the side-by-side layout, with the same focus shortcuts.
 Run: python3 tests/compact_mode.py build/mico
 """
 import json
@@ -159,13 +159,55 @@ with tempfile.TemporaryDirectory(prefix='mico-compact-') as directory:
         phone.wait('Ctrl+1', lambda s: top(s).strip().startswith('mico') and 'Folders' in top(s))
         phone.send(2, b'\x1b[27;5;51~')
         phone.wait('Ctrl+3', lambda s: '‹ Chats' in top(s))
+
+        # Relative focus works with a draft, stops at the ends, and preserves
+        # the draft as panes are rebuilt in the compact layout.
+        phone.send(2, b'\x1b[200~KEEP_DRAFT\x1b[201~')
+        phone.wait('the draft', lambda s: 'KEEP_DRAFT' in s)
+        phone.send(2, b'\x1b[1;3D')
+        phone.wait('Alt+Left to Chats', lambda s: '‹ Folders' in top(s))
+        phone.send(2, b'\x1b[1;3D')
+        phone.wait('Alt+Left to Folders', lambda s: 'Folders' in top(s) and '‹' not in top(s))
+        phone.send(2, b'\x1b[1;3D')
+        phone.wait('Alt+Left stops at Folders', lambda s: 'Folders' in top(s) and '‹' not in top(s))
+        phone.send(2, b'\x1b[1;3C')
+        phone.wait('Alt+Right to Chats', lambda s: '‹ Folders' in top(s))
+        phone.send(2, b'\x1b[1;3C')
+        phone.wait('Alt+Right to Chat', lambda s: '‹ Chats' in top(s) and 'KEEP_DRAFT' in s)
+        phone.send(2, b'\x1b[1;3C')
+        phone.wait('Alt+Right stops at Chat', lambda s: '‹ Chats' in top(s) and 'KEEP_DRAFT' in s)
+
+        # A raw agent terminal must not swallow pane navigation.
+        phone.send(2, b'\x1bOQ')  # F2
+        phone.wait('raw view', lambda s: 'FAKE CLAUDE READY' in s and 'KEEP_DRAFT' not in s)
+        phone.send(2, b'\x1b[1;3D')
+        phone.wait('Alt+Left from raw view', lambda s: '‹ Folders' in top(s))
+        phone.send(2, b'\x1b[1;3C')
+        phone.wait('Alt+Right back to raw view', lambda s: '‹ Chats' in top(s) and 'FAKE CLAUDE READY' in s)
+        phone.send(2, b'\x1bOQ')
+        phone.wait('the preserved draft', lambda s: 'KEEP_DRAFT' in s)
         phone.sock.close()
 
         # A wide terminal: side by side, the tab strip back.
         desk = Client(140, 36)
         s = desk.wait('the wide layout', lambda s: 'Sessions' in top(s) and 'Projects' in s)
+
+        def focused_menu(keys, text):
+            # F9 opens the focused pane's actions: observe real key routing
+            # instead of relying on the title bar's theme colours.
+            desk.send(2, keys + b'\x1b[20~')
+            desk.wait(f'focused menu: {text}', lambda s: text in s)
+            desk.send(2, b'\x1b')
+            desk.receive(0.1)
+
+        focused_menu(b'\x1b1\x1b[1;3C', 'Rename')  # Projects -> Chats
+        focused_menu(b'\x1b[1;3C', 'Work panel')    # Chats -> Chat
+        focused_menu(b'\x1b[1;3C', 'Work panel')    # stop at Chat
+        focused_menu(b'\x1b[1;3D', 'Rename')        # Chat -> Chats
+        focused_menu(b'\x1b[1;3D', 'Remove folder') # Chats -> Projects
+        focused_menu(b'\x1b[1;3D', 'Remove folder') # stop at Projects
         desk.sock.close()
-        print('compact mode: chats, folders, a chat, the menu, Alt+ and Ctrl+1/2/3; wide unchanged passed')
+        print('compact mode: touch, direct and relative pane focus, draft retention, raw view; wide focus passed')
     finally:
         daemon.terminate()
         try:

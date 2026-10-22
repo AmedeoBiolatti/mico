@@ -14,6 +14,7 @@
 #include "adapters/screen.h"
 #include "base/json.h"
 #include "base/jsonl.h"
+#include "base/path.h"
 #include "core/session.h"
 #include "core/store.h"
 #include "adapters/user_text.h"
@@ -1637,7 +1638,7 @@ int run_regression_tests() {
     put(path, "{\"type\":\"user\",\"cwd\":" + js::quote(project) +
               ",\"sessionId\":\"file-link\",\"message\":{\"content\":\"open the file\"}}\n" +
               "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":" +
-              js::quote(answer) + "}]}}\n");
+              js::quote(answer + "\n[Browser](https://example.org/path#section)") + "}]}}\n");
     EnvScope visual("VISUAL", "/bin/sh -c 'shift; cat \"$@\"; exec sleep 60' file-reader");
     App app;
     app.select_stored(path);
@@ -1649,6 +1650,41 @@ int run_regression_tests() {
         if (links::url(sf.at(x, y).link) == target) { link = {x, y}; break; }
     check(link.x >= 0, "the existing file is clickable in the chat");
     if (link.x >= 0) {
+      const auto click = [&](Point at, bool ctrl_press, bool ctrl_release) {
+        for (MouseKind kind : {MouseKind::Press, MouseKind::Release}) {
+          MouseEvent m{kind, MouseButton::Left, at};
+          m.ctrl = kind == MouseKind::Press ? ctrl_press : ctrl_release;
+          app.feed({InputEvent::Type::Mouse, {}, m, {}});
+        }
+      };
+      const size_t sessions = app.live_sessions().size();
+      click(link, true, true);
+      check(app.take_open_url() == file_url(file) && app.live_sessions().size() == sessions,
+            "Ctrl+click opens the file with the client's default app, without its line fragment");
+      click(link, true, false);
+      check(app.take_open_url() == file_url(file) && app.live_sessions().size() == sessions,
+            "Ctrl+click remembers Ctrl from the press when it is released before the mouse");
+      Point web{-1, -1};
+      for (int y = 0; y < sf.height() && web.x < 0; ++y)
+        for (int x = 0; x < sf.width(); ++x)
+          if (links::url(sf.at(x, y).link) == "https://example.org/path#section") { web = {x, y}; break; }
+      check(web.x >= 0, "the web link is clickable in the chat");
+      if (web.x >= 0) {
+        click(web, true, true);
+        check(app.take_open_url() == "https://example.org/path#section",
+              "Ctrl+click sends a web URL and its fragment to the client's default browser");
+      }
+      MouseEvent drag{MouseKind::Press, MouseButton::Left, link};
+      drag.ctrl = true;
+      app.feed({InputEvent::Type::Mouse, {}, drag, {}});
+      drag.kind = MouseKind::Drag;
+      drag.pos.x += 2;
+      app.feed({InputEvent::Type::Mouse, {}, drag, {}});
+      drag.kind = MouseKind::Release;
+      app.feed({InputEvent::Type::Mouse, {}, drag, {}});
+      app.draw(sf);
+      check(app.take_open_url().empty() && app.live_sessions().size() == sessions,
+            "Ctrl+drag selects text without opening its link");
       for (MouseKind kind : {MouseKind::Press, MouseKind::Release})
         app.feed(InputEvent{InputEvent::Type::Mouse, {}, MouseEvent{kind, MouseButton::Left, link}, {}});
       bool visible = false;

@@ -112,6 +112,7 @@ close the terminal to detach: your agents keep running.
 | `F2` | switch between the chat and the agent's real terminal |
 | `F6` | fork the selected chat |
 | `Alt-1` · `Alt-2` · `Alt-3` | focus folders · chats · the message box |
+| `Alt-←` · `Alt-→` | previous / next pane: Projects ↔ Chats ↔ Chat; stop at either end |
 | `:` · `F1` | mico's command line (`:help` lists everything) |
 | `[` · `]` | previous / next tab |
 | `F8` | give the mouse back to your terminal for native selection |
@@ -119,7 +120,8 @@ close the terminal to detach: your agents keep running.
 
 Use the mouse for everything else. Click a chat to open or resume it, drag to
 copy text, drag a divider to resize panes and right-click for a menu. Function
-keys work even inside a raw agent terminal, which receives every other key.
+keys and pane-focus shortcuts work even inside a raw agent terminal.
+Ctrl+click a URL or file link to open it with your system's default app.
 
 ## Supported agents
 

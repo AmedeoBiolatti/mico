@@ -51,11 +51,13 @@ Nothing bound to a keystroke stops them: that needs `mico kill` or `:quit`.
 | key | |
 |---|---|
 | `alt-1` · `alt-2` · `alt-3` | focus Projects · Chats · the chat and its message box, from anywhere (over a raw pane too) |
+| `alt-←` · `alt-→` | previous / next pane: Projects ↔ Chats ↔ Chat; stop at either end; also works while typing and over a raw pane |
 | `tab` / `shift-tab` | cycle pane focus |
 | `↑ ↓ j k`, `pgup/pgdn`, `end` | move / scroll |
 | `d` | cycle density · `a` show/hide archived chats |
 | `space` | select a chat · `⇧↑`/`⇧↓` extend · `ctrl-a` all · `esc` clear |
 | left click | open/resume a chat, expand/collapse a tool call (opens on release), open a link |
+| `ctrl` + left click | open a URL or file link with the system's default app |
 | left drag | select text and copy it to the clipboard |
 | `↑ ↓ ← →`, `enter`, `space`, `1`-`9` | answer a live question card (click an option or its header too); optional Codex cards take only arrows and `enter` |
 | `Shift+←` | jump to the newest unanswered Codex question; `Esc` returns to the draft |
@@ -74,8 +76,8 @@ Nothing bound to a keystroke stops them: that needs `mico kill` or `:quit`.
 | `F10` | detach (works even over a raw pane) |
 | `F11` | open or close the focused chat's Work panel |
 
-Function keys stay global even over a raw pane, which forwards every other
-keystroke to the agent. Without them there is no way back out.
+Function keys and pane-focus shortcuts stay global even over a raw pane.
+Other keystrokes are forwarded to the agent.
 
 Testing hooks, so the TUI can be exercised without a tty:
 
@@ -133,6 +135,8 @@ time instead of the sidebar beside the chat:
   Ctrl+digit (Ctrl+1 is a `1`, Ctrl+3 an Esc); they arrive only as kitty's
   `CSI 49;5u` or xterm's modifyOtherKeys `CSI 27;5;49~`. `mico --keys` shows
   what a terminal sends for each key, and what mico makes of it.
+- `Alt+←` / `Alt+→` move between Folders, Chats and the chat, stopping at
+  either end, just as they move focus between panes on a wide terminal.
 - **≡** is the menu: go to any chat, a new agent, raw terminal ↔ chat view,
   the pane's own menu (what right-click opens), every tab, all commands, and
   detach — nothing needs a function key.
@@ -1212,6 +1216,8 @@ Markdown files are rendered with headings, lists and code blocks; other text
 files use syntax colouring where available. Move into the preview and use the
 mouse wheel to scroll. Moving away or pressing Escape closes it. Clicking the
 original link still opens the file in `$VISUAL` / `$EDITOR`.
+Ctrl+click opens it with the system's default app instead. URLs open in the
+default browser. The opener runs on the machine where your mico client runs.
 
 Previews read up to 256 KiB of a regular text file. Binary files and files that
 cannot be read show a short message instead.

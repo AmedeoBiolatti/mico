@@ -581,6 +581,7 @@ class App {
   bool sel_drawn_ = false;
   bool sel_has_ = false;         // a selected range exists
   bool sel_dragging_ = false;    // the left button is down and may select
+  bool sel_ctrl_ = false;        // Ctrl held when the click began
   bool sel_copy_pending_ = false;
   Point sel_anchor_{};
   Point sel_cursor_{};
