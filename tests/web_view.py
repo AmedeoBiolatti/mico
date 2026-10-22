@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 
-from web_socket import WebSocket, free_port, http
+from web_socket import WebSocket, free_port, http, proof
 
 binary = str(Path(sys.argv[1] if len(sys.argv) > 1 else 'build/mico').resolve())
 
@@ -63,8 +63,25 @@ with tempfile.TemporaryDirectory(prefix='mico-web-') as directory:
         check(http(port, '/', {'Host': f'rebind.example:{port}'})[1] == 421,
               'a request naming another host is refused (DNS rebinding)')
 
-        check(WebSocket(port, '').status == 403, 'the socket wants the token')
-        check(WebSocket(port, 'f' * 64).status == 403, 'and the right one')
+        check(WebSocket(port, '').status == 403, 'an empty token is no token')
+        check(WebSocket(port, 'f' * 64).status == 403, 'the socket wants the right one')
+
+        # No token offered: a challenge, and nothing else until it is answered.
+        quiz = WebSocket(port, None)
+        got = quiz.messages(0.5)
+        check(quiz.status == 101 and [m['type'] for m in got] == ['challenge'] and
+              len(got[0].get('nonce', '')) == 64, 'a socket with no token gets a challenge, and only that')
+        quiz.send({'type': 'auth', 'proof': proof('f' * 64, got[0].get('nonce', ''))})
+        check(quiz.closed_with(2) == 1008, 'a wrong answer closes it (1008)')
+        quiz = WebSocket(port, None)
+        quiz.send({'type': 'list'})
+        check(quiz.closed_with(2) == 1008, 'so does any other message first')
+        quiz = WebSocket(port, None)
+        first = quiz.answer(token)
+        got = quiz.messages(1.0)
+        check([m['type'] for m in got][:1] == ['hello'], 'the right answer lets it in')
+        again = WebSocket(port, None)
+        check(again.answer(token) != first, 'each challenge has its own nonce')
         check(WebSocket(port, token, origin='http://evil.example').status == 403,
               'a socket from another origin is refused, token or not')
 
@@ -153,6 +170,60 @@ with tempfile.TemporaryDirectory(prefix='mico-web-') as directory:
         check(b'\x88\x02\x03\xf0' in got, 'a browser let in with the old token is closed (1008)')
         check(WebSocket(port, token).status == 403, 'the old token opens nothing')
         check(WebSocket(port, fresh).status == 101, 'the new one does')
+        stale = WebSocket(port, None)
+        stale.answer(token)
+        check(stale.closed_with(2) == 1008, 'nor does an answer keyed with the old token')
+
+        # :web lan: this machine's own address on the network, plain http.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(('192.0.2.1', 9))  # sends nothing: only picks the route's address
+            ip = probe.getsockname()[0]
+        except OSError:
+            ip = ''
+        probe.close()
+        octets = [int(x) for x in ip.split('.')] if ip else [0, 0]
+        private = octets[0] == 10 or (octets[0] == 172 and 16 <= octets[1] < 32) or octets[:2] == [192, 168]
+
+        def reachable(addr):
+            try:
+                socket.create_connection((addr, port), timeout=0.3).close()
+                return True
+            except OSError:
+                return False
+
+        def until(want, addr):
+            for _ in range(100):
+                if reachable(addr) == want:
+                    return True
+                time.sleep(0.05)
+            return False
+
+        if not private:
+            print(f'web view: no private address here ({ip or "none"}), the local network checks skipped')
+        else:
+            lan = f'{ip}:{port}'
+            check(not reachable(ip), 'off the local network, the daemon is not reachable on its address')
+            send(2, b':web lan\r')
+            check(until(True, ip), ':web lan listens on the network address')
+            check((root / 'mico/web').read_text().split() == ['on', str(port), 'lan'], 'and is kept in the setting')
+            send(2, b'\x1b')  # puts the QR card away
+            _, status, head, body = http(port, '/', {'Host': lan}, ip)
+            check(status == 200 and b'<title>mico</title>' in body, 'the page is served to its own address')
+            check(f'ws://{lan}' in head, 'whose CSP lets the page open its socket there')
+            check(http(port, '/', {'Host': f'rebind.example:{port}'}, ip)[1] == 421, 'and still to no other name')
+            check(http(port, '/', {'Host': f'192.0.2.1:{port}'}, ip)[1] == 421, 'nor an address not its own')
+            check(WebSocket(port, fresh, addr=ip).status == 403, 'a token sent over plain http is refused')
+            check(WebSocket(port, None, addr=ip, origin='http://evil.example').status == 403,
+                  'a socket from another origin is refused')
+            remote = WebSocket(port, None, addr=ip)
+            remote.answer(fresh)
+            got = remote.messages(1.0)
+            check(remote.status == 101 and [m['type'] for m in got][:1] == ['hello'],
+                  'the challenge answered lets a browser on the network in')
+            send(2, b':web lan off\r')
+            check(until(False, ip), ':web lan off takes it off the network')
+            check(reachable('127.0.0.1') and WebSocket(port, fresh).status == 101, 'and 127.0.0.1 still serves')
         tui.close()
         if not failures:
             print('web view: page, checks and protocol passed')

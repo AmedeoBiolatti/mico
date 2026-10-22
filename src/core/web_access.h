@@ -1,17 +1,31 @@
 #pragma once
 #include <string>
+#include <string_view>
 
 // The web view: whether the daemon serves it, on which port, and the token a
 // browser must present. Kept in mico's config directory: `web` holds
-// "on|off [port]", `web-token` the token, readable by the user alone.
+// "on|off [port] [lan]", `web-token` the token, readable by the user alone.
 namespace mico {
 
 inline constexpr int kDefaultWebPort = 7311;
 
 bool web_enabled();
 int web_port();
-// Turns the web view on or off and saves it; the daemon follows.
+// Turns the web view on or off and saves it; the daemon follows. Off also
+// takes it off the local network.
 void set_web(bool on, int port = 0);
+// Whether the daemon also listens on the local network (`:web lan`), over plain
+// http: kept with the rest, as "on 7311 lan". A browser there never sends the
+// token; it answers a challenge with it (web.h).
+bool web_lan();
+void set_web_lan(bool lan);
+// This machine's address on the local network, for a browser on another one:
+// a private IPv4 address of an interface that is up, not a container bridge or
+// a VPN; empty when there is none.
+std::string lan_address();
+// Whether `ip` (dotted IPv4) is one of this machine's own addresses, other than
+// loopback: the hosts the daemon answers to on the local network.
+bool own_lan_address(std::string_view ip);
 // The token, made on first use: 32 random bytes as hex. Anyone holding it can
 // do whatever mico can, so it lives in a file only the user can read.
 std::string web_token();
@@ -31,6 +45,9 @@ std::string web_host();
 void set_web_host(const std::string& host);  // "" clears it; lower case, [a-z0-9.-] only
 // Where to point a browser on another machine; empty without a web_host().
 std::string web_remote_url();
+// Where to point a browser on the local network; empty unless web_lan() and
+// there is a lan_address().
+std::string web_lan_url();
 // This machine's name on the tailnet, from `tailscale status`; empty when
 // tailscale is not there or not up.
 std::string tailscale_name();
