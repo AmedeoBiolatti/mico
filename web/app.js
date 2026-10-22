@@ -70,24 +70,95 @@ function connect() {
   }
   // Over https (tailscale serve) the socket is wss, from the same host.
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  // The token goes as a subprotocol, a header, so it is in no address a proxy logs.
-  const ws = new WebSocket(`${scheme}://${location.host}/ws`, ["mico", `mico-token.${token}`]);
+  // The token is never sent, not even in a header: the daemon sends a nonce,
+  // and the page answers with an HMAC of it keyed with the token. Over plain
+  // http from the local network, whoever listens on the WiFi learns nothing
+  // they could connect with.
+  const ws = new WebSocket(`${scheme}://${location.host}/ws`, ["mico"]);
   st.ws = ws;
-  ws.onopen = () => {
-    st.backoff = 500;
-    setConn(true);
-    if (st.chat && st.chat.path) {
-      send({ type: "open", path: st.chat.path });
-      if (st.work.open) requestWork();
-    }
-    else if (startChat && !st.chat) openChat(startChat, "");
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type !== "challenge") return receive(m);
+    ws.send(JSON.stringify({ type: "auth", proof: hmacSha256(token, "mico-auth " + m.nonce) }));
+    opened();
   };
-  ws.onmessage = (e) => receive(JSON.parse(e.data));
   ws.onclose = () => {
     setConn(false);
     setTimeout(connect, st.backoff);
     st.backoff = Math.min(st.backoff * 2, 10000);
   };
+}
+
+function opened() {
+  st.backoff = 500;
+  setConn(true);
+  if (st.chat && st.chat.path) {
+    send({ type: "open", path: st.chat.path });
+    if (st.work.open) requestWork();
+  }
+  else if (startChat && !st.chat) openChat(startChat, "");
+}
+
+// SHA-256 and HMAC (RFC 2104) over the bytes of strings, as hex. Here rather
+// than crypto.subtle, which a page over plain http from another machine does
+// not get.
+function sha256(bytes) {
+  const K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+  const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const n = Math.ceil((bytes.length + 9) / 64) * 64;
+  const m = new Uint8Array(n);
+  m.set(bytes);
+  m[bytes.length] = 0x80;
+  const bits = bytes.length * 8;
+  for (let i = 0; i < 8; i++) m[n - 1 - i] = i < 4 ? (bits >>> (8 * i)) & 255 : Math.floor(bits / 2 ** (8 * i)) & 255;
+  const ror = (x, r) => (x >>> r) | (x << (32 - r));
+  const w = new Uint32Array(64);
+  for (let off = 0; off < n; off += 64) {
+    for (let i = 0; i < 16; i++)
+      w[i] = (m[off + 4 * i] << 24) | (m[off + 4 * i + 1] << 16) | (m[off + 4 * i + 2] << 8) | m[off + 4 * i + 3];
+    for (let i = 16; i < 64; i++) {
+      const s0 = ror(w[i - 15], 7) ^ ror(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = ror(w[i - 2], 17) ^ ror(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    let [a, b, c, d, e, f, g, hh] = h;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (hh + (ror(e, 6) ^ ror(e, 11) ^ ror(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;
+      const t2 = ((ror(a, 2) ^ ror(a, 13) ^ ror(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    [a, b, c, d, e, f, g, hh].forEach((x, i) => { h[i] = (h[i] + x) | 0; });
+  }
+  const out = new Uint8Array(32);
+  h.forEach((x, i) => { out[4 * i] = x >>> 24; out[4 * i + 1] = x >>> 16; out[4 * i + 2] = x >>> 8; out[4 * i + 3] = x; });
+  return out;
+}
+
+function hmacSha256(key, message) {
+  const enc = new TextEncoder();
+  let k = enc.encode(key);
+  if (k.length > 64) k = sha256(k);
+  const inner = new Uint8Array(64), outer = new Uint8Array(64);
+  for (let i = 0; i < 64; i++) {
+    inner[i] = (k[i] || 0) ^ 0x36;
+    outer[i] = (k[i] || 0) ^ 0x5c;
+  }
+  const msg = enc.encode(message);
+  const a = new Uint8Array(64 + msg.length);
+  a.set(inner);
+  a.set(msg, 64);
+  const b = new Uint8Array(96);
+  b.set(outer);
+  b.set(sha256(a), 64);
+  return Array.from(sha256(b), (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
 function setConn(on) {

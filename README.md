@@ -39,7 +39,7 @@ agents keep running.
   made it) and **Git** (branches, worktrees, commits and the chat behind each).
 - **Works anywhere.** Below 80 columns the layout switches to one pane at a
   time for phones. A web page on localhost can also be reached through
-  Tailscale.
+  Tailscale, or from any device on the same WiFi (`:web lan`).
 - **Notifications** when an agent finishes or needs you, in the terminal's own
   style (kitty, Ghostty, WezTerm, iTerm2 and others) or on the desktop.
 - **Fast and self-contained.** It opens a 200 MB transcript in under a

@@ -61,6 +61,7 @@
 #include "core/procmem.h"
 #include <sys/wait.h>
 #include "net/proto.h"
+#include "net/web.h"
 #include "term/links.h"
 #include "core/images.h"
 #include "math/picture.h"
@@ -4456,6 +4457,16 @@ int run_selftest() {
     GfxCaps got;
     check(proto::decode(wire, &t, &payload) && proto::decode_caps(payload, &got) && got == sent,
           "Hello carries the notification escape");
+
+    // The web view's challenge (RFC 4231 cases 2 and 6: a short key, and one
+    // longer than a block, which is hashed first). web/app.js does the same.
+    check(hmac_sha256_hex("Jefe", "what do ya want for nothing?") ==
+              "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+          "web: HMAC-SHA256, a short key");
+    check(hmac_sha256_hex(std::string(131, '\xaa'), "Test Using Larger Than Block-Size Key - Hash Key First") ==
+              "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+          "web: HMAC-SHA256, a key longer than a block");
+    check(web_auth_proof("ab", "cd") == hmac_sha256_hex("ab", "mico-auth cd"), "web: the proof is keyed with the token");
 
     InputDecoder d;
     d.feed("\x1b[O\x1b[I");

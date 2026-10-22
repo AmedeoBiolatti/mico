@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <optional>
 
+#include "base/json.h"
 #include "base/log.h"
 #include "core/web_access.h"
 
@@ -46,7 +48,8 @@ int64_t now_ms() {
 
 // The token a browser offers: the subprotocol "mico-token.<hex>" among those
 // it lists. A header, not the address, so no proxy in front writes it to a log.
-std::string offered_token(std::string_view protocols) {
+// Empty when it names none, and then it is asked a challenge instead.
+std::optional<std::string> offered_token(std::string_view protocols) {
   while (!protocols.empty()) {
     const size_t comma = protocols.find(',');
     std::string_view p = protocols.substr(0, comma);
@@ -56,7 +59,7 @@ std::string offered_token(std::string_view protocols) {
     if (comma == std::string_view::npos) break;
     protocols.remove_prefix(comma + 1);
   }
-  return {};
+  return std::nullopt;
 }
 
 std::string_view asset(const unsigned char* a, const unsigned char* b) {
@@ -118,6 +121,67 @@ std::string sha1(std::string_view msg) {
   return out;
 }
 
+std::string sha256(std::string_view msg) {
+  static constexpr uint32_t k[64] = {
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+  uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+  std::string m(msg);
+  const uint64_t bits = uint64_t(msg.size()) * 8;
+  m += char(0x80);
+  while (m.size() % 64 != 56) m += char(0);
+  for (int i = 7; i >= 0; i--) m += char(uint8_t(bits >> (i * 8)));
+  auto ror = [](uint32_t x, int n) { return (x >> n) | (x << (32 - n)); };
+  for (size_t off = 0; off < m.size(); off += 64) {
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++)
+      w[i] = uint32_t(uint8_t(m[off + 4 * i])) << 24 | uint32_t(uint8_t(m[off + 4 * i + 1])) << 16 |
+             uint32_t(uint8_t(m[off + 4 * i + 2])) << 8 | uint32_t(uint8_t(m[off + 4 * i + 3]));
+    for (int i = 16; i < 64; i++) {
+      const uint32_t s0 = ror(w[i - 15], 7) ^ ror(w[i - 15], 18) ^ (w[i - 15] >> 3);
+      const uint32_t s1 = ror(w[i - 2], 17) ^ ror(w[i - 2], 19) ^ (w[i - 2] >> 10);
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (int i = 0; i < 64; i++) {
+      const uint32_t t1 = hh + (ror(e, 6) ^ ror(e, 11) ^ ror(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i];
+      const uint32_t t2 = (ror(a, 2) ^ ror(a, 13) ^ ror(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+      hh = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+  }
+  std::string out;
+  for (uint32_t x : h)
+    for (int i = 3; i >= 0; i--) out += char(uint8_t(x >> (i * 8)));
+  return out;
+}
+
+std::string hex(std::string_view bytes) {
+  static const char kHex[] = "0123456789abcdef";
+  std::string out;
+  for (const char ch : bytes) {
+    out += kHex[uint8_t(ch) >> 4];
+    out += kHex[uint8_t(ch) & 15];
+  }
+  return out;
+}
+
+// A challenge's nonce: 32 random bytes as hex; empty when there is no
+// randomness, and then the socket is refused.
+std::string nonce() {
+  unsigned char b[32];
+  const int fd = ::open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+  const bool got = fd >= 0 && read(fd, b, sizeof b) == ssize_t(sizeof b);
+  if (fd >= 0) ::close(fd);
+  return got ? hex(std::string_view(reinterpret_cast<const char*>(b), sizeof b)) : std::string();
+}
+
 std::string base64(std::string_view in) {
   static const char kAlpha[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   std::string out;
@@ -142,6 +206,21 @@ std::string websocket_accept(std::string_view key) {
   return base64(sha1(std::string(key) + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"));
 }
 
+std::string hmac_sha256_hex(std::string_view key, std::string_view message) {
+  std::string k = key.size() > 64 ? sha256(key) : std::string(key);
+  k.resize(64, '\0');
+  std::string inner(64, '\0'), outer(64, '\0');
+  for (int i = 0; i < 64; i++) {
+    inner[i] = char(k[i] ^ 0x36);
+    outer[i] = char(k[i] ^ 0x5c);
+  }
+  return hex(sha256(outer + sha256(inner + std::string(message))));
+}
+
+std::string web_auth_proof(std::string_view token, std::string_view nonce) {
+  return hmac_sha256_hex(token, "mico-auth " + std::string(nonce));
+}
+
 // One browser connection: an HTTP request, then, once upgraded, a WebSocket
 // with a protocol client behind it.
 struct WebServer::Conn {
@@ -151,7 +230,9 @@ struct WebServer::Conn {
   bool dead = false;
   bool closing = false;  // close once `out` drains
   int64_t opened_ms = 0;
+  std::string host;      // the Host it asked for, once read
   std::string token;     // the one it was let in with; another made since lets it go
+  std::string nonce;     // the challenge it has yet to answer
   std::string message;   // a fragmented message, so far
   std::unique_ptr<api::Client> api;
 };
@@ -165,13 +246,13 @@ WebServer::~WebServer() {
 
 void WebServer::sync() {
   const bool want = web_enabled() && !web_token().empty();
-  if (want && lfd_ >= 0 && port_ == web_port()) return;
+  if (want && lfd_ >= 0 && port_ == web_port() && lan_ == web_lan()) return;
   // A port that could not be had is not tried again every turn of the loop:
   // only once the setting changes.
   if (want && lfd_ < 0 && failed_port_ == web_port()) return;
   if (!want) failed_port_ = 0;
   if (!want && lfd_ < 0) return;
-  // Off, or moving to another port: let everything go.
+  // Off, or moving to another port or onto (off) the network: let everything go.
   for (auto& c : conns_) close(c->fd);
   conns_.clear();
   if (lfd_ >= 0) {
@@ -187,9 +268,11 @@ void WebServer::sync() {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(uint16_t(web_port()));
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  const bool lan = web_lan();
+  const char* where = lan ? "every address" : "127.0.0.1";
+  addr.sin_addr.s_addr = htonl(lan ? INADDR_ANY : INADDR_LOOPBACK);
   if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0 || listen(fd, 16) != 0) {
-    MLOG("web: cannot listen on 127.0.0.1:%d: %s", web_port(), strerror(errno));
+    MLOG("web: cannot listen on %s, port %d: %s", where, web_port(), strerror(errno));
     close(fd);
     // Remembered here, not written to the settings: a port another process
     // holds now is no reason to turn the web view off for good.
@@ -198,7 +281,8 @@ void WebServer::sync() {
   }
   lfd_ = fd;
   port_ = web_port();
-  MLOG("web: listening on 127.0.0.1:%d", port_);
+  lan_ = lan;
+  MLOG("web: listening on %s, port %d", where, port_);
 }
 
 void WebServer::add_fds(std::vector<pollfd>& fds) {
@@ -244,9 +328,10 @@ void WebServer::pump() {
   const std::string token = web_token();
   for (auto& c : conns_) {
     // A request that never comes whole holds a connection for nothing.
-    if (!c->ws && !c->dead && now - c->opened_ms > kHttpTimeoutMs) c->dead = true;
+    // Nor does an answer to a challenge that never comes.
+    if (!c->api && !c->dead && now - c->opened_ms > kHttpTimeoutMs) c->dead = true;
     // The token changed (:web new-token): whoever came in with the old one goes.
-    if (c->ws && !c->dead && !same_secret(c->token, token)) {
+    if (c->api && !c->dead && !same_secret(c->token, token)) {
       MLOG("web: a browser let go: the token changed");
       send_frame(*c, 8, "\x03\xf0");  // 1008: policy
       c->closing = true;
@@ -282,7 +367,16 @@ bool WebServer::allowed_host(std::string_view host) const {
   // The name something in front of this (tailscale serve) forwards under, and
   // no other: a page on a site that points its own name here is refused.
   const std::string remote = web_host();
-  return !remote.empty() && lower(host) == remote;
+  return (!remote.empty() && lower(host) == remote) || lan_host(host);
+}
+
+// This machine's own address on the network, with the port, while it listens
+// there: what a browser on the WiFi names. Plain http, so the token stays home.
+bool WebServer::lan_host(std::string_view host) const {
+  const std::string port = ":" + std::to_string(port_);
+  if (!lan_ || !host.ends_with(port)) return false;
+  host.remove_suffix(port.size());
+  return host != "127.0.0.1" && own_lan_address(host);
 }
 
 void WebServer::read_http(Conn& c) {
@@ -324,6 +418,7 @@ void WebServer::read_http(Conn& c) {
   // A page on another site that resolves its own name to 127.0.0.1 still
   // sends that name as the host.
   if (!allowed_host(host)) return respond(c, 421, "text/plain", "wrong host\n");
+  c.host = host;
   if (method != "GET") return respond(c, 405, "text/plain", "GET only\n");
   std::string path = target;
   if (const size_t q = target.find('?'); q != std::string::npos) path = target.substr(0, q);
@@ -334,20 +429,31 @@ void WebServer::read_http(Conn& c) {
     const std::string own = "http://" + host;
     const std::string remote = web_host();
     const bool forwarded = !remote.empty() && lower(host) == remote;
-    const std::string token = offered_token(protocols);
+    const std::optional<std::string> token = offered_token(protocols);
     if (upgrade != "websocket" || connection.find("upgrade") == std::string::npos || key.empty() || version != "13")
       return respond(c, 400, "text/plain", "a WebSocket is expected here\n");
     if (origin != own && !(forwarded && lower(origin) == "https://" + remote))
       return respond(c, 403, "text/plain", "wrong origin\n");
-    if (!same_secret(token, web_token())) return respond(c, 403, "text/plain", "wrong token\n");
+    // Nor in the address, which proxies and histories keep.
+    if (target.find("token=") != std::string::npos) return respond(c, 403, "text/plain", "no token in the address\n");
+    // A token in a header over the WiFi has already been seen by whoever
+    // listens: refused, so that no client gets used to sending it.
+    if (token && lan_host(host))
+      return respond(c, 403, "text/plain", "no token over plain http: answer the challenge\n");
+    if (token && !same_secret(*token, web_token())) return respond(c, 403, "text/plain", "wrong token\n");
+    if (!token && (c.nonce = nonce()).empty()) return respond(c, 403, "text/plain", "no challenge\n");
     // The browser wants one of its subprotocols named back; "mico" is the one
     // that says nothing secret.
     c.out += "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
              "Sec-WebSocket-Protocol: mico\r\nSec-WebSocket-Accept: " + websocket_accept(key) + "\r\n\r\n";
     c.ws = true;
-    c.token = token;
-    c.api = std::make_unique<api::Client>(ws_);
-    MLOG("web: a browser connected");
+    if (token) {
+      c.token = *token;
+      c.api = std::make_unique<api::Client>(ws_);
+      MLOG("web: a browser connected");
+    } else {
+      send_text(c, "{\"type\":\"challenge\",\"nonce\":\"" + c.nonce + "\"}");
+    }
     flush(c);
     if (!c.in.empty()) read_ws(c);
     return;
@@ -371,6 +477,7 @@ void WebServer::respond(Conn& c, int status, std::string_view type, std::string_
            "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer"
            "\r\nContent-Security-Policy: default-src 'self'; img-src 'self' data:; connect-src ws://127.0.0.1:" + port +
            " ws://localhost:" + port + (web_host().empty() ? "" : " wss://" + web_host()) +
+           (lan_host(c.host) ? " ws://" + c.host : "") +
            "; frame-ancestors 'none'\r\nConnection: close\r\n\r\n";
   c.out += body;
   c.closing = true;
@@ -412,7 +519,9 @@ void WebServer::read_ws(Conn& c) {
         c.message += payload;
         if (fin) {
           if (c.api) c.api->receive(c.message);
+          else authenticate(c, c.message);
           c.message.clear();
+          if (c.closing) return;
         }
         break;
       case 0x8:  // close
@@ -429,6 +538,29 @@ void WebServer::read_ws(Conn& c) {
         return;
     }
   }
+}
+
+// The answer to the challenge, and the first message read: the right proof
+// lets the client in, anything else closes the socket.
+void WebServer::authenticate(Conn& c, std::string_view message) {
+  std::string type, proof;
+  js::scan_object(message, [&](std::string_view k, const js::Value& v) {
+    if (k == "type" && v.literal()) type = v.body();
+    else if (k == "proof" && v.literal()) proof = v.body();
+    return true;
+  });
+  const std::string token = web_token();
+  if (type != "auth" || c.nonce.empty() || !same_secret(proof, web_auth_proof(token, c.nonce))) {
+    MLOG("web: a browser failed the challenge");
+    send_frame(c, 8, "\x03\xf0");  // 1008: policy
+    c.closing = true;
+    flush(c);
+    return;
+  }
+  c.nonce.clear();
+  c.token = token;
+  c.api = std::make_unique<api::Client>(ws_);
+  MLOG("web: a browser connected%s", lan_host(c.host) ? " from the local network" : "");
 }
 
 void WebServer::send_text(Conn& c, std::string_view text) { send_frame(c, 1, text); }

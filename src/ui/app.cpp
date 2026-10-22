@@ -1424,7 +1424,7 @@ constexpr Command kCommands[] = {
     {"blame", "go to the chat that last changed a line: blame <file>:<line>"},
     {"charts", "tell agents they can draw charts: charts on|off"},
     {"mcp", "give agents mico's tools (plot) over MCP: mcp on|off"},
-    {"web", "the web view, served by the daemon: web on [port] | off | tailscale (a QR code for your phone) | host <name> | new-token, or web to copy its address"},
+    {"web", "the web view, served by the daemon: web on [port] | off | tailscale (a QR code for your phone) | lan [off] (this WiFi, plain http) | host <name> | new-token, or web to copy its address"},
     {"sessions", "show the sessions tab"},
     {"redraw", "repaint everything"},
     {"log", "show where the log file is"},
@@ -1437,7 +1437,41 @@ constexpr Command kCommands[] = {
 };
 }  // namespace
 
+namespace {
+// The address to hand out: the tailnet's, else the local network's, else this
+// machine's own.
+std::string web_share_url() {
+  if (std::string url = web_remote_url(); !url.empty()) return url;
+  if (std::string url = web_lan_url(); !url.empty()) return url;
+  return web_url();
+}
+}  // namespace
+
 void App::web_command(const std::string& arg) {
+  if (arg == "lan") {
+    // On every address, answering to this machine's own on the network: plain
+    // http, so the page proves it holds the token rather than sending it, but
+    // what it shows crosses the WiFi as it is.
+    const std::string ip = lan_address();
+    if (ip.empty()) {
+      set_status("web view: this machine has no address on a local network");
+      return;
+    }
+    set_web_lan(true);
+    const std::string url = web_lan_url();
+    copy_to_clipboard(url);
+    qr_ = QrCard{qr::encode(url), "On this network", url, "Plain http: chats cross the WiFi unencrypted."};
+    set_status("web view on " + ip + ":" + std::to_string(web_port()) + " for this network (a firewall may need the port open); "
+               ":web lan off ends it");
+    mark_dirty();
+    return;
+  }
+  if (arg == "lan off") {
+    set_web_lan(false);
+    set_status("web view: off the local network, on 127.0.0.1 only" +
+               std::string(web_host().empty() ? "" : " and " + web_host()));
+    return;
+  }
   if (arg == "tailscale" || arg == "phone" || arg == "qr") {
     // This machine's name on the tailnet, kept; the web view put on the
     // tailnet with `tailscale serve` when nothing else is served there (and
@@ -1463,7 +1497,7 @@ void App::web_command(const std::string& arg) {
       set_status("web view: no new token could be made; the old one stands");
       return;
     }
-    if (web_enabled()) copy_to_clipboard(web_remote_url().empty() ? web_url() : web_remote_url());
+    if (web_enabled()) copy_to_clipboard(web_share_url());
     set_status("web view: a new token; browsers with the old one are let go" +
                std::string(web_enabled() ? ", and the new address is on the clipboard" : ""));
     return;
@@ -1493,9 +1527,11 @@ void App::web_command(const std::string& arg) {
   }
   // The address carries the token: copied rather than only shown, so it
   // need not be typed, and it stays out of the screen's scrollback.
-  copy_to_clipboard(web_remote_url().empty() ? web_url() : web_remote_url());
+  copy_to_clipboard(web_share_url());
+  const std::string ip = web_lan() ? lan_address() : std::string();
   set_status("web view on 127.0.0.1:" + std::to_string(web_port()) +
              (web_host().empty() ? "" : ", and " + web_host() + " over https") +
+             (ip.empty() ? "" : ", and " + ip + " on the local network") +
              " \xE2\x80\x94 its address (with the token) is on the clipboard");
 }
 
