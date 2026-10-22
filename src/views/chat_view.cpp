@@ -124,6 +124,9 @@ class ChatView final : public Pane {
     return true;
   }
   std::string take_url() override { return chat_.take_url(); }
+  const TextSelectionView* text_selection_view(Point at) const override {
+    return chat_.text_selection_view(at);
+  }
 
   bool on_mouse(const MouseEvent& m, Point local) override {
     if (resume_row_ >= 0 && local.y == resume_row_ && m.kind == MouseKind::Press &&

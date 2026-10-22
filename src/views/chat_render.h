@@ -187,6 +187,9 @@ class ChatRenderer {
   void go_to(uint64_t offset) { pending_reveal_ = offset; }
 
   void to_bottom() { scroll_ = 0; }
+  const TextSelectionView* text_selection_view(Point at) const {
+    return selection_view_.area.contains(at) && !selection_view_.rows.empty() ? &selection_view_ : nullptr;
+  }
   // Moves the view to a position in the file, 0 being the start. The index is
   // extended backwards first: it only covers the tail until someone asks.
   void seek_fraction(double f);
@@ -516,6 +519,7 @@ class ChatRenderer {
   uint32_t cur_line_ = 0;
   uint32_t menu_line_ = 0;  // src_line under the last right-click  // src_line of the event currently being laid out
   int scroll_ = 0;
+  TextSelectionView selection_view_;
   int last_h_ = 20;
   int last_pad_ = 0;  // blank rows above a short conversation, for hit-testing
   // Scrollbar geometry from the last frame, so a click can be tested against

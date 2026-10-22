@@ -1667,6 +1667,71 @@ int run_regression_tests() {
   }
 
   {
+    // A released selection follows the transcript, including when both ends
+    // leave the viewport. Copying it again must still give the original text.
+    const std::string path = base + "/.claude/projects/selection/selection-scroll.jsonl";
+    std::string answer;
+    for (int i = 0; i < 100; ++i) answer += "Selection row " + std::to_string(i) + " stays attached\n";
+    put(path, "{\"type\":\"user\",\"cwd\":" + js::quote(project) +
+              ",\"sessionId\":\"selection-scroll\",\"message\":{\"content\":\"Scroll fixture\"}}\n" +
+              "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":" +
+              js::quote(answer) + "}]}}\n");
+    for (bool backwards : {false, true}) {
+      App app;
+      app.select_stored(path);
+      Surface sf; sf.resize(120, 32);
+      app.draw(sf);
+      const auto locate = [&](std::string_view word) {
+        for (int y = 0; y < sf.height(); ++y) {
+          std::string line;
+          for (int x = 0; x < sf.width(); ++x) text::encode(sf.at(x, y).cp, line);
+          const size_t at = line.find(word);
+          if (at != std::string::npos) return Point{text::str_width(line.substr(0, at)), y};
+        }
+        return Point{-1, -1};
+      };
+      const Point start = locate("Selection row 85");
+      const Point end = locate("Selection row 87");
+      check(start.x >= 0 && end.x >= 0, "scroll selection fixture is visible");
+      if (start.x < 0 || end.x < 0) continue;
+      const Point last{end.x + 15, end.y};
+      const auto mouse = [&](MouseKind kind, Point pt) {
+        app.feed(InputEvent{InputEvent::Type::Mouse, {}, MouseEvent{kind, MouseButton::Left, pt}, {}});
+      };
+      mouse(MouseKind::Press, backwards ? last : start);
+      mouse(MouseKind::Drag, backwards ? start : last);
+      mouse(MouseKind::Release, backwards ? start : last);
+      app.draw(sf);
+      const std::string copied = app.take_clipboard();
+      check(copied.starts_with("Selection row 85") && copied.ends_with("Selection row 87"),
+            "scroll selection copies its partial first and last lines");
+      const auto highlighted = [&](Point p) { return (sf.at(p.x, p.y).st.a & attr::kReverse) != 0; };
+      check(highlighted(start), "selection initially highlights its text");
+      mouse(MouseKind::WheelUp, start);
+      app.draw(sf);
+      Point moved = locate("Selection row 85");
+      check(moved.y == start.y + 3 && highlighted(moved), "wheel up moves the highlight with its transcript row");
+      check(!highlighted(start), "scrolling does not highlight replacement text at the old screen position");
+      for (int n = 0; n < 20; ++n) { mouse(MouseKind::WheelUp, start); app.draw(sf); }
+      bool any = false;
+      for (int y = 1; y < sf.height() - 1; ++y)
+        for (int x = start.x; x <= last.x; ++x) any |= highlighted({x, y});
+      check(!any, "an offscreen selection leaves no highlight on unrelated content or controls");
+      app.feed(InputEvent{InputEvent::Type::Key, KeyEvent{Key::Char, 'c', true}, {}, {}});
+      app.draw(sf);
+      check(app.take_clipboard() == copied, "Ctrl+C preserves the original selection while it is offscreen");
+      for (int n = 0; n < 21; ++n) { mouse(MouseKind::WheelDown, start); app.draw(sf); }
+      moved = locate("Selection row 85");
+      check(moved.y == start.y && highlighted(moved), "wheel down restores the selection on the same text");
+      sf.resize(110, 32);
+      app.draw(sf);
+      const Point resized = locate("Selection row 85");
+      check(resized.x >= 0 && !highlighted(resized), "changing wrap width clears stale selection coordinates");
+    }
+    std::filesystem::remove_all(base + "/.claude/projects/selection");
+  }
+
+  {
     // Ctrl+C with text highlighted copies it. It must not reach the agent as
     // an interrupt, or detach mico.
     const std::string got = base + "/ctrl-c-received";

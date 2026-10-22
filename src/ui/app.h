@@ -462,11 +462,14 @@ class App {
   void collect_file_links(const Surface& s);
   bool preview_mouse(const MouseEvent& m);
 
-  // Mouse text selection, in screen coordinates. A left-drag over any pane
+  // Mouse text selection. Chats anchor its ends to transcript rows; other
+  // panes use screen coordinates. A left-drag over any pane
   // highlights the cells it covers and copies the text (OSC 52) on release; a
   // plain click still reaches the pane. The range is clamped to the pane it
   // started in so dragging past an edge cannot select a neighbour's chrome.
   void cancel_selection();
+  const TextSelectionView* selection_view() const;
+  void refresh_selection();
   bool normalized_selection(Point& top, Point& bot) const;
   std::string selected_text(const Surface& s) const;
   void render_selection(Surface& s);
@@ -582,6 +585,11 @@ class App {
   Point sel_anchor_{};
   Point sel_cursor_{};
   Rect sel_area_{};              // pane interior the range is clamped to
+  Pane* sel_pane_ = nullptr;
+  std::string sel_content_;
+  TextRow sel_first_row_{}, sel_last_row_{};
+  std::string sel_text_;         // released selection, including offscreen text
+  bool sel_text_saved_ = false;
   bool redraw_ = false;
   bool dirty_ = true;
   std::string clipboard_;

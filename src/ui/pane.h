@@ -1,4 +1,5 @@
 #pragma once
+#include <compare>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -12,6 +13,20 @@ namespace mico {
 
 class App;
 class LiveSession;
+
+// A rendered row's identity survives scrolling and lazy transcript indexing.
+// `source` is a byte offset in the transcript, `row` a row within that event.
+struct TextRow {
+  uint64_t source = 0;
+  int row = 0;
+  auto operator<=>(const TextRow&) const = default;
+};
+
+struct TextSelectionView {
+  std::string key;
+  Rect area;  // screen coordinates; excludes the prompt and other controls
+  std::vector<TextRow> rows;
+};
 
 struct MenuItem {
   std::string label;
@@ -53,6 +68,8 @@ class Pane {
   virtual bool on_mouse(const MouseEvent& m, Point local) { return false; }
   // A link the last mouse event clicked, for the app to open; empty if none.
   virtual std::string take_url() { return {}; }
+  // Optional content coordinates for text selection in a scrolling view.
+  virtual const TextSelectionView* text_selection_view(Point at) const { return nullptr; }
 
   // Items to show when the pane is right-clicked at `local`.
   virtual std::vector<MenuItem> context_menu(Point local) { return {}; }

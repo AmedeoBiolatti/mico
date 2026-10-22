@@ -1190,9 +1190,14 @@ void App::render(Surface& s) {
   // The clipboard is queued from the composed surface: the text a selection
   // covers is only known once every pane has drawn it. Done before the status
   // line so "copied selection" is visible in this same frame.
+  refresh_selection();
   if (sel_copy_pending_) {
     sel_copy_pending_ = false;
     std::string t = selected_text(s);
+    if (!sel_dragging_ && !sel_content_.empty()) {
+      sel_text_ = t;
+      sel_text_saved_ = true;
+    }
     if (t.empty()) {
       set_status("nothing to copy");
     } else {
@@ -1962,19 +1967,33 @@ void App::handle_mouse(const MouseEvent& m) {
 
   if (m.kind == MouseKind::Press && m.button == MouseButton::Left) {
     // A fresh press drops the old highlight and arms a new selection.
-    sel_has_ = false;
-    sel_copy_pending_ = false;
+    cancel_selection();
     sel_dragging_ = true;
     sel_anchor_ = sel_cursor_ = m.pos;
     sel_area_ = hit ? inner_of(*hit) : Rect{m.pos.x, m.pos.y, 1, 1};
+    if (hit) {
+      if (const auto* view = hit->pane->text_selection_view(m.pos);
+          view && m.pos.y - view->area.y < int(view->rows.size())) {
+        sel_pane_ = hit->pane;
+        sel_content_ = view->key;
+        sel_area_ = view->area;
+        sel_first_row_ = sel_last_row_ = view->rows[size_t(m.pos.y - sel_area_.y)];
+      }
+    }
   } else if (sel_dragging_ && (m.kind == MouseKind::Drag || m.kind == MouseKind::Move)) {
     // Extend the range, clamped to the pane it began in.
     Point c = m.pos;
     c.x = std::clamp(c.x, sel_area_.x, sel_area_.x + std::max(0, sel_area_.w - 1));
     c.y = std::clamp(c.y, sel_area_.y, sel_area_.y + std::max(0, sel_area_.h - 1));
-    if (c.x != sel_anchor_.x || c.y != sel_anchor_.y) {
+    if (const auto* view = selection_view()) {
+      c.y = std::min(c.y, sel_area_.y + int(view->rows.size()) - 1);
+      sel_last_row_ = view->rows[size_t(c.y - sel_area_.y)];
+    }
+    if (c.x != sel_anchor_.x || c.y != sel_anchor_.y ||
+        (!sel_content_.empty() && sel_first_row_ != sel_last_row_)) {
       sel_cursor_ = c;
       sel_has_ = true;
+      sel_text_saved_ = false;
       mark_dirty();
     }
   } else if (m.kind == MouseKind::Release && m.button == MouseButton::Left && sel_dragging_) {
@@ -2027,10 +2046,53 @@ void App::cancel_selection() {
   sel_dragging_ = false;
   sel_has_ = false;
   sel_copy_pending_ = false;
+  sel_pane_ = nullptr;
+  sel_content_.clear();
+  sel_text_.clear();
+  sel_text_saved_ = false;
+}
+
+const TextSelectionView* App::selection_view() const {
+  if (!sel_pane_) return nullptr;
+  // Layout changes may have destroyed the pane. Compare before dereferencing.
+  for (const auto& p : placed_)
+    if (p.pane == sel_pane_) {
+      const auto* view = p.pane->text_selection_view({sel_area_.x, sel_area_.y});
+      return view && view->key == sel_content_ ? view : nullptr;
+    }
+  return nullptr;
+}
+
+void App::refresh_selection() {
+  if (!sel_pane_) return;
+  const auto* view = selection_view();
+  // Wrapping at another width changes the meaning of a row within a message.
+  if (!view || view->area.w != sel_area_.w || view->area.x != sel_area_.x) {
+    cancel_selection();
+    return;
+  }
+  sel_area_ = view->area;
 }
 
 bool App::normalized_selection(Point& top, Point& bot) const {
   if (!sel_has_) return false;
+  if (!sel_content_.empty()) {
+    const auto* view = selection_view();
+    if (!view) return false;
+    TextRow a = sel_first_row_, b = sel_last_row_;
+    int ax = sel_anchor_.x, bx = sel_cursor_.x;
+    if (b < a || (b == a && bx < ax)) { std::swap(a, b); std::swap(ax, bx); }
+    bool found = false;
+    for (size_t i = 0; i < view->rows.size(); ++i) {
+      const auto row = view->rows[i];
+      if (row < a || row > b) continue;
+      const int y = view->area.y + int(i);
+      if (!found) top = {row == a ? ax : sel_area_.x, y};
+      bot = {row == b ? bx : sel_area_.right() - 1, y};
+      found = true;
+    }
+    return found;
+  }
   normalize_selection(sel_anchor_, sel_cursor_, sel_area_, top, bot);
   return true;
 }
@@ -2044,6 +2106,7 @@ std::string equation_text(uint32_t id) {
 }  // namespace
 
 std::string App::selected_text(const Surface& s) const {
+  if (sel_has_ && sel_text_saved_) return sel_text_;
   Point top{}, bot{};
   if (!normalized_selection(top, bot)) return {};
   return selection_text(s, top, bot, sel_area_, equation_text);
