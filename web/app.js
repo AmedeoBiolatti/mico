@@ -50,6 +50,7 @@ const st = {
   showAll: new Set(),   // folders listed in full
   showArchived: false,  // archived chats listed too, dimmed
   newFor: null,         // the folder whose "start an agent" row is open
+  project: null,        // on a phone, the folder whose own screen is up
   drafts: new Map(),    // chat id -> an unsent message
   atBottom: true,
   unread: 0,
@@ -138,21 +139,46 @@ function receive(m) {
 
 // ----------------------------------------------------------------- navigation
 
-// One screen at a time on a phone: the list, then a chat with a way back that
-// is the browser's own back, so a phone's back gesture does the same.
-function setScreen(s) { $("app").dataset.screen = s; }
+// One screen at a time on a phone: the list, a folder's own screen, then a
+// chat, each with a way back that is the browser's own back, so a phone's
+// back gesture does the same.
+function setScreen(s) {
+  $("app").dataset.screen = s;
+  // The message box could not be measured while the list hid it.
+  if (s === "chat") sizePrompt();
+}
 
 function showChatScreen() {
   if (narrow.matches && $("app").dataset.screen !== "chat") history.pushState({ screen: "chat" }, "");
   setScreen("chat");
 }
 
-window.addEventListener("popstate", (e) => setScreen(e.state && e.state.screen === "chat" ? "chat" : "list"));
+function showProject(path) {
+  st.project = path;
+  history.pushState({ screen: "list", project: path }, "");
+  renderSide();
+  $("side-scroll").scrollTop = 0;
+}
+
+window.addEventListener("popstate", (e) => {
+  const s = e.state || {};
+  setScreen(s.screen === "chat" ? "chat" : "list");
+  if (s.screen !== "chat" && (s.project || null) !== st.project) {
+    st.project = s.project || null;
+    renderSide();
+  }
+});
 
 $("back").onclick = () => {
   if (history.state && history.state.screen === "chat") history.back();
   else setScreen("list");
 };
+
+// From a folder's screen back to the list.
+function leaveProject() {
+  if (history.state && history.state.project) history.back();
+  else { st.project = null; renderSide(); }
+}
 
 // The address keeps the token and names the chat, so a reload comes back to it.
 function keepAddress() {
@@ -162,8 +188,10 @@ function keepAddress() {
   try { history.replaceState(history.state, "", "#" + p.toString()); } catch (_) { /* sandboxed */ }
 }
 
+// Opened on a chat, a phone's back still has the list to go back to.
 if (startChat && narrow.matches) {
-  history.replaceState({ screen: "chat" }, "");
+  history.replaceState({ screen: "list" }, "");
+  history.pushState({ screen: "chat" }, "");
   setScreen("chat");
 }
 
@@ -188,6 +216,33 @@ function findChat(path) {
 
 function agentFor(chat) {
   return st.agents.find((a) => a.status !== "exited" && a.transcript && a.transcript === chat.path);
+}
+
+// When a chat was last used: its transcript's time, or, while its agent runs,
+// when you last started it or sent it something, as the terminal's list
+// orders chats.
+function usedAt(c) {
+  const a = agentFor(c);
+  return Math.max(c.mtime || 0, (a && a.used_at) || 0);
+}
+
+// A folder's chats, the last used first. A subagent's run is not one: it
+// opens from its session's chat.
+function chatsOf(f) {
+  return f.chats.filter((c) => !c.parent && (st.showArchived || !c.archived))
+    .map((c) => [usedAt(c), c]).sort((x, y) => y[0] - x[0]).map((p) => p[1]);
+}
+
+function foldersByUse() {
+  const at = new Map(st.folders.map((f) => [f, f.chats.reduce((m, c) => (c.parent ? m : Math.max(m, usedAt(c))), 0)]));
+  return [...st.folders].sort((x, y) => at.get(y) - at.get(x));
+}
+
+// On a phone, with nothing in the filter, the list keeps a folder to a line,
+// and the folder has a screen of its own.
+const phoneList = () => narrow.matches && !st.filter;
+function openProject() {
+  return phoneList() && st.project ? st.folders.find((f) => f.path === st.project) || null : null;
 }
 
 function agentsChanged() {
@@ -248,11 +303,11 @@ function renderAgents() {
   box.replaceChildren();
   const list = st.agents.filter((a) => !(a.archived && a.status === "exited" && !st.showArchived) &&
                                        matches(`${a.title || ""} ${a.agent} ${a.cwd}`));
-  $("running-sec").hidden = !list.length && !!st.filter;
+  $("running-sec").hidden = (!list.length && !!st.filter) || !!openProject();
   if (!list.length) box.append(el("div", "dim-note", "Nothing running."));
-  // The ones that want you first.
-  const rank = { waiting: 0, working: 1, idle: 2, exited: 3 };
-  list.sort((x, y) => (rank[x.status] ?? 4) - (rank[y.status] ?? 4));
+  // The last used first, as the terminal's list has them: a row stays where
+  // it is as its agent starts and stops working.
+  list.sort((x, y) => (y.used_at || 0) - (x.used_at || 0));
   for (const a of list) {
     const b = el("button", `row agent ${a.status}`);
     b.type = "button";
@@ -294,20 +349,20 @@ function newRow(path, name) {
   return row;
 }
 
-// How many of a group's chats to show before "Show older": the ones touched
+// How many of a group's chats to show before "Show older": the ones used
 // this week, a few at least and never a wall. The rest are a click away.
 const RECENT_S = 7 * 86400;
 function foldAt(list) {
   if (st.showArchived) return list.length;  // asked for everything
   const now = Date.now() / 1000;
   let n = 0;
-  while (n < list.length && n < 8 && (n < 3 || now - list[n].mtime < RECENT_S || agentFor(list[n]))) n++;
+  while (n < list.length && n < 8 && (n < 3 || now - usedAt(list[n]) < RECENT_S || agentFor(list[n]))) n++;
   return n;
 }
 
 function moreRow(list, limit, show) {
   const rest = list.length - limit;
-  const older = limit < list.length && Date.now() / 1000 - list[limit].mtime >= RECENT_S;
+  const older = limit < list.length && Date.now() / 1000 - usedAt(list[limit]) >= RECENT_S;
   const more = el("button", "more", `Show ${rest} ${older ? "older" : "more"}`);
   more.type = "button";
   more.onclick = show;
@@ -316,7 +371,7 @@ function moreRow(list, limit, show) {
 
 function renderArchivedToggle() {
   let n = 0;
-  for (const f of st.folders) n += f.chats.filter((c) => c.archived).length;
+  for (const f of st.folders) n += f.chats.filter((c) => c.archived && !c.parent).length;
   const b = $("archived-toggle");
   b.hidden = !n;
   b.textContent = st.showArchived ? "Hide archived" : `Show ${n} archived`;
@@ -327,9 +382,19 @@ function renderFolders() {
   const box = $("folders");
   box.replaceChildren();
   renderArchivedToggle();
+  const project = openProject();
+  $("recent-sec").hidden = true;
+  $("folders-h").hidden = !!project;
+  if (project) { renderProject(box, project); return; }
+  if (phoneList()) {
+    renderRecent();
+    for (const f of foldersByUse()) box.append(folderRow(f));
+    if (!st.folders.length) box.append(el("div", "dim-note", "No folders tracked yet."));
+    return;
+  }
   let shown = 0;
-  for (const f of st.folders) {
-    const chats = st.showArchived ? f.chats : f.chats.filter((c) => !c.archived);
+  for (const f of foldersByUse()) {
+    const chats = chatsOf(f);
     const hits = chats.filter((c) => matches(`${c.title || ""} ${c.agent}`));
     if (st.filter && !hits.length && !matches(f.name)) continue;
     shown++;
@@ -356,57 +421,122 @@ function renderFolders() {
     div.append(head);
 
     if (st.newFor === f.path) div.append(newRow(f.path, f.name));
-    if (open) {
-      const subs = (f.subs || []).filter((sp) => sp.path !== f.path);
-      const known = new Set(subs.map((sp) => sp.name));
-      // Chats of the folder itself, then each sub-project with its own.
-      const own = hits.filter((c) => !c.sub || !known.has(c.sub));
-      const limit = st.showAll.has(f.path) || st.filter ? own.length : foldAt(own);
-      for (const c of own.slice(0, limit)) div.append(chatRow(c));
-      if (own.length > limit) div.append(moreRow(own, limit, () => { st.showAll.add(f.path); renderFolders(); }));
-      for (const sp of subs) {
-        const mine = chats.filter((c) => c.sub === sp.name);
-        const shownHere = hits.filter((c) => c.sub === sp.name);
-        if (st.filter && !shownHere.length && !matches(sp.name)) continue;
-        const sk = `${f.path}\u0000${sp.name}`;
-        const sopen = st.filter ? true : !st.collapsed.has(sk);
-        const sdiv = el("div", "subfolder" + (sopen ? " open" : ""));
-        const shead = el("div", "folder-head sub-head");
-        const stoggle = el("button", "folder-toggle");
-        stoggle.type = "button";
-        stoggle.append(el("span", "chev", "▶"), el("span", "name", sp.name), el("span", "n", String(mine.length)));
-        stoggle.title = sp.path;
-        stoggle.setAttribute("aria-expanded", String(sopen));
-        stoggle.onclick = () => {
-          if (st.collapsed.has(sk)) st.collapsed.delete(sk); else st.collapsed.add(sk);
-          store.set("collapsed", [...st.collapsed]);
-          renderFolders();
-        };
-        const splus = el("button", "icon-btn", "+");
-        splus.type = "button";
-        splus.title = `Start an agent in ${sp.name}`;
-        splus.setAttribute("aria-label", splus.title);
-        splus.onclick = () => { st.newFor = st.newFor === sp.path ? null : sp.path; renderFolders(); };
-        shead.append(stoggle, splus);
-        sdiv.append(shead);
-        if (st.newFor === sp.path) sdiv.append(newRow(sp.path, sp.name));
-        if (sopen) {
-          const slimit = st.showAll.has(sk) || st.filter ? shownHere.length : foldAt(shownHere);
-          for (const c of shownHere.slice(0, slimit)) sdiv.append(chatRow(c));
-          if (shownHere.length > slimit)
-            sdiv.append(moreRow(shownHere, slimit, () => { st.showAll.add(sk); renderFolders(); }));
-          if (!shownHere.length && !st.filter) sdiv.append(el("div", "dim-note", "No chats yet."));
-        }
-        div.append(sdiv);
-      }
-      if (!hits.length && !subs.length && !st.filter) div.append(el("div", "dim-note", "No chats yet."));
-    }
+    if (open) folderBody(div, f, chats, hits);
     box.append(div);
   }
   if (!shown) box.append(el("div", "dim-note", st.filter ? "No chat matches." : "No folders tracked yet."));
 }
 
-function chatRow(c) {
+// What an open folder lists: the chats of the folder itself, then each
+// sub-project with its own.
+function folderBody(div, f, chats, hits) {
+  const subs = (f.subs || []).filter((sp) => sp.path !== f.path);
+  const known = new Set(subs.map((sp) => sp.name));
+  const own = hits.filter((c) => !c.sub || !known.has(c.sub));
+  const limit = st.showAll.has(f.path) || st.filter ? own.length : foldAt(own);
+  for (const c of own.slice(0, limit)) div.append(chatRow(c));
+  if (own.length > limit) div.append(moreRow(own, limit, () => { st.showAll.add(f.path); renderFolders(); }));
+  for (const sp of subs) {
+    const mine = chats.filter((c) => c.sub === sp.name);
+    const shownHere = hits.filter((c) => c.sub === sp.name);
+    if (st.filter && !shownHere.length && !matches(sp.name)) continue;
+    const sk = `${f.path}\u0000${sp.name}`;
+    const sopen = st.filter ? true : !st.collapsed.has(sk);
+    const sdiv = el("div", "subfolder" + (sopen ? " open" : ""));
+    const shead = el("div", "folder-head sub-head");
+    const stoggle = el("button", "folder-toggle");
+    stoggle.type = "button";
+    stoggle.append(el("span", "chev", "▶"), el("span", "name", sp.name), el("span", "n", String(mine.length)));
+    stoggle.title = sp.path;
+    stoggle.setAttribute("aria-expanded", String(sopen));
+    stoggle.onclick = () => {
+      if (st.collapsed.has(sk)) st.collapsed.delete(sk); else st.collapsed.add(sk);
+      store.set("collapsed", [...st.collapsed]);
+      renderFolders();
+    };
+    const splus = el("button", "icon-btn", "+");
+    splus.type = "button";
+    splus.title = `Start an agent in ${sp.name}`;
+    splus.setAttribute("aria-label", splus.title);
+    splus.onclick = () => { st.newFor = st.newFor === sp.path ? null : sp.path; renderFolders(); };
+    shead.append(stoggle, splus);
+    sdiv.append(shead);
+    if (st.newFor === sp.path) sdiv.append(newRow(sp.path, sp.name));
+    if (sopen) {
+      const slimit = st.showAll.has(sk) || st.filter ? shownHere.length : foldAt(shownHere);
+      for (const c of shownHere.slice(0, slimit)) sdiv.append(chatRow(c));
+      if (shownHere.length > slimit)
+        sdiv.append(moreRow(shownHere, slimit, () => { st.showAll.add(sk); renderFolders(); }));
+      if (!shownHere.length && !st.filter) sdiv.append(el("div", "dim-note", "No chats yet."));
+    }
+    div.append(sdiv);
+  }
+  if (!hits.length && !subs.length && !st.filter) div.append(el("div", "dim-note", "No chats yet."));
+}
+
+// A phone's list: the chats last used, across every folder, the running
+// ones aside (they are above).
+const RECENT_N = 5;
+function renderRecent() {
+  const all = [];
+  for (const f of st.folders)
+    for (const c of chatsOf(f)) if (!c.archived && !agentFor(c)) all.push([c.mtime || 0, c, f]);
+  all.sort((x, y) => y[0] - x[0]);
+  const box = $("recent");
+  box.replaceChildren();
+  for (const [, c, f] of all.slice(0, RECENT_N)) box.append(chatRow(c, f.name + (c.sub ? ` › ${c.sub}` : "")));
+  $("recent-sec").hidden = !all.length;
+}
+
+function liveIn(path) {
+  return st.agents.filter((a) => a.status !== "exited" && a.cwd && (a.cwd === path || a.cwd.startsWith(path + "/")));
+}
+
+// A folder on a phone's list: one line, and its own screen a tap away.
+function folderRow(f) {
+  const chats = chatsOf(f).filter((c) => !c.archived);
+  const live = liveIn(f.path);
+  const need = live.filter((a) => a.status === "waiting").length;
+  const b = el("button", "row project");
+  b.type = "button";
+  if (live.length) b.append(el("span", `dot lead ${need ? "waiting" : live.some((a) => a.status === "working") ? "working" : "idle"}`));
+  else b.append(el("span", "nolead"));
+  b.append(el("span", "t", f.name));
+  b.append(el("span", "w", chats.length ? ago(usedAt(chats[0])) : ""));
+  const m = el("span", "m", `${chats.length} chat${chats.length === 1 ? "" : "s"}`);
+  if (live.length) m.append(` · ${live.length} running`);
+  if (need) m.append(" · ", el("span", "need", `${need} need${need === 1 ? "s" : ""} you`));
+  b.append(m);
+  b.title = f.path;
+  b.setAttribute("aria-label", `${f.name}: ${m.textContent}`);
+  b.onclick = () => showProject(f.path);
+  return b;
+}
+
+// A folder's own screen on a phone: a way back, a new chat, its chats, then
+// each sub-project with its own.
+function renderProject(box, f) {
+  const head = el("div", "project-head");
+  const back = el("button", "icon", "‹");
+  back.type = "button";
+  back.setAttribute("aria-label", "Back to the list");
+  back.onclick = leaveProject;
+  const names = el("div", "titles");
+  names.append(el("div", "project-name", f.name), el("div", "project-path", f.path));
+  head.append(back, names);
+  box.append(head);
+  if (st.adapters.length) {
+    const start = newRow(f.path, f.name);
+    start.prepend(el("span", "newlabel", "New chat"));
+    box.append(start);
+  }
+  const chats = chatsOf(f);
+  const div = el("div", "folder open in-project");
+  folderBody(div, f, chats, chats);
+  box.append(div);
+}
+
+function chatRow(c, where) {
   const live = agentFor(c);
   const b = el("button", "row" + (st.chat && c.path === st.chat.path ? " current" : "") + (c.archived ? " archived" : ""));
   b.type = "button";
@@ -414,7 +544,7 @@ function chatRow(c) {
   else b.append(el("span", "nolead"));
   b.append(el("span", "t", c.title || "(untitled)"));
   b.append(el("span", "w", live ? STATUS[live.status] : c.archived ? "archived" : ago(c.mtime)));
-  b.append(el("span", "m", c.agent));
+  b.append(el("span", "m", where ? `${c.agent} · ${where}` : c.agent));
   b.title = c.title || "";
   holdMenu(b, () => chatActions(subjectOfChat(c)));
   b.onclick = () => openChat(c.path, c.title);
@@ -445,9 +575,9 @@ function currentSubject() {
 // The actions of a chat, as the chat list's own menu offers them, and only
 // those that apply: a name and an archive mark need the chat to be named,
 // resuming needs it stopped, stopping needs it running.
-function chatActions(s) {
+function chatActions(s, open) {
   const items = [{ title: s.title || "(untitled)" }];
-  items.push({ label: "Open", run: () => (s.live ? openAgent(s.live) : openChat(s.path, s.title)) });
+  if (!open) items.push({ label: "Open", run: () => (s.live ? openAgent(s.live) : openChat(s.path, s.title)) });
   if (s.id) {
     items.push({ label: "Rename…", run: () => renameSheet(s) });
     items.push(s.archived ? { label: "Unarchive", run: () => setArchived(s, false) }
@@ -516,7 +646,7 @@ function openSheet(items, x, y) {
   for (const it of items) {
     if (it === "-") { box.append(el("hr")); continue; }
     if (it.node) { box.append(it.node); continue; }
-    if (it.title !== undefined) { box.append(el("div", "sheet-title", it.title)); continue; }
+    if (it.title !== undefined) { box.append(el("div", "sheet-title" + (it.whole ? " whole" : ""), it.title)); continue; }
     const b = el("button", "sheet-item" + (it.danger ? " danger" : ""), it.label);
     b.type = "button";
     b.setAttribute("role", "menuitem");
@@ -585,10 +715,53 @@ function holdMenu(b, actions) {
 
 $("chat-menu").onclick = (e) => {
   const s = currentSubject();
-  if (!s) return;
+  if (!s && !narrow.matches) return;
   const r = e.currentTarget.getBoundingClientRect();
-  openSheet(chatActions(s), r.left, r.bottom + 4);
+  openSheet(headActions(s), r.left, r.bottom + 4);
 };
+// On a phone the title is where to look for the chat's details.
+document.querySelector("#chat-head .titles").onclick = () => { if (narrow.matches) $("chat-menu").click(); };
+
+// The open chat's actions. On a phone they also hold what the header has no
+// room for beside the title: what the chat is, how much of the work shows,
+// the work panel, and interrupting or stopping the agent.
+function headActions(s) {
+  const actions = s ? chatActions(s, true) : [];
+  if (!narrow.matches) return actions;
+  const a = liveAgent();
+  const items = [{ title: (a && a.title) || st.chat.title || "Chat", whole: true }, { node: chatFacts(a) }, { node: viewPicker() }];
+  const { n, need } = workCount(a);
+  items.push({ label: `Work${n ? ` · ${n}` : ""}${need ? " · needs you" : ""}`, run: () => openWork() });
+  if (a && a.status === "working") items.push({ label: "Interrupt", run: interruptAgent });
+  return items.concat(actions.length ? ["-", ...actions.slice(1)] : []);
+}
+
+function chatFacts(a) {
+  const box = el("div", "sheet-facts");
+  const found = st.chat && findChat(st.chat.path);
+  const line = el("div");
+  if (a) line.append(el("span", `dot ${a.status}`), ` ${STATUS[a.status] || a.status} · ${a.agent}`);
+  else line.append(found ? `Stored chat · ${found.chat.agent} · ${ago(found.chat.mtime)}` : "Stored chat");
+  box.append(line);
+  for (const p of (a && a.places) || []) box.append(el("div", "", placeLine(p).split("\n")[0]));
+  const facts = Object.values(st.state || {}).filter(Boolean);
+  if (facts.length) box.append(el("div", "", facts.join(" · ")));
+  return box;
+}
+
+function viewPicker() {
+  const box = el("div", "sheet-views");
+  box.setAttribute("role", "group");
+  box.setAttribute("aria-label", "How much of the work to show");
+  for (const v of VIEWS) {
+    const b = el("button", "", v[0].toUpperCase() + v.slice(1));
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(st.view === v));
+    b.onclick = () => { closeSheet(); setView(v); };
+    box.append(b);
+  }
+  return box;
+}
 
 // The theme: Auto follows the system, the rest are the terminal's own.
 const THEMES = ["auto", "light", "dark", "dracula", "warm", "contrast"];
@@ -605,12 +778,10 @@ function setTheme(t) {
 $("theme").onchange = (e) => setTheme(e.target.value);
 setTheme(store.get("theme", "auto"));
 
+// On a phone the choice is in the chat's ⋯.
 const VIEWS = ["minimal", "normal", "full"];
-// On a phone one chip shows the view and a tap goes on to the next.
-for (const b of document.querySelectorAll("#views button")) {
-  b.onclick = () => setView(narrow.matches ? VIEWS[(VIEWS.indexOf(st.view) + 1) % VIEWS.length] : b.dataset.view);
-}
-setView(["minimal", "normal", "full"].includes(st.view) ? st.view : "normal");
+for (const b of document.querySelectorAll("#views button")) b.onclick = () => setView(b.dataset.view);
+setView(VIEWS.includes(st.view) ? st.view : "normal");
 
 $("filter").addEventListener("input", (e) => { st.filter = e.target.value.trim().toLowerCase(); renderSide(); });
 $("filter").addEventListener("keydown", (e) => {
@@ -690,7 +861,8 @@ function renderHead() {
   $("chat-title").textContent = (a && a.title) || st.chat.title || "Chat";
   renderMeta(a, found);
   $("stop").hidden = !a;
-  $("chat-menu").hidden = !a && !found;
+  // On a phone the ⋯ is also where the view, the work and the details are.
+  $("chat-menu").hidden = !narrow.matches && !a && !found;
   $("interrupt").hidden = !(a && a.status === "working");
   const wasHidden = $("prompt").hidden;
   renderPermission(a);
@@ -701,6 +873,7 @@ function renderHead() {
   $("resume-bar").hidden = !!a || !found;
   if (a) $("prompt-text").placeholder = `Message ${a.agent}…`;
   if (a && wasHidden && !st.chat.path && !coarse.matches) $("prompt-text").focus();
+  renderSend();
   renderHint(a);
   renderActivity(a);
   setTitle();
@@ -757,16 +930,24 @@ function renderHint(a) {
   const queued = (a.queued || []).length;
   const held = (st.held || []).length;
   if (queued || held) h.textContent = `${queued + held} message${queued + held === 1 ? "" : "s"} waiting for the agent to finish`;
-  else if (a.status === "working") h.textContent = "The agent is working: a message now steers it.";
+  else if (a.status === "working")
+    h.textContent = narrow.matches ? "The agent is working: a message steers it, ■ interrupts it."
+                                   : "The agent is working: a message now steers it.";
   else h.textContent = "";
 }
 
 function backgroundTasks(a) { return a && a.status !== "exited" ? a.background || [] : []; }
 
-function renderWorkToggle(a) {
+function workCount(a) {
   const active = st.work.items.filter(i => i.status === "working" || i.status === "failed" || i.status === "waiting");
-  const n = Math.max(active.length, backgroundTasks(a).length);
-  const need = active.filter(i => i.status === "waiting").length;
+  return { n: Math.max(active.length, backgroundTasks(a).length), need: active.filter(i => i.status === "waiting").length };
+}
+
+function renderWorkToggle(a) {
+  const { n, need } = workCount(a);
+  // On a phone the work is behind the ⋯, which says when there is some.
+  $("chat-menu").classList.toggle("has-work", n > 0);
+  $("chat-menu").classList.toggle("needs-attention", need > 0);
   $("work-toggle").textContent = n ? `Work · ${n}${need ? " !" : ""}` : "Work";
   $("work-toggle").classList.toggle("needs-attention", need > 0);
   $("work-toggle").title = need ? `${need} side conversation${need === 1 ? " needs" : "s need"} you` : "Subagents, terminals and side questions";
@@ -789,7 +970,7 @@ function closeWork() {
   st.work.open = false;
   renderWork();
   requestWork();
-  $("work-toggle").focus();
+  (narrow.matches ? $("chat-menu") : $("work-toggle")).focus();
 }
 
 function applyWork(m) {
@@ -968,10 +1149,11 @@ function renderPermission(a) {
   box.scrollIntoView({ block: "nearest" });
 }
 
-$("interrupt").onclick = () => {
+function interruptAgent() {
   const a = liveAgent();
   if (a) command({ type: "interrupt", key: a.key }, () => toast("Interrupted"));
-};
+}
+$("interrupt").onclick = interruptAgent;
 
 // ------------------------------------------------------------------ markdown
 
@@ -1772,9 +1954,28 @@ function applyState(m) {
 function sizePrompt() {
   const t = $("prompt-text");
   t.style.height = "auto";
-  t.style.height = Math.min(t.scrollHeight, 200) + "px";
-  $("send").disabled = !t.value.trim();
+  // Not laid out (on a phone, while the list is the screen): its one line until it is.
+  if (t.scrollHeight) t.style.height = Math.min(t.scrollHeight, 200) + "px";
+  renderSend();
 }
+
+// On a phone the header has no room for Interrupt: while the agent works and
+// nothing is typed, the send button interrupts, as a phone's chat apps do.
+function renderSend() {
+  const b = $("send"), a = liveAgent(), typed = !!$("prompt-text").value.trim();
+  const halt = narrow.matches && !typed && !!a && a.status === "working";
+  b.classList.toggle("halt", halt);
+  b.textContent = halt ? "■" : "↑";
+  b.setAttribute("aria-label", halt ? "Interrupt" : "Send");
+  b.title = halt ? "Interrupt what it is doing" : "";
+  b.disabled = !halt && !typed;
+}
+
+$("send").addEventListener("click", (e) => {
+  if (!$("send").classList.contains("halt")) return;
+  e.preventDefault();
+  interruptAgent();
+});
 
 $("prompt-text").addEventListener("input", sizePrompt);
 
@@ -1831,6 +2032,9 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", fit);
   fit();
 }
+
+// A phone turned, a window narrowed: the list and the header lay out anew.
+narrow.addEventListener("change", () => { renderSide(); renderHead(); });
 
 setInterval(renderSide, 60000);  // "3m" moves on its own
 connect();

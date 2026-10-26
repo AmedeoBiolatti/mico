@@ -259,7 +259,7 @@ was.
 
 - **Sub-projects** are listed under their folder, each with its own chats and a
   **+** to start an agent in it.
-- **Minimal, Normal, Full** (beside the chat's title): minimal keeps the
+- **Minimal, Normal, Full** (beside the chat's title; in its **⋯** on a phone): minimal keeps the
   conversation and folds every run of steps to its line, normal opens short
   runs, full opens every step with its output and the thinking. The choice is
   remembered in the browser.
@@ -269,13 +269,28 @@ was.
   (```` ```chart ````) are drawn as SVG: line, scatter, bar, hist, heatmap and
   several side by side. A chart read from a data file, a Mermaid diagram and
   typeset equations are terminal-only for now; an equation shows its LaTeX.
-- **A phone gets one screen at a time**, the list and then the chat, with a ‹ that
-  is the browser's own back (so the phone's back gesture works), tap targets
-  that fit a thumb, and a message box that sits above the keyboard. On a touch
-  screen Enter is a new line and ↑ sends; with a keyboard, Enter sends.
+- **A phone gets one screen at a time**, the list, a folder, then the chat, as
+  the terminal does below 80 columns, each with a ‹ that is the browser's own
+  back (so the phone's back gesture works), tap targets that fit a thumb, and a
+  message box that sits above the keyboard. On a touch screen Enter is a new
+  line and ↑ sends; with a keyboard, Enter sends.
+  - The list keeps a folder to a line — its chats, what is running in it, when
+    it was last used — and puts the chats last used, across every folder,
+    under **Recent**. A tap on a folder opens its own screen: **New chat**, its
+    chats, then each sub-project with its own.
+  - A chat's header is its title (two lines of it) and one line of what it is
+    doing and where. The **⋯**, or a tap on the title, holds the rest: the
+    whole title, the agent, its model and branches, the view, **Work** (a dot on
+    the ⋯ says when there is some), **Interrupt**, and the chat's actions.
+  - While the agent works and nothing is typed, the message box's button is ■
+    and interrupts it; typing makes it ↑ again, to steer.
 - **The list** filters as you type (`/` focuses it), folds folders (remembered),
   shows what is running first with its state — working, ready, needs you — and
-  counts the agents that need you in the browser tab's title. A folder shows
+  counts the agents that need you in the browser tab's title. Running chats and
+  a folder's chats are in the order you last used them, as in the terminal's
+  list: started, resumed or sent a message, not what the agent is doing, so a
+  row stays put as its agent works. A subagent's run is not a chat of the list;
+  it opens from the Work panel of the chat that started it. A folder shows
   this week's chats (a few at least) and folds the older ones behind **Show N
   older**; archived chats are hidden, with **Show N archived** at the foot of
   the list to see them, dimmed.
