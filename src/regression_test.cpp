@@ -1359,6 +1359,8 @@ int run_regression_tests() {
           const std::string cwd = sub == "chat-web" ? project + "/web" : project;
           check(app.store().add_subproject(project, sub, cwd), "New chat: add a sub-project fixture");
           app.select_sub(sub);
+          app.draw(sf);  // leaving the previous unused chat closes it
+          running = app.live_sessions().size();
           chats->render(cp, true);
           chats->on_key({Key::End});
           chats->on_key({Key::Enter});
@@ -1369,6 +1371,8 @@ int run_regression_tests() {
                 "New chat: Enter starts in the selected sub-project and preserves its membership");
           running = app.live_sessions().size();
           app.select_sub("");
+          app.draw(sf);
+          running = app.live_sessions().size();
           app.store().remove_subproject(project, sub);
         }
 
@@ -1863,6 +1867,93 @@ int run_regression_tests() {
       fprintf(stderr, "received: %s\n", hex.c_str());
     }
     for (auto* s : app.live_sessions()) s->pty().terminate();
+  }
+
+  {
+    // Leaving a fresh blank chat should stop its process, while anything the
+    // user has written, sent or queued keeps its session and draft intact.
+    put(base + "/unused-bin/claude", "#!/bin/sh\nexec cat\n");
+    chmod((base + "/unused-bin/claude").c_str(), 0755);
+    put(base + "/unused-bin/codex", "#!/bin/sh\n"
+        "[ \"$1\" = --help ] && exit 0\n"
+        "if [ -n \"$UNUSED_CHAT_CODEX_FILE\" ]; then\n"
+        "  while [ ! -f \"$UNUSED_CHAT_CODEX_FILE\" ]; do sleep 0.01; done\n"
+        "  exec 9>>\"$UNUSED_CHAT_CODEX_FILE\"\n"
+        "fi\nexec cat\n");
+    chmod((base + "/unused-bin/codex").c_str(), 0755);
+    const char* path_env = getenv("PATH");
+    EnvScope search_path("PATH", base + "/unused-bin:" + (path_env ? path_env : "/bin"));
+    const std::string saved = base + "/.claude/projects/unused/unused-existing.jsonl";
+    put(saved, "{\"type\":\"user\",\"cwd\":" + js::quote(project) +
+        ",\"sessionId\":\"unused-existing\",\"message\":{\"content\":\"An existing conversation\"}}\n");
+    const std::string empty_codex = base + "/.codex/sessions/2026/10/25/rollout-unused-new-chat.jsonl";
+    for (int mode = 0; mode < 11; ++mode) {
+      EnvScope rollout("UNUSED_CHAT_CODEX_FILE", mode == 9 ? empty_codex : "");
+      App app;
+      Surface sf; sf.resize(120, 32);
+      if (mode == 6) app.spawn_raw({"/bin/cat"}, project);
+      else if (mode == 10) app.spawn_raw({"claude", "--initial-prompt", "EXPLICIT_COMMAND"}, project);
+      else if (mode == 7 || mode == 8) app.spawn_continuation("claude", "unused-existing", project, mode == 8);
+      else if (mode == 9) app.spawn_agent("codex", project);
+      else app.spawn_agent("claude", project);
+      app.draw(sf);
+      LiveSession* s = app.selected_live();
+      check(s != nullptr, "unused chat fixture starts");
+      if (!s) continue;
+      const uint64_t serial = s->serial();
+      if (mode == 0) {
+        app.select_live(s); app.draw(sf);
+        check(app.live_sessions().size() == 1, "selecting the same new chat keeps it open");
+        app.open_tab(1); app.draw(sf); app.open_tab(0); app.draw(sf);
+        check(app.live_sessions().size() == 1, "switching tabs does not abandon a new chat");
+      } else if (mode == 1) {
+        app.feed({InputEvent::Type::Paste, {}, {}, "KEEP_UNUSED_DRAFT"});
+      } else if (mode == 2) {
+        check(s->send_parts({MessagePart{false, "FIRST_MESSAGE"}}), "first message is accepted");
+      } else if (mode == 3) {
+        s->enqueue({MessagePart{false, "QUEUED_FIRST_MESSAGE"}});
+      } else if (mode == 4 || mode == 5) {
+        app.feed({InputEvent::Type::Key, KeyEvent{Key::F2}, {}, {}});
+        if (mode == 4) app.feed({InputEvent::Type::Key, KeyEvent{Key::Char, 'x'}, {}, {}});
+        else app.feed({InputEvent::Type::Paste, {}, {}, "RAW_FIRST_MESSAGE"});
+      } else if (mode == 9) {
+        put(empty_codex, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"unused-new-chat\",\"cwd\":" +
+            js::quote(project) + "}}\n");
+        // Discovery requires the actual PTY child to own the rollout file.
+        for (int i = 0; i < 200 && s->transcript().empty(); ++i) { s->pump(); usleep(10000); }
+        check(s->transcript() == empty_codex, "an empty Codex chat can already have a metadata transcript");
+      }
+      app.select_stored(saved);
+      app.draw(sf);
+      if (mode == 0 || mode == 9) {
+        check(app.live_sessions().empty(), "switching to a stored chat closes an unused new agent");
+      } else {
+        const auto live = app.live_sessions();
+        check(live.size() == 1 && live.front()->serial() == serial,
+              "drafts, messages, queues, raw input, commands, resumes and forks survive switching chats");
+        if (mode == 1 && live.size() == 1) {
+          app.select_live(live.front()); app.draw(sf);
+          check(screen(sf).find("KEEP_UNUSED_DRAFT") != std::string::npos,
+                "a new chat's draft is restored when returning to it");
+        }
+      }
+    }
+    {
+      App app;
+      Surface sf; sf.resize(120, 32);
+      app.spawn_agent("claude", project); app.draw(sf);
+      app.spawn_agent("claude", project); app.draw(sf);
+      check(app.live_sessions().size() == 1 && app.selected_live() == app.live_sessions().front(),
+            "starting another chat closes the unused one");
+      int other_index = -1;
+      for (size_t i = 0; i < app.store().projects().size(); ++i)
+        if (app.store().projects()[i].path == other) other_index = int(i);
+      check(other_index >= 0, "the other project is available for unused chat cleanup");
+      app.select_project(other_index); app.draw(sf);
+      check(app.live_sessions().empty(), "switching projects closes a fresh blank chat");
+    }
+    std::filesystem::remove_all(base + "/.claude/projects/unused");
+    std::filesystem::remove(empty_codex);
   }
 
   {

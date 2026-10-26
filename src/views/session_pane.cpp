@@ -67,6 +67,9 @@ class SessionPane final : public Pane {
   static constexpr int kMaxPromptRows = 6;
 
   LiveSession* session() const override { return s_; }
+  bool has_draft() const override {
+    return !prompt_.empty() || !suspended_prompt_.empty() || !work_prompt_.empty();
+  }
   void handoff(Handoff& h) override {
     int permission_cursor = perm_pick_.cursor();
     h.fields(view_, view_chosen_, prompt_, hist_, hist_at_, hist_shown_, note_q_, note_header_,
@@ -764,6 +767,7 @@ class SessionPane final : public Pane {
       return true;
     }
     if (showing_raw()) {
+      s_->note_user_input();
       s_->pty().write(encode_paste(std::string(t), s_->vt().bracketed_paste()));
       return true;
     }
@@ -797,6 +801,7 @@ class SessionPane final : public Pane {
     // Raw view and a fresh session's startup flow both forward every key to
     // the agent verbatim.
     if (showing_raw()) {
+      s_->note_user_input();
       s_->pty().write(encode_key(k, s_->vt().app_cursor_keys()));
       return true;
     }
@@ -1168,6 +1173,7 @@ class SessionPane final : public Pane {
       return true;
     }
     if (s_->vt().wants_mouse()) {
+      s_->note_user_input();
       MouseEvent fwd = m;
       fwd.pos = local;  // the agent thinks its screen starts at our pane origin
       s_->pty().write(encode_mouse(fwd, s_->vt().sgr_mouse()));

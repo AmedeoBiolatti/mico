@@ -46,7 +46,11 @@ cmake -S . -B build -G Ninja && cmake --build build
 | `mico --local` | single process; agents die with it |
 
 Detaching is just closing the client, or pressing `q`. Agents keep running.
-Nothing bound to a keystroke stops them: that needs `mico kill` or `:quit`.
+Detaching never stops agents. `mico kill` or `:quit` stops them all.
+
+A newly created chat with no draft, sent message or queued work closes when
+you select another chat or project. Resumed chats, forks and raw commands stay
+open. Typing or pasting directly in an agent's raw terminal also keeps it open.
 
 | key | |
 |---|---|
