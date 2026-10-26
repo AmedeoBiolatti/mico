@@ -234,6 +234,7 @@ bool LiveSession::start(const Launch& l) {
   // The adapter follows the agent, never the argv. A resumed or forked session
   // is still a claude session and still gets a chat view.
   adapter_ = adapter_for(agent_);
+  fresh_chat_ = adapter_ && l.argv.empty() && l.session_id.empty() && l.origin.empty() && !l.forked;
 
   // What mico can show, told to the agent so it can use it: charts, today.
   // And mico's own tools, as an MCP server, when the user turned them on with
@@ -316,6 +317,7 @@ void LiveSession::handoff(Handoff& h) {
   h.fields(bg_.version, bg_file_, continued_to_, continued_, bg_read_, bg_line_, bg_skip_,
            bg_poll_ms_, bg_progress_ms_, bg_tasks_dir_);
   if (h.reading()) {
+    fresh_chat_ = false;
     adapter_ = adapter_for(agent_);
     if (!transcript_.empty()) claimed_transcripts()[transcript_] = this;
   }

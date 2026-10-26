@@ -665,6 +665,7 @@ const SubProject* App::current_sub() const {
 
 void App::select_sub(const std::string& name) {
   if (name == sub_) return;
+  close_unused_chat();
   sub_ = name;
   filter_version_++;
   // Like a folder, a sub-project opens on its own newest chat.
@@ -741,6 +742,7 @@ bool App::in_filter(const std::string& project_name, const std::string& path) co
 
 void App::select_project(int i) {
   if (i == project_index() && sub_.empty()) return;
+  close_unused_chat();
   filter_version_++;
   project_ = i;
   const auto& ps = ws_.store().projects();
@@ -754,6 +756,7 @@ void App::select_project(int i) {
 
 void App::select_live(LiveSession* s) {
   if (selected_live_ == s && selected_path_.empty()) return;
+  close_unused_chat();
   filter_version_++;
   selected_live_ = s;
   selected_path_.clear();
@@ -763,6 +766,7 @@ void App::select_live(LiveSession* s) {
 
 void App::select_stored(const std::string& transcript_path) {
   if (selected_live_ == nullptr && selected_path_ == transcript_path) return;
+  close_unused_chat();
   filter_version_++;
   selected_live_ = nullptr;
   selected_path_ = transcript_path;
@@ -841,6 +845,7 @@ bool App::open_parent_chat() {
 std::string App::session_title(const LiveSession& session) const { return ws_.title_of(session); }
 
 void App::force_select(int p, int s) {
+  close_unused_chat();
   project_ = p;
   {
     const auto& ps = ws_.store().projects();
@@ -2138,6 +2143,17 @@ void App::focus_next(int delta) {
   if (placed_.empty()) return;
   int n = int(placed_.size());
   focus_ = size_t(((int(focus_) + delta) % n + n) % n);
+}
+
+void App::close_unused_chat() {
+  if (!selected_live_ || !selected_live_->unused_new_chat()) return;
+  bool draft = false;
+  if (root_) root_->for_each_pane([&](const Pane& p) {
+    if (p.session() == selected_live_) draft |= p.has_draft();
+  });
+  if (auto it = session_panes_.find(selected_live_); it != session_panes_.end() && it->second)
+    draft |= it->second->has_draft();
+  if (!draft) ws_.close(selected_live_);
 }
 
 void App::handle_key(const KeyEvent& k) {
