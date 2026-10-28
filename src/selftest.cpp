@@ -61,6 +61,7 @@
 #include "core/procmem.h"
 #include <sys/wait.h>
 #include "net/proto.h"
+#include "net/web.h"
 #include "term/links.h"
 #include "core/images.h"
 #include "math/picture.h"
@@ -1970,6 +1971,11 @@ int run_selftest() {
     picks = chip_pick_items(st, "model", true, "codex", &cursor, &title);
     check(!picks.empty() && picks[0].id == "chipsteps:model|gpt-6-sol|/model\x1f\r\x1f\x01pick:GPT-6-Sol\x1f\x01pick:Max|More reasoning",
           "codex: a model keeps the effort in use");
+    st.set("approval", "permissions", "on-request");
+    picks = chip_pick_items(st, "approval", true, "codex", &cursor, &title);
+    check(picks.size() >= 4 && picks[3].label == "Read Only" &&
+              picks[3].id == "chipsteps:approval|Read Only|/permissions\x1f\r\x1f\x01pick:Read Only",
+          "codex: the permissions chip walks /permissions' menu, never a message");
 
     SessionState os;
     os.set("model", "model", "deepseek-flash");
@@ -4456,6 +4462,16 @@ int run_selftest() {
     GfxCaps got;
     check(proto::decode(wire, &t, &payload) && proto::decode_caps(payload, &got) && got == sent,
           "Hello carries the notification escape");
+
+    // The web view's challenge (RFC 4231 cases 2 and 6: a short key, and one
+    // longer than a block, which is hashed first). web/app.js does the same.
+    check(hmac_sha256_hex("Jefe", "what do ya want for nothing?") ==
+              "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+          "web: HMAC-SHA256, a short key");
+    check(hmac_sha256_hex(std::string(131, '\xaa'), "Test Using Larger Than Block-Size Key - Hash Key First") ==
+              "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+          "web: HMAC-SHA256, a key longer than a block");
+    check(web_auth_proof("ab", "cd") == hmac_sha256_hex("ab", "mico-auth cd"), "web: the proof is keyed with the token");
 
     InputDecoder d;
     d.feed("\x1b[O\x1b[I");

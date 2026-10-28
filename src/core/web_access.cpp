@@ -1,6 +1,10 @@
 #include "core/web_access.h"
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -18,6 +22,7 @@ namespace {
 struct WebConfig {
   bool loaded = false;
   bool on = false;
+  bool lan = false;
   int port = kDefaultWebPort;
 };
 
@@ -31,8 +36,13 @@ WebConfig& config() {
       const int p = std::atoi(v.c_str() + sp + 1);
       if (p > 0 && p < 65536) c.port = p;
     }
+    c.lan = c.on && v.ends_with(" lan");
   }
   return c;
+}
+
+void save(const WebConfig& c) {
+  write_setting("web", std::string(c.on ? "on " : "off ") + std::to_string(c.port) + (c.lan ? " lan" : ""));
 }
 
 }  // namespace
@@ -43,8 +53,74 @@ int web_port() { return config().port; }
 void set_web(bool on, int port) {
   WebConfig& c = config();
   c.on = on;
+  if (!on) c.lan = false;
   if (port > 0 && port < 65536) c.port = port;
-  write_setting("web", std::string(on ? "on " : "off ") + std::to_string(c.port));
+  save(c);
+}
+
+bool web_lan() { return config().on && config().lan; }
+
+void set_web_lan(bool lan) {
+  WebConfig& c = config();
+  c.lan = lan;
+  if (lan) c.on = true;
+  save(c);
+}
+
+namespace {
+
+// 10/8, 172.16/12, 192.168/16: an address a home or office network hands out.
+bool private_v4(uint32_t a) {
+  return (a >> 24) == 10 || (a >> 20) == (172u << 4 | 1) || (a >> 16) == (192u << 8 | 168);
+}
+
+// Docker, libvirt, LXC bridges and VPNs have private addresses too, but no
+// phone on the WiFi reaches them.
+bool virtual_interface(std::string_view name) {
+  for (std::string_view p : {"docker", "br-", "veth", "virbr", "lxc", "lxd", "tailscale", "tun", "tap", "wg", "zt"})
+    if (name.starts_with(p)) return true;
+  return false;
+}
+
+template <class F>
+void each_v4(F&& fn) {
+  ifaddrs* list = nullptr;
+  if (getifaddrs(&list) != 0) return;
+  for (const ifaddrs* i = list; i; i = i->ifa_next) {
+    if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET || !(i->ifa_flags & IFF_UP) || (i->ifa_flags & IFF_LOOPBACK))
+      continue;
+    const uint32_t a = ntohl(reinterpret_cast<const sockaddr_in*>(i->ifa_addr)->sin_addr.s_addr);
+    if (!fn(std::string_view(i->ifa_name ? i->ifa_name : ""), a)) break;
+  }
+  freeifaddrs(list);
+}
+
+std::string dotted(uint32_t a) {
+  return std::to_string(a >> 24) + "." + std::to_string((a >> 16) & 255) + "." + std::to_string((a >> 8) & 255) + "." +
+         std::to_string(a & 255);
+}
+
+}  // namespace
+
+std::string lan_address() {
+  std::string found;
+  each_v4([&](std::string_view name, uint32_t a) {
+    if (!private_v4(a) || virtual_interface(name)) return true;
+    found = dotted(a);
+    return false;
+  });
+  return found;
+}
+
+bool own_lan_address(std::string_view ip) {
+  in_addr want{};
+  if (ip.empty() || ip.size() > 15 || inet_pton(AF_INET, std::string(ip).c_str(), &want) != 1) return false;
+  bool own = false;
+  each_v4([&](std::string_view, uint32_t a) {
+    own = a == ntohl(want.s_addr);
+    return !own;
+  });
+  return own;
 }
 
 namespace {
@@ -136,6 +212,12 @@ void set_web_host(const std::string& host) {
 std::string web_remote_url() {
   const std::string h = web_host();
   return h.empty() ? std::string() : "https://" + h + "/#token=" + web_token();
+}
+
+std::string web_lan_url() {
+  if (!web_lan()) return {};
+  const std::string ip = lan_address();
+  return ip.empty() ? std::string() : "http://" + ip + ":" + std::to_string(web_port()) + "/#token=" + web_token();
 }
 
 std::string tailscale_name() {

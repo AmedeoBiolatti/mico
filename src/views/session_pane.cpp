@@ -152,6 +152,15 @@ class SessionPane final : public Pane {
     const bool working = s_->busy() && !chat_.has_pending_question() && !s_->answer_sending();
     if (!working) activity_since_.reset();
     chat_.seed_agent(s_->adapter());
+    // A choice made before the transcript reported the setting: opening the
+    // transcript starts the chat's state over, so it is put back until the
+    // agent writes its own.
+    std::erase_if(chosen_, [&](const auto& c) {
+      const std::string* v = chat_.state().find(c.first);
+      if (v && !v->empty() && *v != c.second) return true;
+      if (!v || v->empty()) chat_.set_state(c.first, c.second);
+      return false;
+    });
     chat_.set_questions_interactive(!s_->exited());
     chat_.set_working(working, spinner_glyph(app_->anim()));
     chat_.set_background(s_->exited() ? std::vector<BackgroundTask>{} : s_->background());
@@ -1277,7 +1286,7 @@ class SessionPane final : public Pane {
       const std::string val = rest.substr(b1 + 1, b2 - b1 - 1);
       const std::string keys = rest.substr(b2 + 1);
       if (!keys.empty()) s_->pty().write(keys);
-      chat_.set_state(key, val);
+      choose_state(key, val);
       app_->set_status(val == "acceptEdits" ? "mode: accept edits"
                        : val == "plan"      ? "mode: plan"
                                             : "mode: default");
@@ -1302,7 +1311,7 @@ class SessionPane final : public Pane {
         app_->set_status("busy; try again in a moment");
         return;
       }
-      chat_.set_state(key, val);
+      choose_state(key, val);
       app_->set_status("set " + key + " " + val);
       return;
     }
@@ -1311,8 +1320,12 @@ class SessionPane final : public Pane {
       // set command, stay in the chat, and update the chip now — the agent
       // writes the change into its transcript only on its next turn.
       const std::string line = a.substr(8);
-      s_->pty().write(line);
-      s_->pty().write("\r");
+      // The command, then Enter once its completion has settled: both in one
+      // PTY read are taken for pasted text and go to the model as a message.
+      if (!s_->send_answer({line, "\r"})) {
+        app_->set_status("busy; try again in a moment");
+        return;
+      }
       const size_t sp = line.find(' ');
       if (sp != std::string::npos) {
         const std::string cmd = line.substr(0, sp), val = line.substr(sp + 1);
@@ -1320,7 +1333,7 @@ class SessionPane final : public Pane {
                           : cmd == "/effort"    ? "effort"
                           : cmd == "/permissions" ? "perm"
                                                   : nullptr;
-        if (key) chat_.set_state(key, val);
+        if (key) choose_state(key, val);
       }
       app_->set_status("set " + line.substr(1));
       return;
@@ -1841,6 +1854,13 @@ class SessionPane final : public Pane {
   View view_ = View::Chat;
   bool view_chosen_ = false;
   ChatRenderer chat_;
+  // What the user set from a state chip, shown at once; see render_main.
+  std::vector<std::pair<std::string, std::string>> chosen_;
+  void choose_state(std::string_view key, std::string_view val) {
+    chat_.set_state(key, val);
+    std::erase_if(chosen_, [&](const auto& c) { return c.first == key; });
+    chosen_.emplace_back(key, val);
+  }
   std::optional<std::chrono::steady_clock::time_point> activity_since_;
   std::chrono::steady_clock::time_point draft_until_{};
   uint64_t activity_tool_ = 0;

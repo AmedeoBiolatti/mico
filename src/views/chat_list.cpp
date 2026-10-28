@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <set>
 #include <unordered_map>
 #include <string>
@@ -38,6 +39,9 @@ int64_t now_ms() {
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
+
+// Killed outright, nearly always for memory: not a chat that was ended.
+bool killed(const LiveSession* live) { return live && live->exited() && live->exit_signal() == SIGKILL; }
 
 // Most wanting first; see ChatState.
 enum State { Asking, Unread, Running, Ready, Old };
@@ -242,7 +246,7 @@ class ChatList final : public Pane {
 
     // Second line: what it is doing and which agent, then when a stored chat
     // last moved. A live one is happening now, so it has no time.
-    const std::string word = r.archived ? "archived" : r.live && r.live->exited() ? "stopped" : cs.word;
+    const std::string word = r.archived ? "archived" : r.live && r.live->exited() && !killed(r.live) ? "stopped" : cs.word;
     const std::string when = st == Old && !r.live ? rel_time(r.updated) : "";
     const int ww = text::str_width(when);
     int x = 3;
@@ -395,6 +399,12 @@ class ChatList final : public Pane {
       items.push_back(MenuItem::sep());
       items.push_back(MenuItem{"Stop agent", "stop"});
     }
+    // One that exited has no transcript to archive when it never got an id
+    // (codex that updated itself at start): closing is the way to drop it.
+    if (r->live && r->live->exited()) {
+      items.push_back(MenuItem::sep());
+      items.push_back(MenuItem{"Close chat", "close"});
+    }
     return items;
   }
 
@@ -479,6 +489,7 @@ class ChatList final : public Pane {
       return;
     }
     if (a == "stop" && r && r->live) { r->live->pty().terminate(); return; }
+    if (a == "close" && r && r->live && r->live->exited()) { app_->close_session(r->live); return; }
   }
 
  private:
@@ -627,7 +638,9 @@ ChatState chat_state(const LiveSession* live, const Theme& th, uint64_t anim) {
       // round, slower and calmer than the spinner of an agent at work.
       if (live && !live->background().empty()) return {orbit_glyph(anim), th.working, "running", 2};
       return {U'\u25CB', th.dim, "ready", 3};                          // ○
-    default: return {U'\u00B7', th.dim, "saved", 4};                 // ·
+    default:
+      if (killed(live)) return {U'\u2717', th.err, "killed", 4};  // ✗
+      return {U'\u00B7', th.dim, "saved", 4};                 // ·
   }
 }
 

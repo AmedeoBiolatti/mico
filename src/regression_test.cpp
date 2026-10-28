@@ -1,3 +1,4 @@
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <algorithm>
@@ -429,6 +430,15 @@ int run_regression_tests() {
     pane->render(painter, false);
     check(!session.unseen() && chat_state(&session, app.theme()).rank == 3,
           "marks: a chat on screen is read, focused or not");
+    // Killed outright (as for memory) is a red cross, not the grey dot of a
+    // chat that was merely ended.
+    const pid_t pid = session.pty().pid();
+    kill(pid, SIGKILL);
+    pump_for(300);
+    const ChatState dead = chat_state(&session, app.theme());
+    check(session.exited() && dead.rank == 4 && dead.glyph == U'\u2717' && dead.color == app.theme().err &&
+              std::string(dead.word) == "killed",
+          "marks: a chat killed by SIGKILL is a red cross");
   }
 
   {
@@ -2803,8 +2813,10 @@ time.sleep(10)
       return std::string();
     };
     const ChipControl c = codex_adapter().chip_control("approval");
-    check(label("approval") == "permissions" && c.picker == "/permissions" && c.values.empty(),
-          "codex: its approval policy is the permissions chip, opening /permissions");
+    check(label("approval") == "permissions" && c.picker == "/permissions" && c.values.size() == 4 &&
+              c.steps.size() == 3 && c.steps[0] == "/permissions" &&
+              codex_adapter().chip_control("sandbox").values == c.values,
+          "codex: its approval policy is the permissions chip, set through /permissions' menu");
   }
 
   {

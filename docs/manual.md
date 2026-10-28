@@ -235,7 +235,8 @@ locally or across an ssh connection.
 ## Web view
 
 `:web on` has the daemon serve a web page on `127.0.0.1:7311` (`:web on PORT`
-for another port; `:web off` stops it). `:web` puts the page's address on the
+for another port; `:web off` stops it; `:web lan` serves it to the local
+network too, below). `:web` puts the page's address on the
 clipboard. The address carries a token, `#token=…`, which the page needs to
 connect; add `&chat=<transcript path>` to open a chat directly.
 
@@ -315,15 +316,21 @@ was.
 
 It is a client of mico's state protocol (`src/api/client.h`): JSON over a
 WebSocket, carrying chats and agents rather than terminal frames, so any program
-can be another client. It is for this machine only:
+can be another client. It is for this machine only, unless you say otherwise
+(Tailscale or the local network, below):
 
 - the daemon listens on 127.0.0.1, never on a network address;
 - the WebSocket needs the token, kept in `$XDG_CONFIG_HOME/mico/web-token`,
   readable by you alone. It rides in the page address's fragment, which a
-  browser never sends, and reaches the daemon as a WebSocket subprotocol: a
-  header, never in an address a proxy would log. `:web new-token` makes a new
-  one, should an address have gone where it should not, and lets go every
-  browser that came in with the old;
+  browser never sends, and the page never sends it either: the daemon sends a
+  nonce (`{"type":"challenge","nonce":…}`) and the page answers with an
+  HMAC-SHA256 of `mico-auth <nonce>` keyed with the token
+  (`{"type":"auth","proof":…}`), before anything else is read or sent. Another
+  client may instead name the token as a WebSocket subprotocol,
+  `mico-token.<hex>`: a header, never in an address a proxy would log (a token
+  in the address is refused). `:web new-token` makes a new one, should an
+  address have gone where it should not, and lets go every browser that came
+  in with the old;
 - a request naming any other host is refused, so a web page that points its own
   name at 127.0.0.1 gets nowhere, and so is a WebSocket opened from any other
   origin;
@@ -358,6 +365,28 @@ can be another client. It is for this machine only:
   and still rides in the fragment. `:web host <name>` sets the name by hand
   (another reverse proxy, say), `:web host off` clears it. HTTPS also lets a
   phone install the page and copy from it.
+
+**From any device on the same WiFi.** `:web lan` has the daemon listen on
+every address, answer to this machine's own address on the network, and show
+the address (`http://192.168.1.23:7311/#token=…`) as a QR code, also on the
+clipboard. `:web lan off` takes it back to 127.0.0.1; `:web off` ends both.
+The setting is kept, as `on 7311 lan` in `web`.
+
+- It is plain http, so what the page shows (your chats, the code in them)
+  crosses the WiFi as it is, readable by anyone who can listen on it, and
+  someone on the network who can tamper with traffic could take a session
+  over. The token itself never crosses it: the page answers the challenge,
+  and a socket that names the token as a subprotocol from a network address
+  is refused. A home network you trust, then; anywhere else, Tailscale.
+- The daemon answers to its own addresses only (a page on another site that
+  points its name here is refused, as on 127.0.0.1), and a WebSocket only from
+  the page it served there.
+- A firewall may need the port open (`sudo ufw allow 7311/tcp`).
+- The address in the QR code is the first private IPv4 address of an
+  interface that is up, passing over container bridges and VPNs. Should the
+  network hand this machine another, `:web lan` again shows the new one.
+- A page over plain http from another machine is not a secure context: it
+  cannot copy to the clipboard or be installed. Tailscale's HTTPS can.
 
 ## Three data planes
 
@@ -1160,6 +1189,7 @@ name, then its state, agent and when it last moved:
 | `⠋` | working | the agent is working; the spinner turns |
 | `○` | ready | live and idle, and you have seen its last reply |
 | `·` | saved / stopped | nothing running; opens with automatic resume |
+| `✗` (red) | killed | the process was killed outright (SIGKILL), nearly always for memory; opens with automatic resume |
 
 A turn counts as finished once the agent has stayed idle for a moment, so the
 gaps between its steps are not taken for a reply. A chat is read as soon as it

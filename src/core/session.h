@@ -199,6 +199,8 @@ class LiveSession {
   const char* crumb();
   const std::string& start_error() const { return pty_.spawn_error(); }
   int exit_status() const { return pty_.exit_status(); }
+  // The signal that ended it, or 0 when it exited on its own.
+  int exit_signal() const { return pty_.exit_signal(); }
 
  private:
   void discover_transcript();
