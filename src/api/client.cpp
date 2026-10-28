@@ -381,8 +381,10 @@ void Client::send_folders(std::vector<std::string>& out) {
           .field("mtime", s.mtime)
           .field("bytes", s.bytes)
           .field("sub", s.sub)
-          .field("archived", store.archived(s.agent, s.id))
-          .end_object();
+          .field("archived", store.archived(s.agent, s.id));
+      // A subagent's run: not a chat of the list's, but it opens from its session.
+      if (!s.parent.empty()) w.field("parent", s.parent);
+      w.end_object();
     }
     w.end_array().end_object();
   }
@@ -410,6 +412,7 @@ void Client::send_agents(std::vector<std::string>& out) {
         .field("session_id", s->session_id())
         .field("transcript", s->transcript())
         .field("status", status_name(s->status()))
+        .field("used_at", s->used_at())
         .field("archived", ws_.store().archived(s->agent(), s->session_id()));
     w.key("background").begin_array();
     if (!s->exited()) for (const BackgroundTask& t : s->background()) {

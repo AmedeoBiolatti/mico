@@ -80,6 +80,12 @@ ChipControl CodexAdapter::chip_control(std::string_view key) const {
     c.values = {"low", "medium", "high", "xhigh"};
     c.steps = {"/model", "\r", "\x01pick:{model_label}", "\x01pick:{label}|More reasoning"};
     c.picker = "/model";
+  } else if (key == "approval" || key == "sandbox") {
+    // /permissions opens one numbered menu of presets that set the approval
+    // policy and the sandbox together, so either chip offers the same four.
+    c.values = {"Ask for approval", "Approve for me", "Full Access", "Read Only"};
+    c.steps = {"/permissions", "\r", "\x01pick:{value}"};
+    c.picker = "/permissions";
   } else {
     return Adapter::chip_control(key);
   }

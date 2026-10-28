@@ -381,10 +381,65 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
         phone = parse(dom_of(f'{base}&chat={chat}', 390, 800, True, "document.querySelectorAll('#events .ev').length >= 4"))
         app = next(n for n in phone.walk() if n.attrs.get('id') == 'app')
         check(app.attrs.get('data-screen') == 'chat', 'a phone opened on a chat shows the chat')
-        phone = parse(dom_of(base, 390, 800, True))
-        app = next(n for n in phone.walk() if n.attrs.get('id') == 'app')
-        check(app.attrs.get('data-screen') == 'list' and len(find(phone, 'button', 'row')) == 3,
-              'a phone opened on nothing shows the list')
+        # Opened on nothing, the list: the chats last used across folders, then
+        # a line for each folder, whose chats are on a screen of its own.
+        page = Page(debug_port, '')
+        page.open(base, 390, 800, True)
+        check(page.wait("document.querySelectorAll('#folders .row').length > 0"), 'the phone list is up')
+        check(page.eval("document.getElementById('app').dataset.screen") == 'list' and
+              page.eval("document.querySelectorAll('#recent .row').length") == 3 and
+              page.eval("[...document.querySelectorAll('#folders .row')].map(r => r.classList.contains('project') && "
+                        "r.querySelector('.t').textContent)") == ['project'],
+              'a phone opened on nothing shows the list: the recent chats, and a line for the folder')
+        page.eval("document.querySelector('#folders .row.project').click()")
+        check(page.wait("!!document.querySelector('.project-head')") and
+              page.eval("document.getElementById('running-sec').hidden && document.getElementById('recent-sec').hidden && "
+                        "document.querySelectorAll('#folders .row').length === 3 && "
+                        "document.querySelector('#folders .subfolder').textContent.includes('Pictures fixture') && "
+                        "!!document.querySelector('.project-head + .newrow button')"),
+              'the folder has a screen of its own: its chats, its sub-project and a new chat')
+        page.eval("history.back()")
+        check(page.wait("!document.querySelector('.project-head') && !document.getElementById('recent-sec').hidden"),
+              'back goes back to the list')
+        # A chat's header keeps its room for the title; the rest is in the ⋯.
+        page.eval("[...document.querySelectorAll('#recent .row')].find(r => r.textContent.includes('Markdown fixture')).click()")
+        check(page.wait("document.querySelectorAll('#events .ev').length >= 4"), 'a recent chat opens')
+        page.eval("st.ws.onmessage = null; window.sent = []; "
+                  "st.ws = {readyState: WebSocket.OPEN, send: m => sent.push(JSON.parse(m))}")
+        live = {'key': 'live-1', 'agent': 'claude', 'status': 'working', 'cwd': cwd, 'transcript': str(chat),
+                'session_id': SESSION, 'title': 'Markdown fixture chat', 'used_at': int(time.time())}
+        page.eval(f"receive({json.dumps({'type': 'agents', 'agents': [live]})})")
+        check(page.wait("!document.getElementById('prompt').hidden") and
+              page.eval("document.getElementById('chat-title').getBoundingClientRect().width > 250 && "
+                        "['views', 'work-toggle', 'interrupt', 'stop'].every(id => "
+                        "getComputedStyle(document.getElementById(id)).display === 'none')"),
+              'on a phone the title has the header')
+        check(page.eval("document.getElementById('prompt-text').getBoundingClientRect().height >= 30"),
+              'the message box opened from the list has its height')
+        check(page.eval("(() => { const b = document.getElementById('send'); return b.classList.contains('halt') && "
+                        "!b.disabled && b.getAttribute('aria-label') === 'Interrupt'; })()"),
+              'while the agent works, the empty message box\'s button interrupts')
+        page.eval("document.getElementById('send').click()")
+        check(page.eval("sent.some(m => m.type === 'interrupt' && m.key === 'live-1') && !sent.some(m => m.type === 'send')"),
+              'and sends an interrupt, not a message')
+        page.eval("(() => { const t = document.getElementById('prompt-text'); t.value = 'steer'; t.dispatchEvent(new Event('input')); })()")
+        check(page.eval("document.getElementById('send').getAttribute('aria-label')") == 'Send', 'typed text makes it Send again')
+        page.eval("document.getElementById('chat-menu').click()")
+        labels = page.eval("[...document.querySelectorAll('#sheet .sheet-item')].map(b => b.textContent)") or []
+        check(labels[:2] == ['Work', 'Interrupt'] and 'Rename…' in labels and 'Open' not in labels and
+              page.eval("document.querySelectorAll('#sheet .sheet-views button').length") == 3,
+              f'the ⋯ holds the view, the work, Interrupt and the chat\'s actions: {labels}')
+        page.eval("[...document.querySelectorAll('#sheet .sheet-views button')].find(b => b.textContent === 'Full').click()")
+        check(page.eval("st.view === 'full' && document.getElementById('sheet').hidden"), 'a view is chosen from it')
+        page.eval("setView('normal')")
+        page.call('Page.close')
+        # Opened on a chat, back goes to the list rather than out of the page.
+        page = Page(debug_port, '')
+        page.open(f'{base}&chat={chat}', 390, 800, True)
+        check(page.wait("document.querySelectorAll('#events .ev').length >= 4"), 'the phone opened on a chat')
+        page.eval("document.getElementById('back').click()")
+        check(page.wait("document.getElementById('app').dataset.screen === 'list'"), 'and its ‹ goes to the list')
+        page.call('Page.close')
 
         # A chat's actions: a right-click on its row (a long press on a phone)
         # opens a sheet; rename and archive go through the daemon and come
@@ -462,11 +517,20 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
               'a stopped agent whose chat is archived leaves the running list; one not archived stays')
         page.eval(f"{toggle}.hidden = false; st.showArchived = true; renderSide()")
         check(page.wait("document.querySelectorAll('#agents .row').length === 2"), 'until archived chats are shown')
+        ranked = [dict(gone, key='w', status='waiting', archived=False, title='Asked first', used_at=100),
+                  dict(gone, key='k', status='working', archived=False, title='Used last', used_at=300),
+                  dict(gone, key='i', status='idle', archived=False, title='Used between', used_at=200)]
+        page.eval(f"receive({json.dumps({'type': 'agents', 'agents': ranked})})")
+        check(page.wait("[...document.querySelectorAll('#agents .row .t')].map(t => t.textContent).join() === "
+                        "'Used last,Used between,Asked first'"),
+              'running chats are listed by when they were last used, not by what they are doing')
         # Old chats fold: this week's show, a few at least, the rest behind one row.
         now = time.time()
         many = [{'agent': 'claude', 'id': f'old-{i}', 'path': f'/nowhere/old-{i}.jsonl', 'title': f'Chat {i}', 'cwd': cwd,
                  'mtime': now - (i * 3600 if i < 2 else 10 * 86400 + i), 'bytes': 1, 'sub': '', 'archived': False}
                 for i in range(12)]
+        many.append({'agent': 'claude', 'id': 'run', 'path': '/nowhere/run.jsonl', 'title': '↳ Explore · Chat 0', 'cwd': cwd,
+                     'mtime': now, 'bytes': 1, 'sub': '', 'archived': False, 'parent': '/nowhere/old-0.jsonl'})
         # Headless Chrome may hold the frame the sidebar is drawn in until one is asked for.
         page.eval(f"(async () => {{ st.showArchived = false; st.agents = []; receive({json.dumps({'type': 'folders', 'folders': [{'path': cwd, 'name': 'project', 'subs': [], 'chats': many}]})}); "
                   "await new Promise(r => requestAnimationFrame(r)); })()")
@@ -475,6 +539,8 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
               'a folder shows this week\'s chats, three at least, and folds the older ones')
         page.eval("document.querySelector('#folders .more').click()")
         check(page.wait("document.querySelectorAll('#folders .row').length === 12"), 'which one click unfolds')
+        check(page.eval("![...document.querySelectorAll('#folders .row .t')].some(t => t.textContent.startsWith('↳'))"),
+              'a subagent\'s run is not listed as a chat')
         page.call('Page.close')
 
         # Pictures, a chart, an equation, and how much of the work shows.
@@ -588,7 +654,7 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
                 Path(os.environ['MICO_WEB_SCREENSHOTS'] + f'-{width}.png').write_bytes(base64.b64decode(shot))
             page.eval("document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}))")
             check(page.eval("document.getElementById('work-panel').hidden && "
-                            "document.activeElement.id === 'work-toggle' && "
+                            f"document.activeElement.id === '{'chat-menu' if touch else 'work-toggle'}' && "
                             "document.getElementById('prompt-text').value === 'Keep this main draft'"),
                   'Escape closes the panel and restores focus without changing the draft')
 

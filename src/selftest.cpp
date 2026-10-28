@@ -1971,6 +1971,11 @@ int run_selftest() {
     picks = chip_pick_items(st, "model", true, "codex", &cursor, &title);
     check(!picks.empty() && picks[0].id == "chipsteps:model|gpt-6-sol|/model\x1f\r\x1f\x01pick:GPT-6-Sol\x1f\x01pick:Max|More reasoning",
           "codex: a model keeps the effort in use");
+    st.set("approval", "permissions", "on-request");
+    picks = chip_pick_items(st, "approval", true, "codex", &cursor, &title);
+    check(picks.size() >= 4 && picks[3].label == "Read Only" &&
+              picks[3].id == "chipsteps:approval|Read Only|/permissions\x1f\r\x1f\x01pick:Read Only",
+          "codex: the permissions chip walks /permissions' menu, never a message");
 
     SessionState os;
     os.set("model", "model", "deepseek-flash");

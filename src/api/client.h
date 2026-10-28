@@ -18,10 +18,15 @@
 //   hello      {protocol, adapters: [{id, name}]}              first, once
 //   folders    {folders: [{path, name, subs: [{name, path}],   whenever the
 //               chats: [{agent, id, path, title, cwd, mtime,    listing changed
-//               bytes, sub, archived}]}]}
+//               bytes, sub, archived, parent?}]}]}
+//               parent: a subagent's run, and the transcript of the session
+//               that started it; the terminal's list leaves these out
 //   agents     {agents: [{key, agent, title, cwd, session_id,  whenever a running
-//               transcript, status, archived, queued: [text]}]} agent changed
+//               transcript, status, used_at, archived,           agent changed
+//               queued: [text]}]}
 //               status: "working" | "idle" | "waiting" | "exited"
+//               used_at: when you last started it or sent it a message, unix
+//               seconds: what the terminal's list orders running chats by
 //               archived: the chat is put away; a client hides the row once
 //               the agent has exited, as the listing hides its stored row
 //               background: [{id, kind, what, at, started_ms, expires_ms,

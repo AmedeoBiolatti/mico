@@ -477,6 +477,7 @@ class App {
   // Carries out what the menu's picker reported; true once the menu is done.
   void menu_result(Picker::Result r);
   void focus_next(int delta);
+  void close_unused_chat();
   void notify_state_changed();
 
   // What each running agent was doing when last looked at, to tell when one

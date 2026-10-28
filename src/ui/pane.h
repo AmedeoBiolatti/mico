@@ -87,6 +87,8 @@ class Pane {
   // The agent this pane is showing, if it is showing one. Lets the chat list
   // point at panes without the App tracking a parallel index.
   virtual LiveSession* session() const { return nullptr; }
+  // Unsent text/attachments must survive switching away from a new chat.
+  virtual bool has_draft() const { return false; }
   virtual void handoff(Handoff& h) {}
 
   void set_app(App* a) { app_ = a; }

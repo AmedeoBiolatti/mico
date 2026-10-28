@@ -74,6 +74,16 @@ class LiveSession {
   // most): when an agent asks its startup questions, a folder's trust. A
   // resumed chat has its transcript from the start, so that cannot say.
   bool starting() const;
+  // A fresh agent which has received no user input or queued work. The
+  // startup deadline stays set after it expires, until the first input, so
+  // this also recognizes an empty chat left open for more than a minute.
+  bool unused_new_chat() const {
+    return fresh_chat_ && adapter_ && origin_.empty() && !forked_ && !turns_from_end_ &&
+           (!spawned_ || starting_until_ms_ != 0) && work_generation_ == 0 &&
+           queue_.empty() && after_answer_.empty() && !message_sending() && !answer_sending();
+  }
+  // Input forwarded directly to the agent's raw terminal is use too.
+  void note_user_input() { starting_until_ms_ = 0; fresh_chat_ = false; }
   // The command start() settled on, including anything mico added to it.
   const std::vector<std::string>& argv() const { return argv_; }
 
@@ -189,6 +199,8 @@ class LiveSession {
   const char* crumb();
   const std::string& start_error() const { return pty_.spawn_error(); }
   int exit_status() const { return pty_.exit_status(); }
+  // The signal that ended it, or 0 when it exited on its own.
+  int exit_signal() const { return pty_.exit_signal(); }
 
  private:
   void discover_transcript();
@@ -208,6 +220,9 @@ class LiveSession {
   bool forked_ = false;
   std::string transcript_;
   const Adapter* adapter_ = nullptr;
+  // Cleanup is opt-in for an ordinary new chat. Explicit commands and
+  // sessions restored across a daemon reload are conservatively kept.
+  bool fresh_chat_ = false;
   int64_t started_at_ = 0;
   int64_t used_at_ = 0;
   int64_t last_probe_ = 0;
