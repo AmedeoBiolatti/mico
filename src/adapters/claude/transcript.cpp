@@ -236,6 +236,24 @@ void ClaudeAdapter::observe(std::string_view raw, SessionState& st) const {
   });
 }
 
+bool ClaudeAdapter::owns_images(std::string_view raw) const {
+  bool message = false, compact_summary = false;
+  js::scan_keys(raw, [&](std::string_view k, std::string_view rest) {
+    if (k == "type") {
+      const auto type = js::string_body(rest);
+      message = type == "user" || type == "assistant";
+      if (!message) return false;
+    } else if (k == "isCompactSummary") {
+      compact_summary = rest.starts_with("true");
+      if (compact_summary) return false;
+    }
+    return true;
+  });
+  // Request/debug records can mirror whole messages, including screenshots.
+  // Only the conversation records own those images.
+  return message && !compact_summary;
+}
+
 void ClaudeAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>& out) const {
   // Metadata records (mode, permission-mode, ai-title, …) write "type" as
   // their first key, so they are rejected after one member. User and
