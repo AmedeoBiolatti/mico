@@ -2499,6 +2499,37 @@ os.read(0, 1)
           "malformed file mentions retain an inspectable warning");
   }
 
+  // Harness configuration updates are inspectable context, not warnings.
+  {
+    Arena arena;
+    std::vector<Event> events;
+    const std::string payload = R"({"type":"configuration_update","reasoning":{"effort":"low"}})";
+    codex_adapter().parse("{\"type\":\"response_item\",\"payload\":" + payload + "}", arena, events);
+    check(events.size() == 1 && events[0].kind == EventKind::Meta &&
+              arena.view(events[0].text) == "Configuration updated\n" + payload,
+          "codex configuration updates preserve settings as context without a warning");
+  }
+
+  // Claude request blobs repeat screenshots from conversation records.
+  {
+    const std::string image = R"({"type":"image","source":{"type":"base64","media_type":"image/png","data":"aW1hZ2U="}})";
+    const std::string message = "{\"content\":[" + image + "]}";
+    const std::string user = "{\"type\":\"user\",\"message\":" + message + "}";
+    const std::string blob = "{\"message\":" + message + ",\"type\":\"api-request-blob\"}";
+    check(claude_adapter().owns_images(user) && !claude_adapter().owns_images(blob) &&
+              claude_adapter().owns_images("{\"message\":" + message + ",\"type\":\"assistant\"}") &&
+              !claude_adapter().owns_images("{\"type\":\"user\",\"message\":" + message + ",\"isCompactSummary\":true}"),
+          "claude images belong to conversation messages, not request mirrors or compact summaries");
+    const std::string path = base + "/claude-image-mirror.jsonl";
+    put(path, user + "\n" + blob + "\n" + user + "\n");
+    Conversation conv;
+    conv.open(path, &claude_adapter());
+    conv.grow_backwards(10);
+    size_t images = 0;
+    for (const auto& event : conv.events()) images += event.kind == EventKind::Image;
+    check(images == 2, "claude request mirrors add no images while later genuine repeats remain visible");
+  }
+
   // Untranslated content is visible even when tools and thinking are folded.
   {
     const std::string path = base + "/translation-warning.jsonl";

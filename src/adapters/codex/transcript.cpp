@@ -472,6 +472,15 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
       e.text = arena.add(shown);
       e.tool_id = hash_id(replies[0].call_id);
     }
+  } else if (pt == "configuration_update") {
+    // Harness configuration is context, like system/developer messages.
+    // Show all settings in the context view as new ones are introduced.
+    e.kind = EventKind::Meta;
+    js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
+      if (k != "payload") return true;
+      e.text = arena.add("Configuration updated\n" + std::string(v.raw));
+      return false;
+    });
   } else if (pt == "reasoning") {
     // summary is usually empty (content is encrypted server-side); only the
     // rare summarized reasoning is renderable.
