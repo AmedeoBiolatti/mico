@@ -1,6 +1,8 @@
 #include "views/chat_render.h"
 
 #include "core/settings.h"
+#include "base/json.h"
+#include "base/time.h"
 
 #include <sys/stat.h>
 #include <ctime>
@@ -38,6 +40,18 @@ constexpr size_t kCollapsedPeerRows = 8;
 // Ceiling on retained transcript text. Scrolling back through a 200 MB rollout
 // used to keep every byte it had walked past.
 constexpr size_t kArenaBudget = 32u << 20;
+
+// When a transcript record was written, in unix milliseconds; 0 for one that
+// carries no timestamp. Claude, Codex and Pi all put it at the top level.
+int64_t record_time_ms(std::string_view raw) {
+  int64_t at = 0;
+  js::scan_object(raw, [&](std::string_view k, const js::Value& v) {
+    if (k != "timestamp") return true;
+    if (v.is_string()) at = parse_time(v.body());
+    return false;
+  });
+  return at;
+}
 
 Style base_style(int rs, const Theme& th) {
   switch (rs) {
@@ -2338,6 +2352,16 @@ std::vector<MenuItem> ChatRenderer::context_menu(Point local) {
                                                         : (fold ? "Show these steps" : "Expand this tool call"),
                              buf});
     if (warning) items.push_back(MenuItem{"Copy original transcript record", "copy_raw"});
+  }
+  // When it was sent: local time, and how long ago. Information, not a choice.
+  if (on_message) {
+    if (const int64_t ms = record_time_ms(conv_.file().line(menu_line_))) {
+      const time_t secs = time_t(ms / 1000);
+      tm local{};
+      char when[32] = "";
+      if (localtime_r(&secs, &local)) strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", &local);
+      if (*when) items.push_back(MenuItem{"Sent", "", false, false, false, std::string(when) + "  \xC2\xB7  " + ago(secs)});
+    }
   }
   return items;
 }

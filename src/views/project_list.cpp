@@ -170,6 +170,26 @@ class ProjectList final : public Pane {
     return false;
   }
 
+  // The open chats a folder's row stands for: all of those running in it and
+  // its sub-projects, or, on a sub-project's row, that sub-project's alone.
+  std::vector<LiveSession*> open_chats(const Project& pr, const SubProject* sp) const {
+    std::vector<LiveSession*> out;
+    for (LiveSession* s : app_->live_sessions())
+      if (in_project(pr, s->cwd()) && (!sp || app_->live_sub(*s) == sp->name)) out.push_back(s);
+    return out;
+  }
+
+  // The menu's "Stop all agents": what it will stop, said before it is chosen.
+  MenuItem stop_all_item(const Project& pr, const SubProject* sp) const {
+    const auto chats = open_chats(pr, sp);
+    if (chats.empty()) return MenuItem{"Stop all agents", "stop_all", false, false, false, "none open"};
+    size_t working = 0;
+    for (const LiveSession* s : chats) working += s->busy();
+    std::string detail = std::to_string(chats.size()) + " open";
+    if (working) detail += " \xC2\xB7 " + std::to_string(working) + " working";
+    return MenuItem{"Stop all agents", "stop_all", true, false, false, detail};
+  }
+
   // Two lines: the name, then its path with how many chats and how recent.
   void draw_item(Painter& p, const Project& pr, int y, bool sel, bool focused, Color bg) {
     const Theme& th = app_->theme();
@@ -310,11 +330,17 @@ class ProjectList final : public Pane {
     // Off a folder: what is about the list. Detaching and quitting are F10,
     // :detach and :quit, never one slip of the mouse away.
     if (!on_row) return {MenuItem{"Add folder\xE2\x80\xA6", "add_folder_menu"}, MenuItem{"Rescan", "rescan"}};
+    const auto& ps = app_->store().projects();
+    if (size_t(menu_target_.project) >= ps.size()) return {};
+    const Project& pr = ps[size_t(menu_target_.project)];
+    if (menu_target_.sub >= 0 && size_t(menu_target_.sub) >= pr.subs.size()) return {};
     if (menu_target_.sub >= 0)
       return {MenuItem{"New chat here\xE2\x80\xA6", "new_agent"}, MenuItem{"Rename sub-project\xE2\x80\xA6", "rename_sub"},
-              MenuItem{"Copy path", "copy_path"}, MenuItem::sep(), MenuItem{"Remove sub-project", "remove_sub"}};
+              MenuItem{"Copy path", "copy_path"}, MenuItem::sep(),
+              stop_all_item(pr, &pr.subs[size_t(menu_target_.sub)]), MenuItem{"Remove sub-project", "remove_sub"}};
     return {MenuItem{"New chat here\xE2\x80\xA6", "new_agent"}, MenuItem{"Add sub-project\xE2\x80\xA6", "add_sub"},
-            MenuItem{"Copy path", "copy_path"}, MenuItem::sep(), MenuItem{"Remove folder", "remove_folder"}};
+            MenuItem{"Copy path", "copy_path"}, MenuItem::sep(),
+            stop_all_item(pr, nullptr), MenuItem{"Remove folder", "remove_folder"}};
   }
 
   void on_action(const std::string& a) override {
@@ -335,6 +361,20 @@ class ProjectList final : public Pane {
     if (a == "new_agent") {
       select_target();
       app_->open_new_agent();
+    } else if (a == "stop_all") {
+      // Every open chat of it goes, a working one too: the chats stay in the
+      // list, from their transcripts, to be resumed.
+      if (pr) {
+        size_t running = 0, exited = 0;
+        for (LiveSession* s : open_chats(*pr, sp)) {
+          (s->exited() ? exited : running)++;
+          app_->close_session(s);
+        }
+        const std::string where = sp ? sp->name : pr->name.empty() ? pr->path : pr->name;
+        std::string msg = running ? "stopped " + std::to_string(running) + (running == 1 ? " agent" : " agents") : "no agent was running";
+        if (exited) msg += " \xC2\xB7 closed " + std::to_string(exited) + " that had exited";
+        app_->set_status(msg + " in " + where);
+      }
     } else if (a == "add_sub") {
       if (pr) app_->pick_subproject_folder(pr->path);
     } else if (a == "rename_sub") {

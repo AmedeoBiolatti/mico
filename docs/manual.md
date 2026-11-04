@@ -159,7 +159,11 @@ line) and seeds with mico's own working directory on first run.
 
 The Projects pane ends with a `+ add folder` row — select it and press Enter,
 or right-click the empty part of the list for **Add folder…** (or `:folder`);
-right-click a folder to **Remove folder**.
+right-click a folder to **Remove folder**, or **Stop all agents** to close every
+open chat in it (its sub-projects' too; on a sub-project's own menu, just that
+one's). The menu says how many are open and how many are working before you
+choose; a working agent is stopped like the rest, and every chat stays in the
+list to be resumed.
 Adding opens a folder browser in mico itself, starting at `~/`: typing
 narrows the folders listed, `Tab` goes into the one under the cursor, `Enter`
 tracks it, and the last row tracks exactly the path typed. It works the same
@@ -1291,7 +1295,8 @@ the selection out from under you. Drag and copy as you normally would, then
 `F8` to resume.
 
 For a single message, right-click it and "Copy this message" — that goes through
-OSC 52 too. Raw panes offer "Copy visible screen". A picture, a chart or an
+OSC 52 too. The same menu ends with a dim line saying when the message was sent,
+in your local time and how long ago. Raw panes offer "Copy visible screen". A picture, a chart or an
 equation can be copied as itself: see *Zoom and copy* below.
 
 ## The chat view
