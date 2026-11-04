@@ -1534,6 +1534,60 @@ int run_regression_tests() {
               "closing a recent stopped pane refreshes saved history and retains its selection");
       } else check(false, "recent stop fixture is visible");
     }
+    {
+      // "Stop all agents" on a folder's menu closes every open chat of the
+      // folder, its sub-projects' too; on a sub-project's, that one's alone.
+      const char* path_env = getenv("PATH");
+      EnvScope search_path("PATH", base + "/bin:" + (path_env ? path_env : "/bin"));
+      std::filesystem::create_directories(project + "/stopall-web");
+      for (const auto& [id, cwd] : {std::pair<std::string, std::string>{"stopall-root", project},
+                                    {"stopall-web", project + "/stopall-web"}})
+        put(dir + "rollout-" + id + ".jsonl",
+            R"({"type":"session_meta","payload":{"id":)" + js::quote(id) + R"(,"cwd":)" + js::quote(cwd) + "}}\n");
+      App app;
+      check(app.store().add_subproject(project, "stopall-web", project + "/stopall-web"), "stop all: add a sub-project fixture");
+      check(app.spawn_continuation("codex", "stopall-root", project, false) &&
+                app.spawn_continuation("codex", "stopall-web", project + "/stopall-web", false) &&
+                app.live_sessions().size() == 2,
+            "stop all: two chats are open, one in the folder and one in its sub-project");
+      Surface sf; sf.resize(120, 32);
+      app.draw(sf);
+      auto list = make_project_list(); list->set_app(&app);
+      Painter painter(sf, Rect{0, 0, 36, 18});
+      const auto row_of = [&](std::string_view text) {
+        list->render(painter, true);
+        for (int y = 0; y < 18; y++) {
+          std::string row;
+          for (int x = 0; x < 36; x++) text::encode(sf.at(x, y).cp, row);
+          if (row.find(text) != std::string::npos) return y;
+        }
+        return -1;
+      };
+      const auto stop_all = [](const std::vector<MenuItem>& items) {
+        for (const auto& it : items)
+          if (it.action == "stop_all") return it;
+        return MenuItem{"", "", false};
+      };
+      const int sub_y = row_of("stopall-web");
+      check(sub_y >= 2, "stop all: the sub-project is listed under its folder");
+      if (sub_y >= 2) {
+        const int folder_y = sub_y - 2;  // two lines to a row
+        check(stop_all(list->context_menu(Point{4, folder_y})).detail == "2 open" &&
+                  stop_all(list->context_menu(Point{4, sub_y})).detail == "1 open",
+              "stop all: each menu says how many chats it will stop");
+        list->context_menu(Point{4, sub_y});
+        list->on_action("stop_all");
+        for (int i = 0; i < 50; i++) { app.service(); app.draw(sf); usleep(2000); }
+        check(app.live_sessions().size() == 1 && app.live_sessions()[0]->session_id() == "stopall-root",
+              "stop all: a sub-project's menu stops only its own chats");
+        list->context_menu(Point{4, folder_y});
+        list->on_action("stop_all");
+        for (int i = 0; i < 50; i++) { app.service(); app.draw(sf); usleep(2000); }
+        check(app.live_sessions().empty(), "stop all: a folder's menu stops all its chats");
+        const MenuItem none = stop_all(list->context_menu(Point{4, folder_y}));
+        check(none.action == "stop_all" && !none.enabled, "stop all: with nothing open it is offered, but cannot be chosen");
+      }
+    }
     std::filesystem::remove_all(base + "/.codex");
   }
 
@@ -2560,6 +2614,46 @@ os.read(0, 1)
       check(screen(sf).find("RAW_UNKNOWN_MARKER") != std::string::npos,
             "translation: expanding the warning reveals the unsupported content");
     }
+  }
+
+  // A message's menu says when it was sent, in local time, whichever agent
+  // wrote the transcript; a record without a timestamp offers nothing.
+  {
+    const std::string stamp = "2026-10-12T07:56:46.483Z";
+    tm utc{};
+    utc.tm_year = 2026 - 1900; utc.tm_mon = 9; utc.tm_mday = 12;
+    utc.tm_hour = 7; utc.tm_min = 56; utc.tm_sec = 46;
+    const time_t secs = timegm(&utc);
+    tm local{};
+    localtime_r(&secs, &local);
+    char want[32];
+    strftime(want, sizeof want, "%Y-%m-%d %H:%M:%S", &local);
+
+    const auto sent = [&](const std::string& path, const Adapter* adapter, const std::string& needle) {
+      ChatRenderer chat; chat.open(path, adapter);
+      Surface sf; sf.resize(110, 24); Painter p(sf, {0, 0, 110, 24});
+      Filters filters; Theme theme;
+      chat.render(p, theme, filters);
+      const auto shown = screen(sf);
+      const size_t pos = shown.find(needle);
+      if (pos == std::string::npos) return std::string("<not drawn>");
+      const int y = int(std::count(shown.begin(), shown.begin() + pos, '\n'));
+      for (const auto& item : chat.context_menu({5, y}))
+        if (item.label == "Sent") return item.enabled ? "<selectable>" : item.detail;
+      return std::string();
+    };
+    const std::string claude = base + "/menu-time-claude.jsonl";
+    put(claude, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"timestamped question\"},\"timestamp\":\"" + stamp + "\"}\n"
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"untimed question\"}}\n");
+    const std::string got = sent(claude, &claude_adapter(), "timestamped question");
+    if (!got.starts_with(want)) fprintf(stderr, "  message menu: got '%s', wanted '%s...'\n", got.c_str(), want);
+    check(got.starts_with(want), "message menu: a claude message says when it was sent, in local time");
+    check(sent(claude, &claude_adapter(), "untimed question").empty(), "message menu: a record with no timestamp offers no time");
+
+    const std::string codex = base + "/menu-time-codex.jsonl";
+    put(codex, "{\"timestamp\":\"" + stamp + "\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\","
+               "\"content\":[{\"type\":\"input_text\",\"text\":\"codex question\"}]}}\n");
+    check(sent(codex, &codex_adapter(), "codex question").starts_with(want), "message menu: a codex message says when it was sent");
   }
 
   // Working-directory flags change the matched folder, while the original
