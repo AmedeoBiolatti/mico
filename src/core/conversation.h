@@ -91,7 +91,7 @@ class Conversation {
   // --- Reading -------------------------------------------------------------
 
   // True when the file grew since the last look.
-  bool refresh() { return file_.refresh(); }
+  bool refresh();
   // Parses forward, at most `max_lines`: live tailing wants everything that
   // arrived, filling a screen after a seek a chunk, not the rest of a
   // three-hundred-megabyte file. Returns the events appended.
@@ -110,6 +110,16 @@ class Conversation {
   // Drops the window and starts again, empty, at line `line`. The session
   // state and the outline are kept: they describe the file.
   void reanchor(size_t line);
+
+  // --- Rewinds --------------------------------------------------------------
+
+  // The agent dropped turns it had already written (codex's backtrack): they
+  // stay in the file, and the window leaves them out. True once after a
+  // refresh found a rewind reaching into lines the window already holds;
+  // the caller reads the window again (reanchor) for them to go.
+  bool take_rewound();
+  // True when the line at byte `offset` belongs to a dropped turn.
+  bool dropped(uint64_t offset) const;
 
   // --- Where the conversation stands ------------------------------------------
 
@@ -168,6 +178,15 @@ class Conversation {
   void note_event(const Event& e);
   void clear_facts();
   void shift_lines(size_t count);
+  // Indexes an older slab of the file and finds the rewinds in it. Returns
+  // the lines it added.
+  size_t extend_index();
+  // Finds the rewinds among lines [a, b), just indexed, and what each drops.
+  void find_rewinds(size_t a, size_t b);
+  // Where the turns the rewind on the line at byte `marker` drops begin:
+  // `turns` turn starts back, skipping what earlier rewinds dropped. `marker`
+  // when it drops nothing. Indexes older history as it needs it.
+  uint64_t rewind_start(uint64_t marker, int turns);
   void outline_scan(size_t a, size_t b, std::vector<OutlineEntry>& into);
 
   Jsonl file_;
@@ -187,6 +206,12 @@ class Conversation {
   std::vector<uint64_t> chart_tools_;
   std::vector<AsyncSlot> async_;
   uint64_t cards_gen_ = 0;
+
+  // Dropped byte ranges [first, second), sorted and disjoint; and each
+  // rewind's line, by byte, with where its drop begins.
+  std::vector<std::pair<uint64_t, uint64_t>> dropped_;
+  std::unordered_map<uint64_t, uint64_t> rewinds_;
+  bool rewound_ = false;
 
   std::vector<OutlineEntry> outline_;
   uint64_t outline_lo_ = UINT64_MAX;  // first byte read; 0 once the start is reached

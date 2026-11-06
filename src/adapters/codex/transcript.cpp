@@ -226,6 +226,17 @@ bool add_generated_image(Arena& arena, std::string_view raw, const js::Value& re
   return true;
 }
 
+// A rollback's count of the turns it drops, from its event_msg payload; -1
+// when it has none.
+int64_t rollback_turns(std::string_view payload) {
+  int64_t turns = -1;
+  js::scan_object(payload, [&](std::string_view k, const js::Value& v) {
+    if (k == "num_turns" && v.type == js::Type::Number) turns = std::atoll(std::string(v.raw).c_str());
+    return true;
+  });
+  return turns;
+}
+
 }  // namespace
 
 void CodexAdapter::seed_state(SessionState& st) const {
@@ -332,6 +343,40 @@ bool CodexAdapter::owns_images(std::string_view raw) const {
   return !copy;
 }
 
+// A rollback is an event_msg: {"type":"event_msg","payload":{"type":
+// "thread_rolled_back","num_turns":2}}.
+int CodexAdapter::rewound_turns(std::string_view raw) const {
+  std::string_view type, payload;
+  js::scan_keys(raw, [&](std::string_view k, std::string_view rest) {
+    if (k == "type") { type = js::string_body(rest); return type == "event_msg"; }
+    if (k == "payload") { payload = rest; return false; }
+    return true;
+  });
+  if (type != "event_msg" || payload.empty() || payload.front() != '{') return 0;
+  bool rollback = false;
+  js::scan_keys(payload, [&](std::string_view k, std::string_view rest) {
+    if (k == "type") rollback = js::string_body(rest) == "thread_rolled_back";
+    return false;
+  });
+  if (!rollback) return 0;
+  return int(std::clamp<int64_t>(rollback_turns(payload), 0, 1 << 30));
+}
+
+// What codex counts as a turn when it rolls back: a message of the user's
+// (not context it injected), or a message from another agent.
+bool CodexAdapter::starts_turn(std::string_view raw) const {
+  // Told by the head's payload type when it names one; anything else is read.
+  const std::string_view pt = codex_payload_type(raw);
+  if (!pt.empty() && pt != "message" && pt != "agent_message") return false;
+  thread_local Arena arena;
+  thread_local std::vector<Event> events;
+  arena.clear();
+  events.clear();
+  parse(raw, arena, events);
+  return std::any_of(events.begin(), events.end(),
+                     [](const Event& e) { return e.kind == EventKind::User || e.kind == EventKind::Peer; });
+}
+
 void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>& out) const {
   // Codex writes "type" before "payload", so the 60% of a rollout that is
   // token counts, world state and event mirrors is rejected after three
@@ -418,22 +463,16 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
       return false;
     });
     if (event_type == "thread_rolled_back") {
-      // The turns stay in the file; this marks that codex dropped them. Its
-      // count is of user turns, the ones before this marker.
-      int64_t turns = -1;
-      js::scan_object(payload, [&](std::string_view k, const js::Value& v) {
-        if (k == "num_turns" && v.type == js::Type::Number) turns = std::atoll(std::string(v.raw).c_str());
-        return true;
-      });
+      // The turns stay in the file; the conversation leaves them out
+      // (Conversation's rewinds) and this marks the place.
+      const int64_t turns = rollback_turns(payload);
       if (turns < 0) {
         translation_warning(arena, out, "codex", "rollback", raw);
         return;
       }
       Event e;
       e.kind = EventKind::Notice;
-      e.text = arena.add(turns == 1 ? std::string("Rolled back the turn above: codex dropped it from the conversation")
-                                    : "Rolled back the " + std::to_string(turns) +
-                                          " turns above: codex dropped them from the conversation");
+      e.text = arena.add(turns == 1 ? std::string("Rolled back 1 turn") : "Rolled back " + std::to_string(turns) + " turns");
       out.push_back(e);
       return;
     }

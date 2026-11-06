@@ -2584,6 +2584,101 @@ os.read(0, 1)
     check(images == 2, "claude request mirrors add no images while later genuine repeats remain visible");
   }
 
+  // Rewinds: the turns codex rolled back stay in its file and out of the chat.
+  {
+    const auto user = [](std::string_view t) {
+      return R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":")" +
+             std::string(t) + "\"}]}}\n";
+    };
+    const auto reply = [](std::string_view t) {
+      return R"({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":")" +
+             std::string(t) + "\"}]}}\n";
+    };
+    const auto rollback = [](int n) {
+      return R"({"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":)" + std::to_string(n) + "}}\n";
+    };
+    // The whole file read into the window, as what it shows.
+    const auto shown = [](Conversation& c) {
+      for (;;) {
+        const size_t from = c.parsed_from();
+        c.grow_backwards(100);
+        if (c.parsed_from() == from) break;
+      }
+      std::string s;
+      for (const Event& e : c.events())
+        if (e.kind == EventKind::User || e.kind == EventKind::Assistant || e.kind == EventKind::Notice ||
+            e.kind == EventKind::Peer)
+          s += std::string(c.arena().view(e.text)) + "|";
+      return s;
+    };
+
+    const std::string plain = base + "/rewind-plain.jsonl";
+    put(plain, user("A") + reply("a") + user("B") + reply("b") + user("C") + reply("c") + rollback(2) + user("D") + reply("d"));
+    {
+      Conversation conv;
+      conv.open(plain, &codex_adapter());
+      check(shown(conv) == "A|a|Rolled back 2 turns|D|d|", "rewind: the turns a rollback dropped are left out");
+      std::vector<OutlineEntry> outline;
+      conv.outline(outline, 1000);
+      std::string users;
+      for (const auto& o : outline) if (o.kind == 'u') users += o.label;
+      check(users == "AD", "rewind: the outline leaves out the dropped turns' messages");
+    }
+
+    const std::string nested = base + "/rewind-nested.jsonl";
+    put(nested, user("A") + reply("a") + user("B") + reply("b") + rollback(1) + user("C") + reply("c") + rollback(2));
+    {
+      Conversation conv;
+      conv.open(nested, &codex_adapter());
+      check(shown(conv) == "Rolled back 2 turns|",
+            "rewind: a turn an earlier rollback dropped is not counted again");
+    }
+
+    const std::string counted = base + "/rewind-counted.jsonl";
+    put(counted, user("<environment_context>cwd</environment_context>") + user("A") + reply("a") +
+                     R"({"type":"response_item","payload":{"type":"agent_message","author":"/root/w","content":[{"type":"input_text","text":"done"}]}})" "\n" +
+                     reply("after") + rollback(1));
+    {
+      Conversation conv;
+      conv.open(counted, &codex_adapter());
+      check(shown(conv) == "A|a|Rolled back 1 turn|", "rewind: another agent's message starts a turn");
+      size_t context = 0;
+      for (const Event& e : conv.events()) context += e.kind == EventKind::Meta;
+      check(context == 1, "rewind: context codex injected is no turn of the user's");
+    }
+
+    // Older history the walk back has to index for itself.
+    const std::string far = base + "/rewind-far.jsonl";
+    std::string pad;
+    for (int i = 0; i < 6000; i++)
+      pad += R"({"type":"event_msg","payload":{"type":"token_count","info":{"pad":")" + std::string(1000, 'x') + "\"}}}\n";
+    put(far, user("A") + reply("a") + pad + user("B") + reply("b") + rollback(2) + user("C"));
+    {
+      Conversation conv;
+      conv.open(far, &codex_adapter());
+      check(!conv.dropped(conv.file().line_offset(conv.file().line_count() - 1)) && conv.file().complete(),
+            "rewind: finding where a rollback begins indexes the history it needs");
+      check(shown(conv) == "Rolled back 2 turns|C|", "rewind: a rollback reaches turns in an older slab");
+    }
+
+    // Live: a rollback arriving under turns already drawn takes them away.
+    const std::string live = base + "/rewind-live.jsonl";
+    put(live, user("Alpha question") + reply("Alpha answer") + user("Bravo question") + reply("Bravo answer"));
+    ChatRenderer chat;
+    chat.open(live, &codex_adapter());
+    Surface sf; sf.resize(80, 20); Painter p(sf, {0, 0, 80, 20});
+    Filters filters; Theme theme;
+    chat.render(p, theme, filters);
+    check(screen(sf).find("Bravo answer") != std::string::npos, "rewind: the turn is drawn before its rollback");
+    put(live, rollback(1) + user("Charlie question"), true);
+    chat.poll_growth();
+    chat.render(p, theme, filters);
+    const std::string after = screen(sf);
+    check(after.find("Bravo") == std::string::npos && after.find("Alpha answer") != std::string::npos &&
+              after.find("Rolled back 1 turn") != std::string::npos && after.find("Charlie question") != std::string::npos,
+          "rewind: a live rollback removes the dropped turn from the chat");
+  }
+
   // Untranslated content is visible even when tools and thinking are folded.
   {
     const std::string path = base + "/translation-warning.jsonl";

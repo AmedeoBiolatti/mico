@@ -1402,7 +1402,9 @@ int run_selftest() {
       ev.clear();
       codex_adapter().parse(R"({"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}})", a, ev);
       check(ev.size() == 1 && ev[0].kind == EventKind::Notice && ev[0].ok &&
-                a.view(ev[0].text).find("2 turns above") != std::string_view::npos,
+                a.view(ev[0].text) == "Rolled back 2 turns" &&
+                codex_adapter().rewound_turns(R"({"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}})") == 2 &&
+                codex_adapter().rewound_turns(R"({"type":"event_msg","payload":{"type":"token_count","num_turns":2}})") == 0,
             "codex: a rollback marks how many turns before it were dropped");
       ev.clear();
       codex_adapter().parse(R"({"type":"event_msg","payload":{"type":"thread_rolled_back"}})", a, ev);

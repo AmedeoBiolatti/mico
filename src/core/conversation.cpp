@@ -68,6 +68,7 @@ bool Conversation::open(const std::string& path, const Adapter* adapter) {
   }
   arena_.reserve(1u << 20);
   parsed_from_ = parsed_to_ = file_.line_count();
+  find_rewinds(0, file_.line_count());
   return true;
 }
 
@@ -81,6 +82,9 @@ void Conversation::clear() {
   outline_hi_ = 0;
   outline_calls_.clear();
   outline_orphans_.clear();
+  dropped_.clear();
+  rewinds_.clear();
+  rewound_ = false;
 }
 
 void Conversation::clear_facts() {
@@ -122,6 +126,7 @@ void Conversation::parse_lines(size_t from, size_t to) {
       adapter_->observe(line, state_);
       state_.from_line = uint32_t(i);
     }
+    if (!dropped_.empty() && dropped(file_.line_offset(i))) continue;
     size_t before = batch_.size();
     adapter_->parse(line, arena_, batch_);
     add_images(line, before);
@@ -147,9 +152,7 @@ size_t Conversation::grow_backwards(size_t max_lines, size_t* mark) {
   if (parsed_from_ == 0) {
     // The file is only indexed from the tail; pull in an older slab first.
     // Every existing line index shifts up by however many lines that added.
-    const size_t added = file_.extend_back();
-    if (added == 0) return 0;
-    shift_lines(added);
+    if (extend_index() == 0) return 0;
   }
   const size_t start = parsed_from_ - std::min(parsed_from_, max_lines);
   if (mark) *mark = arena_.bytes();
@@ -184,11 +187,101 @@ void Conversation::shift_lines(size_t count) {
 
 void Conversation::index_back_to(size_t byte) {
   // Every slab the index adds shifts the line numbers the window is holding.
-  while (!file_.complete() && file_.indexed_from() > byte) {
-    const size_t added = file_.extend_back();
-    if (added == 0) break;
-    shift_lines(added);
+  while (!file_.complete() && file_.indexed_from() > byte)
+    if (extend_index() == 0) break;
+}
+
+bool Conversation::refresh() {
+  const size_t before = file_.line_count();
+  if (!file_.refresh()) return false;
+  find_rewinds(before, file_.line_count());
+  return true;
+}
+
+size_t Conversation::extend_index() {
+  const size_t added = file_.extend_back();
+  if (added == 0) return 0;
+  shift_lines(added);
+  find_rewinds(0, added);
+  return added;
+}
+
+// ------------------------------------------------------------------ rewinds
+
+bool Conversation::take_rewound() {
+  const bool r = rewound_;
+  rewound_ = false;
+  return r;
+}
+
+bool Conversation::dropped(uint64_t offset) const {
+  // The last range starting at or before `offset`.
+  auto it = std::upper_bound(dropped_.begin(), dropped_.end(), offset,
+                             [](uint64_t at, const std::pair<uint64_t, uint64_t>& r) { return at < r.first; });
+  return it != dropped_.begin() && offset < std::prev(it)->second;
+}
+
+void Conversation::find_rewinds(size_t a, size_t b) {
+  if (!adapter_) return;
+  const std::string_view needle = adapter_->rewind_needle();
+  if (needle.empty()) return;
+  // By byte, not by line: working one out can index older history, which
+  // moves every line number.
+  std::vector<std::pair<uint64_t, int>> found;
+  for (size_t i = a; i < b; i++) {
+    const std::string_view line = file_.line(i);
+    if (!text::contains(line, needle)) continue;
+    if (const int n = adapter_->rewound_turns(line); n > 0) found.emplace_back(file_.line_offset(i), n);
   }
+  for (const auto& [at, turns] : found) {
+    const uint64_t from = rewind_start(at, turns);
+    if (from >= at) continue;
+    dropped_.emplace_back(from, at);
+    std::sort(dropped_.begin(), dropped_.end());
+    // A later rewind's range holds an earlier one's: kept disjoint, merged.
+    size_t w = 0;
+    for (size_t r = 1; r < dropped_.size(); r++) {
+      if (dropped_[r].first <= dropped_[w].second) dropped_[w].second = std::max(dropped_[w].second, dropped_[r].second);
+      else dropped_[++w] = dropped_[r];
+    }
+    dropped_.resize(w + 1);
+    // Lines already read: the window's are re-read by the caller, the
+    // outline's go now.
+    if (parsed_from_ < parsed_to_ && from < file_.line_offset(parsed_to_) && at > file_.line_offset(parsed_from_))
+      rewound_ = true;
+    std::erase_if(outline_, [&](const OutlineEntry& o) { return o.offset >= from && o.offset < at; });
+  }
+}
+
+uint64_t Conversation::rewind_start(uint64_t marker, int turns) {
+  if (auto it = rewinds_.find(marker); it != rewinds_.end()) return it->second;
+  rewinds_[marker] = marker;
+  const std::string_view needle = adapter_->rewind_needle();
+  uint64_t at = marker, cut = marker;
+  int counted = 0;
+  // Back from the marker a line at a time. Codex cuts at the turn start
+  // `turns` back, or at the first one when there are fewer.
+  while (counted < turns) {
+    if (at <= file_.indexed_from() && extend_index() == 0) break;
+    size_t i = file_.line_at_byte(size_t(at));
+    if (i == 0) break;
+    i--;
+    const uint64_t off = file_.line_offset(i);
+    const std::string_view line = file_.line(i);
+    at = off;
+    if (text::contains(line, needle))
+      if (const int n = adapter_->rewound_turns(line); n > 0) {
+        // An earlier rewind: what it dropped was gone before this one.
+        at = rewind_start(off, n);
+        continue;
+      }
+    if (adapter_->starts_turn(line)) {
+      counted++;
+      cut = off;
+    }
+  }
+  rewinds_[marker] = cut;
+  return cut;
 }
 
 // Keeps the live-question sets in step with the parsed window: a Question makes
@@ -344,10 +437,11 @@ void Conversation::outline_scan(size_t a, size_t b, std::vector<OutlineEntry>& i
   std::vector<Event> evs;
   file_.will_read(a, b);
   for (size_t i = a; i < b; i++) {
+    const uint64_t at = file_.line_offset(i);
+    if (!dropped_.empty() && dropped(at)) continue;
     tmp.clear();
     evs.clear();
     adapter_->parse(file_.line(i), tmp, evs);
-    const uint64_t at = file_.line_offset(i);
     for (const Event& e : evs) {
       OutlineEntry o;
       o.offset = at;

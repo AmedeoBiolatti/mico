@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "api/client.h"
+#include "base/fs.h"
 #include "base/json_write.h"
 #include "base/text.h"
 
@@ -87,6 +88,24 @@ int run_api_test() {
   append(path, R"({"type":"assistant","cwd":")" + dir +
                    "\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"bad byte \xff here\"}]}}");
 
+  // A codex chat in the same folder, which a rollback will rewind.
+  const std::string codex_dir = std::string(home) + "/.codex/sessions/2026/11/06";
+  fs::make_dirs(codex_dir);
+  const std::string codex_path =
+      codex_dir + "/rollout-2026-11-06T00-00-00-0b0b0b0b-1111-4222-8333-444444444444.jsonl";
+  unlink(codex_path.c_str());
+  const auto codex_message = [](std::string_view role, std::string_view text) {
+    return R"({"type":"response_item","payload":{"type":"message","role":")" + std::string(role) +
+           R"(","content":[{"type":")" + (role == "user" ? "input_text" : "output_text") + R"(","text":")" +
+           std::string(text) + "\"}]}}";
+  };
+  append(codex_path, R"({"type":"session_meta","payload":{"id":"0b0b0b0b-1111-4222-8333-444444444444","cwd":")" + dir +
+                         R"(","cli_version":"0.167.0"}})");
+  append(codex_path, codex_message("user", "keep this question"));
+  append(codex_path, codex_message("assistant", "kept answer"));
+  append(codex_path, codex_message("user", "rewound question"));
+  append(codex_path, codex_message("assistant", "rewound answer"));
+
   Workspace ws;
   ws.store().add_folder(dir, false);
   api::Client c(ws);
@@ -113,6 +132,17 @@ int run_api_test() {
   check(has(got, R"("where":"newer")") && has(got, "and the accuracy"), "a line appended to the file is sent as it lands");
   check(!has(got, "draw the loss curve"), "only what is new is sent");
   check(poll_all(c).find("\"chat\"") == std::string::npos, "nothing is sent while nothing changes");
+
+  // A rollback under turns already sent sends the tail again without them.
+  c.receive(R"({"type":"open","path":")" + codex_path + "\"}");
+  got = poll_all(c);
+  check(has(got, R"("where":"tail")") && has(got, "rewound answer"), "the codex chat opens with every turn");
+  append(codex_path, R"({"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}})");
+  append(codex_path, codex_message("user", "after the rollback"));
+  got = poll_all(c);
+  check(has(got, R"("where":"tail")") && has(got, "kept answer") && has(got, "after the rollback") &&
+            !has(got, "rewound"),
+        "a rollback resends the codex chat's tail without the dropped turn");
 
   // Work metadata is cheap to follow; output is read only for a selected
   // command or subagent belonging to the open parent chat.

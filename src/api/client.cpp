@@ -21,6 +21,16 @@ namespace {
 constexpr size_t kChunkLines = 512;
 constexpr size_t kTailEvents = 200;
 
+// The window read afresh at the end of the file, back to about a screen.
+void fill_tail(Conversation& conv) {
+  conv.reanchor(conv.file().line_count());
+  while (conv.events().size() < kTailEvents) {
+    const size_t from = conv.parsed_from();
+    if (conv.grow_backwards(kChunkLines) == 0 && conv.parsed_from() == from) break;
+  }
+  conv.replay_facts();
+}
+
 const char* kind_name(EventKind k) {
   switch (k) {
     case EventKind::Meta: return "meta";
@@ -148,9 +158,15 @@ void Client::poll(std::vector<std::string>& out) {
   for (auto& [path, chat] : chats_) {
     Conversation& conv = *chat.conv;
     if (conv.refresh()) {
-      const size_t before = conv.events().size();
-      const size_t added = conv.grow_forwards();
-      if (added) send_events(path, chat, before, before + added, "newer", out);
+      if (conv.take_rewound()) {
+        // The agent dropped turns already sent: the tail again, without them.
+        fill_tail(conv);
+        send_events(path, chat, 0, conv.events().size(), "tail", out);
+      } else {
+        const size_t before = conv.events().size();
+        const size_t added = conv.grow_forwards();
+        if (added) send_events(path, chat, before, before + added, "newer", out);
+      }
     }
     send_facts(path, chat, out);
     send_work(path, chat, out);
@@ -181,11 +197,7 @@ void Client::open_chat(const std::string& path) {
     chats_.erase(path);
     return error("cannot read " + path);
   }
-  while (conv.events().size() < kTailEvents) {
-    const size_t from = conv.parsed_from();
-    if (conv.grow_backwards(kChunkLines) == 0 && conv.parsed_from() == from) break;
-  }
-  conv.replay_facts();
+  fill_tail(conv);
   send_events(path, chat, 0, conv.events().size(), "tail", queued_);
   send_facts(path, chat, queued_);
 }
