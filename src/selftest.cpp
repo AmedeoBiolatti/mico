@@ -1431,9 +1431,21 @@ int run_selftest() {
                 a.view(ev[0].summary) == "/root" && a.view(ev[0].text) == "done",
             "codex: an inter-agent communication record is a peer message");
       ev.clear();
-      codex_adapter().parse(R"({"timestamp":"2026-10-24T16:48:53.015Z","ordina)", a, ev);
+      // Codex sometimes cuts a write short and writes the whole record on
+      // the next line, wherever the cut falls: before the type, or inside
+      // an item_completed's payload.
+      for (std::string_view fragment :
+           {R"({"timestamp":"2026-10-24T16:48:53.015Z","ordina)",
+            R"({"timestamp":"2026-11-06T15:06:38.591Z","ordinal":2994,"type":"event_msg","payload":{"type":"item_completed","t)",
+            R"({"timestamp":"2026-11-06T15:06:38.591Z","ordinal":2994,"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Com)"}) {
+        ev.clear();
+        codex_adapter().parse(fragment, a, ev);
+        check(ev.empty(), "codex: a cut-off line adds nothing, not a warning");
+      }
+      ev.clear();
+      codex_adapter().parse("not a record", a, ev);
       check(ev.size() == 1 && !ev[0].ok && a.view(ev[0].text).find("malformed record") != std::string_view::npos,
-            "codex: a half-written line is named as malformed");
+            "codex: a line that is not a record is named as malformed");
 
       ev.clear();
       codex_adapter().parse(
