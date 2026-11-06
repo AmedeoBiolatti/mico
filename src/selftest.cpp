@@ -1351,6 +1351,150 @@ int run_selftest() {
     check(ev.size() == 1 && ev[0].kind == EventKind::Notice && !ev[0].ok &&
               a.view(ev[0].detail).find("opaque") != std::string_view::npos,
           "translation: unknown Codex extensions remain inspectable");
+
+    // Codex 0.166+ records: each either shows what it adds or is a known
+    // mirror, and none warns.
+    {
+      const auto warns = [](const std::vector<Event>& events) {
+        return std::any_of(events.begin(), events.end(), [](const Event& e) { return e.kind == EventKind::Notice && !e.ok; });
+      };
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"additional_tools","id":"at_1","role":"developer","tools":[)"
+          R"({"type":"namespace","name":"functions","description":"","tools":[{"type":"custom","name":"exec"},{"type":"function","name":"wait"}]},)"
+          R"({"type":"namespace","name":"clock","tools":[{"type":"function","name":"sleep"}]},{"type":"function","name":"solo"}]}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Meta &&
+                a.view(ev[0].text) == "Tools available\nfunctions: exec, wait\nclock: sleep\nsolo",
+            "codex: additional_tools is context listing the offered tools by name");
+      for (std::string_view item :
+           {R"({"type":"CollabAgentToolCall","id":"call_1","tool":"wait","status":"completed","sender_thread_id":"t","receiver_thread_ids":[],"receiver_agents":[],"agents_states":{}})",
+            R"({"type":"Plan","id":"turn-plan","text":"1. Do it"})",
+            R"({"type":"DynamicToolCall","id":"exec-1","namespace":"chrome_extension","tool":"getTabContext","arguments":{},"status":"completed"})",
+            R"({"type":"FunctionCallOutput","id":"call_2","name":"exec","output":"ok"})",
+            R"({"type":"ExitedReviewMode","id":"r1","review_output":{"findings":[],"overall_explanation":"fine"}})",
+            R"({"type":"ImageGeneration","id":"ig_1","status":"completed","result":"AAAA"})"}) {
+        ev.clear();
+        codex_adapter().parse(R"({"type":"event_msg","payload":{"type":"item_completed","item":)" + std::string(item) + "}}", a, ev);
+        check(ev.empty(), "codex: completed-item mirrors of shown records add nothing");
+      }
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"EnteredReviewMode","id":"r1","target":{"type":"uncommittedChanges"},"user_facing_hint":"current changes"}}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Notice && ev[0].ok &&
+                a.view(ev[0].text) == "Review started: current changes",
+            "codex: entering review mode is marked with its hint");
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Extension","kind":"image_gen.generation","id":"exec-2","savedPath":"/home/u/.codex/generated_images/t/exec-2.png"}}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Notice && ev[0].ok &&
+                a.view(ev[0].text) == "Generated an image: /home/u/.codex/generated_images/t/exec-2.png",
+            "codex: a generated image's extension item names where it was saved");
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<user_action>\n  <context>User initiated a review task.</context>\n</user_action>"}]}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Meta,
+            "codex: a review's user-role handback is context, not something the user typed");
+
+      ev.clear();
+      codex_adapter().parse(R"({"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":2}})", a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Notice && ev[0].ok &&
+                a.view(ev[0].text).find("2 turns above") != std::string_view::npos,
+            "codex: a rollback marks how many turns before it were dropped");
+      ev.clear();
+      codex_adapter().parse(R"({"type":"event_msg","payload":{"type":"thread_rolled_back"}})", a, ev);
+      check(ev.size() == 1 && !ev[0].ok, "codex: a rollback without its count stays inspectable");
+
+      const std::string goal =
+          R"({"type":"event_msg","payload":{"type":"thread_goal_updated","threadId":"t","goal":{"threadId":"t","objective":"Ship the\nrelease","status":"paused","tokenBudget":null,"tokensUsed":10}}})";
+      ev.clear();
+      codex_adapter().parse(goal, a, ev);
+      SessionState goal_state;
+      codex_adapter().observe(goal, goal_state);
+      check(ev.empty() && goal_state.find("goal") && *goal_state.find("goal") == "Ship the release (paused)",
+            "codex: a /goal update sets a chip and adds no chat row");
+
+      ev.clear();
+      for (std::string_view record : {"dynamic_tools_updated", "security_risk_score"})
+        codex_adapter().parse(R"({"type":")" + std::string(record) + R"(","payload":{"x":1}})", a, ev);
+      check(ev.empty(), "codex: bookkeeping records add nothing");
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"inter_agent_communication","payload":{"author":"/root/a","recipient":"/root","other_recipients":[],"content":"done","trigger_turn":false}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::Peer && a.view(ev[0].name) == "/root/a" &&
+                a.view(ev[0].summary) == "/root" && a.view(ev[0].text) == "done",
+            "codex: an inter-agent communication record is a peer message");
+      ev.clear();
+      codex_adapter().parse(R"({"timestamp":"2026-10-24T16:48:53.015Z","ordina)", a, ev);
+      check(ev.size() == 1 && !ev[0].ok && a.view(ev[0].text).find("malformed record") != std::string_view::npos,
+            "codex: a half-written line is named as malformed");
+
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"local_shell_call","call_id":"sh1","status":"completed","action":{"type":"exec","command":["ls","-la"]}}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::ToolCall && a.view(ev[0].name) == "shell" &&
+                a.view(ev[0].summary) == "ls -la" && ev[0].tool_id == hash_id("sh1"),
+            "codex: a local shell call shows its command");
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"tool_search_call","call_id":"ts1","execution":"client","arguments":{"query":"github"}}})",
+          a, ev);
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"tool_search_output","call_id":"ts1","status":"completed","execution":"client","tools":[{"type":"namespace","name":"mcp__github","tools":[{"name":"get_pr"}]}]}})",
+          a, ev);
+      check(ev.size() == 2 && ev[0].kind == EventKind::ToolCall && a.view(ev[0].summary) == R"({"query":"github"})" &&
+                ev[1].kind == EventKind::ToolResult && ev[1].tool_id == ev[0].tool_id &&
+                a.view(ev[1].text) == "Found\nmcp__github: get_pr",
+            "codex: a tool search shows its query and the tools it found");
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"web_search_call","status":"completed","action":{"type":"search","query":"codex rollout"}}})",
+          a, ev);
+      check(ev.size() == 1 && ev[0].kind == EventKind::ToolCall && a.view(ev[0].name) == "web_search" &&
+                a.view(ev[0].summary) == "codex rollout",
+            "codex: a native web search shows its query");
+      ev.clear();
+      const std::string generated =
+          R"({"type":"response_item","payload":{"type":"image_generation_call","id":"ig_1","status":"completed","revised_prompt":"a cat","result":"iVBORw0KGgo"}})";
+      codex_adapter().parse(generated, a, ev);
+      LineImage where;
+      check(ev.size() == 1 && ev[0].kind == EventKind::Image && !ev[0].tool_id &&
+                from_string(a.view(ev[0].summary), &where) && where.media == "image/png" &&
+                generated.substr(where.at, where.len) == "iVBORw0KGgo",
+            "codex: a generated image points at its pixels in the line");
+      ev.clear();
+      for (std::string_view pt : {"compaction", "compaction_summary", "context_compaction"})
+        codex_adapter().parse(R"({"type":"response_item","payload":{"type":")" + std::string(pt) + R"(","encrypted_content":"x"}})", a, ev);
+      check(ev.empty(), "codex: encrypted compaction items add nothing");
+
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"function_call","name":"js","namespace":"mcp__cua_repl","arguments":"{}","call_id":"c1"}})",
+          a, ev);
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"function_call","name":"sleep","namespace":"clock","arguments":"{}","call_id":"c2"}})",
+          a, ev);
+      check(ev.size() == 2 && a.view(ev[0].name) == "mcp__cua_repl__js" && a.view(ev[1].name) == "clock.sleep",
+            "codex: a function call is named with its namespace");
+      ev.clear();
+      codex_adapter().parse(
+          R"({"type":"response_item","payload":{"type":"function_call","name":"plot","namespace":"mcp__mico","arguments":"{\"type\":\"line\"}","call_id":"call_p1"}})",
+          a, ev);
+      codex_adapter().parse(
+          R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"call_p1","server":"mico","tool":"plot","arguments":{"type":"line"}}}})",
+          a, ev);
+      codex_adapter().parse(
+          R"({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"exec-p2","server":"mico","tool":"plot","arguments":{"type":"bar"}}}})",
+          a, ev);
+      check(ev.size() == 2 && ev[0].kind == EventKind::Chart && ev[0].tool_id == hash_id("call_p1") &&
+                ev[1].kind == EventKind::Chart && ev[1].tool_id == hash_id("exec-p2") && !warns(ev),
+            "codex: a direct plot call draws once; one made inside exec draws from its item");
+    }
     for (std::string_view kind : {"lsp-late-diagnostic", "lsp-post-edit", "lsp-post-edit-diagnostics"}) {
       ev.clear();
       omp_adapter().parse(
