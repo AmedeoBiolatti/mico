@@ -617,7 +617,8 @@ the transcript rather than guessed:
 
 The fields are whatever that agent actually wrote, so they differ by agent —
 claude reports a mode and a permission mode, codex reports an approval policy,
-a sandbox, a personality and a summary setting, pi and omp report a model,
+a sandbox, a personality and a summary setting, and a `/goal` once one is set
+(with its status when it is not active), pi and omp report a model,
 provider and thinking level, and omp a mode (plan, vibe, goal) and service
 tier once one is set. Nothing is fabricated: a field absent from the
 transcript is absent from the strip.
@@ -1542,6 +1543,11 @@ displays: a background job finishing and a message from another agent each
 become a one-line notice, a collab guest's prompt is a user turn, and the
 reminders it hides stay hidden. Its `compaction` records are a divider, as
 claude's and codex's are.
+When codex rolls back turns (backtracking to edit an earlier message), they
+stay in its rollout but not in the conversation, and mico leaves them out the
+same way: a one-line "Rolled back 2 turns" notice takes their place, and an
+open chat drops them as soon as the rollback lands. Codex counts turns from
+your own messages and messages from other agents, and so does mico.
 
 **Answers and the work before them.** What an agent writes between its tool
 calls ("Let me check the tests first") and what it answers at the end look
