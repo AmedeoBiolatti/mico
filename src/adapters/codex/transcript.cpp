@@ -237,6 +237,16 @@ int64_t rollback_turns(std::string_view payload) {
   return turns;
 }
 
+// A record cut off partway: it opens an object and stops short of closing
+// it. Codex sometimes ends a write early and then writes the whole record
+// again on the next line, so the fragment holds nothing complete to show and
+// its full copy follows. A line that is not an object at all is not this.
+bool cut_off(std::string_view raw) {
+  while (!raw.empty() && (raw.back() == ' ' || raw.back() == '\t' || raw.back() == '\r' || raw.back() == '\n'))
+    raw.remove_suffix(1);
+  return !raw.empty() && raw.front() == '{' && raw.back() != '}';
+}
+
 }  // namespace
 
 void CodexAdapter::seed_state(SessionState& st) const {
@@ -378,6 +388,7 @@ bool CodexAdapter::starts_turn(std::string_view raw) const {
 }
 
 void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>& out) const {
+  if (cut_off(raw)) return;
   // Codex writes "type" before "payload", so the 60% of a rollout that is
   // token counts, world state and event mirrors is rejected after three
   // members — the payload, which can be a hundred kilobytes, is never read.
@@ -432,7 +443,7 @@ void CodexAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>&
     return;
   }
   if (type != "response_item" && type != "event_msg") {
-    // A line codex never finished writing has no type to name.
+    // Not a record at all (cut-off ones were dropped above): no type to name.
     if (type.empty()) translation_warning(arena, out, "codex", "malformed record", raw);
     // Bookkeeping for codex itself: tool lists, risk scores, usage, state.
     else if (type != "session_meta" && type != "turn_context" && type != "world_state" &&
