@@ -19,6 +19,9 @@ class CodexAdapter final : public Adapter {
   void observe(std::string_view raw, SessionState& st) const override;
   bool owns_images(std::string_view raw) const override;
   void seed_state(SessionState& st) const override;
+  std::string_view rewind_needle() const override { return "\"thread_rolled_back\""; }
+  int rewound_turns(std::string_view raw) const override;
+  bool starts_turn(std::string_view raw) const override;
 
   // tools.cpp
   void read_tools(std::string_view raw, uint64_t offset, ToolSink& sink) const override;

@@ -139,6 +139,17 @@ class Adapter {
   // pictures would be drawn twice.
   virtual bool owns_images(std::string_view raw) const { return true; }
 
+  // Rewinding. An agent that can drop its last turns from the conversation
+  // (codex's backtrack) records that as a line after them, naming how many;
+  // the turns stay in the file and the chat leaves them out.
+  // Text every such line holds, to find them without parsing; empty when the
+  // agent never rewinds.
+  virtual std::string_view rewind_needle() const { return {}; }
+  // How many turns before `raw` it drops; 0 when `raw` is not a rewind.
+  virtual int rewound_turns(std::string_view raw) const { return 0; }
+  // Whether `raw` begins a turn, as a rewind counts them.
+  virtual bool starts_turn(std::string_view raw) const { return false; }
+
   // Fills `st` with the fields this agent reports, values left empty. Lets the
   // chip bar appear before the first turn, so model/effort can be set on a
   // fresh session the way omp's harness does it.

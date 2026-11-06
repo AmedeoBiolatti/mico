@@ -239,6 +239,13 @@ bool ChatRenderer::open(const std::string& path, const Adapter* adapter) {
 void ChatRenderer::poll_growth() {
   if (!conv_.is_open() || !conv_.adapter()) return;
   if (!conv_.refresh()) return;
+  if (conv_.take_rewound()) {
+    // The agent dropped turns already on screen: read the tail again
+    // without them.
+    reanchor(conv_.file().line_count());
+    grow_backwards();
+    return;
+  }
   grow_forwards();
 }
 
