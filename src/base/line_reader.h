@@ -7,6 +7,9 @@
 #include <string>
 #include <string_view>
 
+#include "base/log.h"
+#include "base/records.h"
+
 namespace mico {
 
 // Reads a file's lines front to back, once: what an index pass over every
@@ -33,6 +36,7 @@ class LineReader {
     ok_ = true;
     uint64_t done = from;     // file offset of buf_[0]
     size_t have = 0;          // bytes in buf_
+    size_t damaged = 0, recovered = 0;
     if (buf_.size() < kSlab) buf_.resize(kSlab);
     for (;;) {
       if (have == buf_.size()) buf_.resize(buf_.size() * 2);  // one line longer than the buffer
@@ -44,7 +48,15 @@ class LineReader {
         const void* nl = memchr(buf_.data() + start, '\n', have - start);
         if (!nl) break;
         const size_t end = size_t(static_cast<const char*>(nl) - buf_.data());
-        fn(std::string_view(buf_.data() + start, end - start), done + start);
+        const std::string_view line(buf_.data() + start, end - start);
+        const auto recovery = recover_records(line);
+        if (!recovery.damaged) fn(line, done + start);
+        else {
+          ++damaged;
+          recovered += recovery.records.size();
+          for (const auto& record : recovery.records)
+            fn(line.substr(record.from, record.size), done + start + record.from);
+        }
         start = end + 1;
       }
       // Keep the unfinished line at the front for the next read.
@@ -55,6 +67,8 @@ class LineReader {
       }
     }
     ::close(fd);
+    if (damaged) MLOG("transcript recovery: %s: %zu damaged lines, %zu complete records recovered; file unchanged",
+                      path_.c_str(), damaged, recovered);
     return done;
   }
   bool ok() const { return ok_; }

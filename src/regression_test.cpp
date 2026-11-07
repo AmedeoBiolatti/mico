@@ -15,6 +15,8 @@
 #include "adapters/screen.h"
 #include "base/json.h"
 #include "base/jsonl.h"
+#include "base/line_reader.h"
+#include "base/records.h"
 #include "base/path.h"
 #include "core/session.h"
 #include "core/store.h"
@@ -640,6 +642,85 @@ int run_regression_tests() {
     check(!chat.open(empty, &codex_adapter()), "an empty transcript is initially unavailable");
     put(empty, call);
     check(chat.open(empty, &codex_adapter()), "an initially empty transcript can be reopened");
+  }
+
+  {
+    const std::string before = R"({"parentUuid":"root","type":"user","message":{"content":"BEFORE_DAMAGE"}})";
+    const std::string after = R"({"parentUuid":"next","type":"assistant","message":{"content":[{"type":"text","text":"RECOVERED_REPLY"}]}})";
+    const std::string clipped = R"({"parentUuid":"old","type":"user","message":{"content":[{"type":"image","source":{"data":"AAA)";
+    const std::string nested = R"({"parentUuid":"root","nested":{"parentUuid":"child","number":-1.25e+3,"bool":true,"null":null},"text":"}{ and \"parentUuid\": quoted"})";
+    check(!recover_records(nested).damaged, "recovery leaves valid nested and quoted headers alone");
+    const auto recovered = recover_records(clipped + after);
+    check(recovered.damaged && recovered.records.size() == 1 &&
+              std::string_view(clipped + after).substr(recovered.records[0].from, recovered.records[0].size) == after,
+          "a complete record after a cut-off base64 field is recovered");
+    const auto joined = recover_records(before + after);
+    check(joined.damaged && joined.records.size() == 2,
+          "two complete records with a missing newline both survive");
+    const auto bad_suffix = recover_records(before + R"({"parentUuid":"bad","number":01})");
+    check(bad_suffix.damaged && bad_suffix.records.size() == 1,
+          "recovery rejects an invalid candidate without losing its valid predecessor");
+    const auto signature = recover_records(R"({"parentUuid":"old","message":{"content":[{"type":"thinking","signature":"AAA)" + after);
+    check(signature.damaged && signature.records.size() == 1,
+          "a record after a cut-off signature is recovered");
+    std::string deep = R"({"parentUuid":"bad","value":)" + std::string(150, '[') + "0" + std::string(150, ']') + "}";
+    check(recover_records(clipped + deep + after).records.size() == 1,
+          "recovery bounds nesting and continues to the next intact record");
+    check(!recover_records(R"({"parentUuid":"root","nested":)" + deep + "}").damaged,
+          "a recovery depth limit does not classify a valid deep record as damaged");
+
+    const std::string path = base + "/recover.jsonl";
+    const std::string original = before + "\n" + clipped + after + "\n" + before + after + "\n" + nested + "\n";
+    put(path, original);
+    const auto stream = [&] {
+      std::vector<std::pair<uint64_t, std::string>> records;
+      LineReader reader(path);
+      const uint64_t end = reader.each(0, [&](std::string_view raw, uint64_t at) {
+        records.emplace_back(at, raw);
+      });
+      check(end == std::filesystem::file_size(path), "recovery advances a streaming reader past the physical newline");
+      return records;
+    };
+    const auto mapped = [&](Jsonl& file) {
+      std::vector<std::pair<uint64_t, std::string>> records;
+      while (!file.complete()) file.extend_back();
+      for (size_t i = 0; i < file.line_count(); ++i)
+        if (!file.line(i).empty()) records.emplace_back(file.line_offset(i), file.line(i));
+      return records;
+    };
+    Jsonl file;
+    file.open(path);
+    check(mapped(file) == stream() && stream().size() == 5,
+          "mapped and streaming recovery agree on every record and its true byte offset");
+    Jsonl moved(std::move(file));
+    check(mapped(moved) == stream(), "moving a mapped file keeps its recovered record boundaries");
+    put(path, clipped + after, true);
+    moved.refresh();
+    check(mapped(moved).size() == 5, "an incomplete physical line is held back during recovery");
+    put(path, "\n", true);
+    moved.refresh();
+    check(mapped(moved) == stream() && stream().size() == 6,
+          "a growing file recovers a joined record once its newline arrives");
+
+    ChatRenderer chat;
+    chat.open(path, &claude_adapter());
+    Surface sf; sf.resize(100, 40);
+    Painter painter(sf, {0, 0, 100, 40});
+    chat.render(painter, Theme{}, Filters{});
+    check(screen(sf).find("RECOVERED_REPLY") != std::string::npos,
+          "a chat renders the intact reply after transcript damage");
+
+    const std::string big = base + "/recover-backwards.jsonl";
+    put(big, clipped + after + "\n" + std::string(6u << 20, 'x') + "\n" + before + "\n");
+    Jsonl backwards;
+    backwards.open(big);
+    check(!backwards.complete(), "the recovery fixture exercises backward indexing");
+    const auto records = mapped(backwards);
+    check(records.size() == 3 && records[0].second == after && records[0].first == clipped.size(),
+          "loading older slabs recovers records and preserves their byte positions");
+    std::ifstream unchanged(path);
+    const std::string bytes((std::istreambuf_iterator<char>(unchanged)), {});
+    check(bytes == original + clipped + after + "\n", "reading a damaged transcript never changes its bytes");
   }
 
   {

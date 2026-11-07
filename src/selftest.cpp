@@ -286,6 +286,15 @@ int run_selftest() {
   js::scan_object("{", [](std::string_view, const js::Value&) { return true; });
   js::scan_object("", [](std::string_view, const js::Value&) { return true; });
   js::scan_array("[{", [](const js::Value&) { return true; });
+  for (const std::string_view broken : {"[}", "[1, }", "[true, }"}) {
+    int calls = 0;
+    const bool ok = js::scan_array(broken, [&](const js::Value& v) {
+      ++calls;
+      check(!v.raw.empty(), "a malformed array never emits empty values");
+      return calls < 4;  // the regression fails without hanging an old build
+    });
+    check(!ok && calls <= 1, "a mismatched array delimiter stops the scan");
+  }
   printf("  malformed input handled without hanging\n");
 
   // Wrapping must cover every byte of the input exactly once, in order.

@@ -155,6 +155,7 @@ bool scan_object(std::string_view s, F&& fn) {
     size_t vstart = detail::skip_ws(s, i);
     Type t = Type::Null;
     size_t vend = detail::skip_value(s, vstart, &t);
+    if (vend <= vstart) return false;  // missing value; never hand out an empty token
     if (!fn(key, Value{s.substr(vstart, vend - vstart), t})) return true;
     i = vend;
   }
@@ -195,7 +196,9 @@ bool scan_keys(std::string_view s, F&& fn) {
     size_t vstart = detail::skip_ws(s, i);
     if (!fn(key, s.substr(vstart))) return true;
     Type t = Type::Null;
-    i = detail::skip_value(s, vstart, &t);
+    const size_t vend = detail::skip_value(s, vstart, &t);
+    if (vend <= vstart) return false;
+    i = vend;
   }
 }
 
@@ -212,6 +215,9 @@ bool scan_array(std::string_view s, F&& fn) {
     if (s[i] == ',') { i++; continue; }
     Type t = Type::Null;
     size_t vend = detail::skip_value(s, i, &t);
+    // A mismatched '}' stops skip_value at this same byte. Advancing only
+    // after the callback used to deliver empty tokens forever here.
+    if (vend <= i) return false;
     if (!fn(Value{s.substr(i, vend - i), t})) return true;
     i = vend;
   }

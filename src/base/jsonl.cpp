@@ -9,6 +9,9 @@
 #include <cstring>
 #include <utility>
 
+#include "base/log.h"
+#include "base/records.h"
+
 namespace mico {
 
 Jsonl::~Jsonl() { close(); }
@@ -20,6 +23,7 @@ Jsonl& Jsonl::operator=(Jsonl&& o) noexcept {
     data_ = std::exchange(o.data_, nullptr);
     len_ = std::exchange(o.len_, 0);
     offsets_ = std::move(o.offsets_);
+    recovered_ends_ = std::move(o.recovered_ends_);
     indexed_from_ = std::exchange(o.indexed_from_, 0);
     scanned_since_release_ = std::exchange(o.scanned_since_release_, 0);
   }
@@ -31,6 +35,7 @@ void Jsonl::close() {
   data_ = nullptr;
   len_ = 0;
   offsets_.clear();
+  recovered_ends_.clear();
   indexed_from_ = 0;
   scanned_since_release_ = 0;
   path_.clear();
@@ -94,6 +99,7 @@ bool Jsonl::refresh() {
   while (p < end) {
     const char* nl = static_cast<const char*>(memchr(p, '\n', size_t(end - p)));
     if (!nl) break;
+    for (size_t at : recover_line(size_t(p - data_), size_t(nl - data_))) offsets_.push_back(at);
     offsets_.push_back(size_t(nl - data_) + 1);
     p = nl + 1;
   }
@@ -109,6 +115,21 @@ constexpr size_t kInitialIndexBytes = 1u << 20;
 constexpr size_t kExtendBytes = 4u << 20;
 }  // namespace
 
+std::vector<size_t> Jsonl::recover_line(size_t from, size_t to) {
+  std::vector<size_t> starts;
+  const auto recovery = recover_records({data_ + from, to - from});
+  if (!recovery.damaged) return starts;
+  recovered_ends_[from] = from;
+  for (const auto& record : recovery.records) {
+    const size_t at = from + record.from;
+    recovered_ends_[at] = at + record.size;
+    if (record.from) starts.push_back(at);
+  }
+  MLOG("transcript recovery: %s at byte %zu: %zu complete records recovered; file unchanged",
+       path_.c_str(), from, recovery.records.size());
+  return starts;
+}
+
 // Scans [from, to) for line starts and prepends them. `from` must already sit
 // on a line boundary.
 void Jsonl::index_range(size_t from, size_t to) {
@@ -119,6 +140,7 @@ void Jsonl::index_range(size_t from, size_t to) {
   while (p < end) {
     const char* nl = static_cast<const char*>(memchr(p, '\n', size_t(end - p)));
     if (!nl) break;
+    for (size_t at : recover_line(size_t(p - data_), size_t(nl - data_))) found.push_back(at);
     found.push_back(size_t(nl - data_) + 1);
     p = nl + 1;
   }
@@ -134,6 +156,7 @@ void Jsonl::index_range(size_t from, size_t to) {
 
 void Jsonl::build_index() {
   offsets_.clear();
+  recovered_ends_.clear();
 
   // Index the tail only: the newest turns are what opens on screen.
   size_t start = len_ > kInitialIndexBytes ? len_ - kInitialIndexBytes : 0;
@@ -153,6 +176,7 @@ void Jsonl::build_index() {
   while (p < end) {
     const char* nl = static_cast<const char*>(memchr(p, '\n', size_t(end - p)));
     if (!nl) break;
+    for (size_t at : recover_line(size_t(p - data_), size_t(nl - data_))) offsets_.push_back(at);
     offsets_.push_back(size_t(nl - data_) + 1);
     p = nl + 1;
   }
@@ -243,6 +267,8 @@ size_t Jsonl::line_offset(size_t i) const {
 std::string_view Jsonl::line(size_t i) const {
   if (i + 1 >= offsets_.size()) return {};
   size_t a = offsets_[i], b = offsets_[i + 1];
+  if (!recovered_ends_.empty())
+    if (const auto it = recovered_ends_.find(a); it != recovered_ends_.end()) b = it->second;
   if (b > a && data_[b - 1] == '\n') b--;
   if (b > a && data_[b - 1] == '\r') b--;
   return {data_ + a, b - a};
