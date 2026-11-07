@@ -4,6 +4,7 @@
 #include "base/log.h"
 #include "base/path.h"
 #include "base/progress.h"
+#include "base/records.h"
 #include "core/scope.h"
 #include "core/session.h"
 #include "core/store.h"
@@ -535,8 +536,12 @@ bool LiveSession::follow_background() {
         }
         if (nl == std::string_view::npos) break;
         if (!bg_skip_) {
-          adapter_->read_background(bg_line_, at + nl - bg_line_.size(), bg_);
-          if (std::string id = adapter_->continued_in(bg_line_); !id.empty()) continued_to_ = std::move(id);
+          const uint64_t offset = at + nl - bg_line_.size();
+          for_each_record(bg_line_, [&](std::string_view line, size_t delta) {
+            adapter_->read_background(line, offset + delta, bg_);
+            if (std::string id = adapter_->continued_in(line); !id.empty()) continued_to_ = std::move(id);
+            return true;
+          });
         }
         bg_line_.clear();
         bg_skip_ = false;

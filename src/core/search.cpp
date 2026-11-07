@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "base/text.h"
+#include "base/records.h"
 
 namespace mico {
 
@@ -181,7 +182,10 @@ void ChatSearch::search_file(Work& w) {
     const size_t a = nl_before ? size_t(static_cast<const char*>(nl_before) - map) + 1 : 0;
     const void* nl_after = memchr(map + m, '\n', size - m);
     const size_t b = nl_after ? size_t(static_cast<const char*>(nl_after) - map) : size;
-    confirm(a, b);
+    for_each_record(all.substr(a, b - a), [&](std::string_view record, size_t delta) {
+      confirm(a + delta, a + delta + record.size());
+      return true;
+    });
     pos = b + 1;
   }
   munmap(const_cast<char*>(map), size);

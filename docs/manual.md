@@ -764,6 +764,16 @@ spawn (argv, resolved binary, cwd, pid), transcript linking, and — when an
 agent exits — its code and the last screen it drew. `:log` shows the path.
 The file resets itself once it passes ~4 MB.
 
+**Damaged transcripts.** Malformed JSON stops the affected field scan instead
+of blocking the daemon. When a failed append joins a cut-off record to another
+record, mico looks for the next opening header and recovers complete JSON
+objects in file order. It also separates complete records whose newline was
+lost. Chat views, search and background indexes read the recovered records at
+their original byte positions; an unfinished final line waits for its newline.
+Recovery is bounded and logged as `transcript recovery`, with the file and
+position or counts. The agent's file is left unchanged. Bytes missing from a
+damaged record cannot be reconstructed by this reader.
+
 **When the daemon goes down**, the log says how, as far as anything can:
 
 - **A crash** (SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, an uncaught

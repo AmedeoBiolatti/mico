@@ -6,12 +6,14 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <unordered_map>
 
 namespace mico {
 
 // A JSONL file mapped into memory with a newline offset index. Nothing is
-// parsed on open: transcripts run to hundreds of megabytes, so lines are handed
-// out as views and parsed only when they are about to be drawn.
+// parsed on open except suspicious joined records, which are recovered into
+// separate views. Transcripts run to hundreds of megabytes, so normal lines
+// are parsed only when they are about to be drawn.
 class Jsonl {
  public:
   Jsonl() = default;
@@ -68,6 +70,7 @@ class Jsonl {
   void build_index();
   bool map_file(const std::string& path, size_t* out_len);
   void index_range(size_t from, size_t to);
+  std::vector<size_t> recover_line(size_t from, size_t to);
   // Pulls [from, to) into the page cache with large reads before the mapping
   // touches it. The mapping is MADV_RANDOM, so a backward scan otherwise
   // faults the file in one 4 KB page at a time.
@@ -77,6 +80,10 @@ class Jsonl {
   const char* data_ = nullptr;
   size_t len_ = 0;
   FrontVec<size_t> offsets_;  // line i spans [offsets_[i], offsets_[i+1])
+  // Only damaged physical lines need explicit ends: their intact records can
+  // be separated by bytes we must not give to a parser. An empty span hides
+  // an unrecoverable prefix while preserving stable byte positions.
+  std::unordered_map<size_t, size_t> recovered_ends_;
   // First byte covered by the index; everything before it is unscanned.
   size_t indexed_from_ = 0;
   size_t scanned_since_release_ = 0;

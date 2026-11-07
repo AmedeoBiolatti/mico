@@ -36,6 +36,7 @@ add_library(mico_base STATIC
   src/base/qr.cpp
   src/base/json.cpp
   src/base/jsonl.cpp
+  src/base/records.cpp
   src/base/log.cpp
   src/base/process.cpp
 )
@@ -268,6 +269,8 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_layers.py ${CMAKE_SOURCE_DIR}/src)
   add_test(NAME daemon-input
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_input.py $<TARGET_FILE:mico>)
+  add_test(NAME transcript-recovery
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/transcript_recovery.py $<TARGET_FILE:mico>)
   add_test(NAME web-view
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_view.py $<TARGET_FILE:mico>)
   add_test(NAME web-answers
@@ -304,6 +307,6 @@ if(Python3_FOUND)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(daemon-input daemon-reset daemon-update web-answers web-ui work-fork daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
+  set_tests_properties(transcript-recovery daemon-input daemon-reset daemon-update web-answers web-ui work-fork daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

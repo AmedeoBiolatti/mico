@@ -9,6 +9,7 @@
 #include "adapters/listing.h"
 #include "base/fs.h"
 #include "base/json.h"
+#include "base/records.h"
 #include "base/text.h"
 
 namespace mico {
@@ -77,6 +78,7 @@ void ClaudeAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) 
       std::string first_user;
       auto scan = [&](std::string_view blob) {
       fs::for_each_line(blob, [&](std::string_view line) {
+        return for_each_record(line, [&](std::string_view line, size_t) {
         // Listing needs three things: cwd, the ai-title, and the first real
         // user turn. Anything else is skipped before it is scanned.
         const bool maybe_title = text::contains(line, "ai-title");
@@ -113,6 +115,7 @@ void ClaudeAdapter::list_sessions(const std::function<void(SessionRef&&)>& add) 
           });
         }
         return true;
+        });
       });
       };
 
