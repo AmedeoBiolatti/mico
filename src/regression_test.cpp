@@ -3059,6 +3059,18 @@ time.sleep(10)
     check(chat.draft_shown() && count("NOTYET") == 1 && count("DRAFTWINDOW") == 1,
           "a new block after a committed one is drawn as a draft");
 
+    // Claude shows a thinking block with text in it as a reply line over the
+    // command it runs; the transcript has it as thinking, not text. It is
+    // held all the same, or it is drawn as a draft for as long as the
+    // command runs.
+    put(path, R"({"type":"assistant","message":{"id":"m2","content":[{"type":"thinking","thinking":"S05 and S06 are re-rendered, so I'm forcing THINKLINE and then reassembling.\n\n"}]}})" "\n"
+              R"({"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"sleep 30"}}]}})" "\n", true);
+    chat.poll_growth();
+    chat.set_draft("S05 and S06 are re-rendered, so I'm forcing THINKLINE and then reassembling.");
+    chat.render(p, theme, filters);
+    check(!chat.draft_shown() && count("THINKLINE") == 0,
+          "a thinking line shown on screen over a running command is not drawn as a draft");
+
     put(path, user, true);
     chat.poll_growth();
     chat.set_draft("It begins with a small DRAFTWINDOW and grows each round trip.");
