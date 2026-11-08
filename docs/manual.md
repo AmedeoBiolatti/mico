@@ -1558,6 +1558,10 @@ stay in its rollout but not in the conversation, and mico leaves them out the
 same way: a one-line "Rolled back 2 turns" notice takes their place, and an
 open chat drops them as soon as the rollback lands. Codex counts turns from
 your own messages and messages from other agents, and so does mico.
+Codex sometimes stops writing a record partway and writes the whole record
+again on the next line. A line that opens a record and never closes it holds
+nothing complete, so mico skips it rather than warning that it cannot display
+it; a line that is not a record at all is still shown as malformed.
 
 **Answers and the work before them.** What an agent writes between its tool
 calls ("Let me check the tests first") and what it answers at the end look
