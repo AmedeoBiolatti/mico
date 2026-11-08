@@ -773,7 +773,10 @@ bool ChatRenderer::draft_shown() {
   for (size_t i = conv_.events().size(); i-- > 0 && !draft_committed_;) {
     const Event& e = conv_.events()[i];
     if (e.kind == EventKind::User) break;
-    if (e.kind != EventKind::Assistant) continue;
+    // Thinking too: Claude draws a thinking block that has text in it as a
+    // reply line ("● S05 is re-rendered, so…") above the tool it leads to, so
+    // the screen reads it as a reply; it reaches the transcript as thinking.
+    if (e.kind != EventKind::Assistant && e.kind != EventKind::Thinking) continue;
     // Either way round: the screen can hold more than the block, when rows
     // of whatever follows it were taken for its own.
     const std::string m = reading(conv_.arena().view(e.text), 12000);

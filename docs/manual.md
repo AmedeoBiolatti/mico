@@ -1689,7 +1689,10 @@ output. Claude and Codex keep the strip. The reply being written is read off
 every agent's screen all the same, as markdown, until the transcript has it:
 for pi and omp, the plain text one column in above their input box (pi's two
 rules) or status bar (omp's), under the user's message or a tool's box, each
-in a background of its own, or the grey italic of thinking. `Esc` in the chat prompt still
+in a background of its own, or the grey italic of thinking. Claude draws a
+thinking block that has text in it as a reply line over the tool it leads to;
+that text is in the transcript as thinking, which holds it just as a reply
+does, so it is not drawn a second time under the chat. `Esc` in the chat prompt still
 reaches the agent, because interrupting has to keep working when the agent's
 own "esc to interrupt" hint is not the thing on screen. This is why both planes are always running even though only one
 is painted.
