@@ -550,6 +550,34 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
               'a transcript image and a picture file are drawn as images')
         check(page.eval("[...document.querySelectorAll('#events img')].every(i => i.src.startsWith('data:image/png;base64,') && i.naturalWidth > 0)"),
               'and they decode')
+
+        # A picture opens on its own, to be zoomed there: the page itself does not pinch-zoom.
+        check(page.eval("getComputedStyle(document.body).touchAction") == 'pan-x pan-y', 'the page does not pinch-zoom')
+        page.eval("document.querySelector('#events figure.pic img').click()")
+        check(page.wait("!document.getElementById('viewer').hidden && document.querySelector('#viewer img').naturalWidth > 0"),
+              'clicking a picture opens it in the viewer')
+        zoom = "new DOMMatrix(getComputedStyle(document.querySelector('#viewer img')).transform).a"
+        check(abs(page.eval(zoom) - 1) < 0.01, 'the viewer opens unzoomed')
+        page.call('Input.dispatchMouseEvent', type='mouseWheel', x=600, y=450, deltaX=0, deltaY=-500)
+        check(page.wait(f"{zoom} > 2"), 'the wheel zooms the picture in')
+        page.call('Input.dispatchKeyEvent', type='keyDown', key='Escape', code='Escape', windowsVirtualKeyCode=27)
+        check(page.wait("document.getElementById('viewer').hidden"), 'Escape closes it')
+        check(page.eval("!!document.querySelector('#events figure.pic img') && !history.state?.viewer"),
+              'back on the chat it was opened from')
+        page.call('Emulation.setTouchEmulationEnabled', enabled=True, maxTouchPoints=5)
+        page.eval("document.querySelector('#events figure.pic img').click()")
+        check(page.wait("!document.getElementById('viewer').hidden"), 'it opens again')
+        touch = lambda kind, pts: page.call('Input.dispatchTouchEvent', type=kind,
+                                            touchPoints=[{'x': x, 'y': y, 'id': i} for i, (x, y) in enumerate(pts)])
+        touch('touchStart', [(560, 450), (640, 450)])
+        for step in range(1, 6):
+            touch('touchMove', [(560 - 40 * step, 450), (640 + 40 * step, 450)])
+        touch('touchEnd', [])
+        check(page.wait(f"{zoom} > 3"), 'two fingers pinch the picture in')
+        page.eval("history.back()")
+        check(page.wait("document.getElementById('viewer').hidden"), 'back closes it')
+        check(page.eval("!!document.querySelector('#events figure.pic img')"), 'and leaves the chat open')
+        page.call('Emulation.setTouchEmulationEnabled', enabled=False)
         check(page.eval("document.querySelectorAll('#events svg.chart-svg polyline').length") == 2, 'a chart is drawn, a line per series')
         check(page.eval("!!document.querySelector('#events .chart-legend')"), 'with its legend')
         check(page.eval("document.querySelector('#events .math')?.textContent") == 'x^2 + y^2', 'an equation keeps its LaTeX')

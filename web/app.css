@@ -560,7 +560,22 @@ details.tool .out.err { border-color: var(--bad); }
 /* Pictures, charts and equations */
 figure.pic { margin: 10px 0; }
 figure.pic img { max-width: min(100%, 560px); max-height: 420px; border-radius: 8px; border: 1px solid var(--line); cursor: zoom-in; display: block; }
-figure.pic.zoom img { max-width: 100%; max-height: none; cursor: zoom-out; }
+
+/* A picture opened on its own. The page does not pinch-zoom (that only
+   magnified its bars); the viewer does, and takes every touch itself. */
+html, body { touch-action: pan-x pan-y; }
+#viewer {
+  position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .9); overflow: hidden;
+  display: flex; align-items: center; justify-content: center; touch-action: none; user-select: none;
+  cursor: zoom-in; outline: none;
+}
+#viewer[hidden] { display: none; }
+#viewer.zoomed { cursor: grab; }
+#viewer img { max-width: none; transform-origin: center; flex: none; -webkit-user-drag: none; }
+#viewer-close {
+  position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 12px; width: 40px; height: 40px;
+  border: 0; border-radius: 50%; background: rgba(255, 255, 255, .15); color: #fff; font-size: 26px; line-height: 1;
+}
 figure.pic figcaption, figure.pic .cap { color: var(--dim); font-size: 12.5px; margin-top: 4px; }
 figure.pic.loading .cap { font-style: italic; }
 .chart { margin: 10px 0; gap: 12px; }
