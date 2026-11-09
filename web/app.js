@@ -233,6 +233,8 @@ function showProject(path) {
 
 window.addEventListener("popstate", (e) => {
   const s = e.state || {};
+  // Back from an open picture closes it and nothing else.
+  if (viewer.node && !viewer.node.hidden && !s.viewer) { hideViewer(); return; }
   setScreen(s.screen === "chat" ? "chat" : "list");
   if (s.screen !== "chat" && (s.project || null) !== st.project) {
     st.project = s.project || null;
@@ -1500,10 +1502,170 @@ function showPicture(fig, alt, media, data) {
   const img = el("img");
   img.alt = alt || "image";
   img.src = `data:${media};base64,${data}`;
-  img.onclick = () => fig.classList.toggle("zoom");
-  img.title = "Click to enlarge";
+  img.onclick = () => openViewer(img.src, img.alt);
+  img.title = "Open to zoom";
   fig.append(img);
   if (alt) fig.append(el("figcaption", "", alt));
+}
+
+// A picture opened on its own, over everything: pinched, wheeled or
+// double-tapped to zoom, dragged when zoomed. The page itself does not zoom,
+// so this is where a picture is looked at closely. Back closes it.
+const viewer = { node: null, img: null, s: 1, x: 0, y: 0, pts: new Map(), pinch: null, drag: null, tap: 0, moved: false };
+
+function viewerFit() {
+  const v = viewer, r = v.node.getBoundingClientRect();
+  const w = v.img.naturalWidth || 1, h = v.img.naturalHeight || 1;
+  // At 1 the picture fits the screen, never larger than its own pixels.
+  const k = Math.min(r.width / w, r.height / h, 1);
+  v.base = { w: w * k, h: h * k, cw: r.width, ch: r.height };
+}
+
+function viewerClamp() {
+  const v = viewer, b = v.base;
+  v.s = Math.min(Math.max(v.s, 1), Math.max(8, 4 * Math.max(b.cw / b.w, b.ch / b.h)));
+  // Panned no further than the picture's edges, and centred while smaller than the screen.
+  const mx = Math.max(0, (b.w * v.s - b.cw) / 2), my = Math.max(0, (b.h * v.s - b.ch) / 2);
+  v.x = Math.min(mx, Math.max(-mx, v.x));
+  v.y = Math.min(my, Math.max(-my, v.y));
+}
+
+function viewerDraw() {
+  const v = viewer;
+  viewerClamp();
+  v.img.style.width = v.base.w + "px";
+  v.img.style.height = v.base.h + "px";
+  v.img.style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.s})`;
+  v.node.classList.toggle("zoomed", v.s > 1.01);
+}
+
+// Zoomed by `f` about the screen point (px, py): that point stays put.
+function viewerZoom(f, px, py) {
+  const v = viewer, b = v.base, s0 = v.s;
+  v.s = s0 * f;
+  viewerClamp();
+  const k = v.s / s0, cx = px - b.cw / 2, cy = py - b.ch / 2;
+  v.x = cx - (cx - v.x) * k;
+  v.y = cy - (cy - v.y) * k;
+  viewerDraw();
+}
+
+function openViewer(src, alt) {
+  if (!viewer.node) {
+    const n = el("div");
+    n.id = "viewer";
+    n.setAttribute("role", "dialog");
+    n.setAttribute("aria-label", "Image");
+    n.tabIndex = -1;
+    const img = el("img");
+    img.draggable = false;
+    const close = el("button", "icon", "×");
+    close.type = "button";
+    close.id = "viewer-close";
+    close.setAttribute("aria-label", "Close image");
+    close.onclick = (e) => { e.stopPropagation(); closeViewer(); };
+    n.append(img, close);
+    document.body.append(n);
+    viewer.node = n;
+    viewer.img = img;
+    const pos = (e) => { const r = n.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    n.addEventListener("pointerdown", (e) => {
+      if (e.target === close) return;
+      n.setPointerCapture(e.pointerId);
+      viewer.pts.set(e.pointerId, pos(e));
+      viewer.moved = false;
+      if (viewer.pts.size === 2) {
+        const [a, b] = [...viewer.pts.values()];
+        viewer.pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
+        viewer.drag = null;
+      } else if (viewer.pts.size === 1) {
+        viewer.drag = pos(e);
+      }
+    });
+    n.addEventListener("pointermove", (e) => {
+      if (!viewer.pts.has(e.pointerId)) return;
+      const p = pos(e);
+      viewer.pts.set(e.pointerId, p);
+      if (viewer.pinch && viewer.pts.size >= 2) {
+        const [a, b] = [...viewer.pts.values()];
+        const d = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        viewer.x += m[0] - viewer.pinch.m[0];
+        viewer.y += m[1] - viewer.pinch.m[1];
+        viewerZoom(d / viewer.pinch.d, m[0], m[1]);
+        viewer.pinch = { d, m };
+        viewer.moved = true;
+      } else if (viewer.drag) {
+        const dx = p[0] - viewer.drag[0], dy = p[1] - viewer.drag[1];
+        if (Math.abs(dx) + Math.abs(dy) > 3) viewer.moved = true;
+        viewer.x += dx;
+        viewer.y += dy;
+        viewer.drag = p;
+        viewerDraw();
+      }
+    });
+    const up = (e) => {
+      if (!viewer.pts.delete(e.pointerId)) return;
+      if (viewer.pts.size < 2) viewer.pinch = null;
+      viewer.drag = viewer.pts.size === 1 ? [...viewer.pts.values()][0] : null;
+      if (e.type !== "pointerup" || viewer.pts.size || viewer.moved) return;
+      // A double tap zooms in where it lands, or back out; a single tap on the
+      // dark around an unzoomed picture closes it.
+      const [px, py] = pos(e), now = Date.now();
+      if (now - viewer.tap < 300) {
+        viewer.tap = 0;
+        clearTimeout(viewer.tapTimer);
+        if (viewer.s > 1.01) { viewer.s = 1; viewer.x = viewer.y = 0; viewerDraw(); }
+        else viewerZoom(2.5, px, py);
+        return;
+      }
+      viewer.tap = now;
+      const r = viewer.img.getBoundingClientRect();
+      const onPicture = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      clearTimeout(viewer.tapTimer);
+      viewer.tapTimer = setTimeout(() => { if (!onPicture && viewer.s <= 1.01) closeViewer(); }, 300);
+    };
+    n.addEventListener("pointerup", up);
+    n.addEventListener("pointercancel", up);
+    n.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const [px, py] = pos(e);
+      viewerZoom(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.002)), px, py);
+    }, { passive: false });
+    n.addEventListener("keydown", (e) => {
+      const r = n.getBoundingClientRect();
+      if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); closeViewer(); }
+      else if (e.key === "+" || e.key === "=") viewerZoom(1.25, r.width / 2, r.height / 2);
+      else if (e.key === "-") viewerZoom(0.8, r.width / 2, r.height / 2);
+      else if (e.key === "0") { viewer.s = 1; viewer.x = viewer.y = 0; viewerDraw(); }
+    });
+    window.addEventListener("resize", () => { if (!n.hidden) { viewerFit(); viewerDraw(); } });
+  }
+  const v = viewer;
+  v.s = 1; v.x = v.y = 0; v.pts.clear(); v.pinch = v.drag = null; v.tap = 0;
+  v.img.alt = alt || "image";
+  v.img.src = src;
+  v.node.hidden = false;
+  v.opener = document.activeElement;
+  const show = () => { viewerFit(); viewerDraw(); };
+  if (v.img.complete) show(); else v.img.onload = show;
+  history.pushState(Object.assign({}, history.state, { viewer: true }), "");
+  v.node.focus();
+}
+
+// Safari before 13 pinch-zooms the page whatever touch-action says.
+document.addEventListener("gesturestart", (e) => e.preventDefault());
+
+function closeViewer() {
+  if (!viewer.node || viewer.node.hidden) return;
+  if (history.state && history.state.viewer) history.back();  // popstate hides it
+  else hideViewer();
+}
+
+function hideViewer() {
+  if (!viewer.node || viewer.node.hidden) return;
+  viewer.node.hidden = true;
+  viewer.img.removeAttribute("src");
+  if (viewer.opener && viewer.opener.focus) viewer.opener.focus();
 }
 
 function ask(key, fig, alt, msg) {
@@ -2095,9 +2257,12 @@ $("resume").onclick = () => continueChat(false);
 $("fork").onclick = () => continueChat(true);
 
 // The keyboard on a phone: the page is the height of what is left above it.
+// Times the zoom: a page zoomed in by the browser all the same keeps its
+// height, rather than squeezing its bars into what the zoom leaves on screen.
 if (window.visualViewport) {
   const fit = () => {
-    document.documentElement.style.setProperty("--vh", window.visualViewport.height + "px");
+    const vv = window.visualViewport;
+    document.documentElement.style.setProperty("--vh", vv.height * (vv.scale || 1) + "px");
     if (st.atBottom) scrollToBottom();
   };
   window.visualViewport.addEventListener("resize", fit);

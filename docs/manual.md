@@ -270,7 +270,11 @@ was.
   remembered in the browser.
 - **Pictures** a chat holds (screenshots, an image the agent read) and local
   files a message shows with `![alt](/path/to/file.png)` are drawn as images,
-  fetched when they scroll into the chat; a click enlarges one. **Charts**
+  fetched when they scroll into the chat. A click or tap opens one on its own,
+  over the page, to be zoomed there: pinch, scroll the wheel, press + and −,
+  or double-tap where to look; drag to move around a zoomed picture. Esc,
+  ×, the browser's back, or a tap beside an unzoomed picture closes it. The
+  page itself does not pinch-zoom, which only made its bars bigger. **Charts**
   (```` ```chart ````) are drawn as SVG: line, scatter, bar, hist, heatmap and
   several side by side. A chart read from a data file, a Mermaid diagram and
   typeset equations are terminal-only for now; an equation shows its LaTeX.
