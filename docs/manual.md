@@ -425,6 +425,9 @@ adapter, or correlation not yet resolved, degrades to raw-only.
 Codex's `/clear` and `/new` can start another conversation inside the same
 terminal process. mico follows its new main transcript and shows its first
 prompt and reply, while keeping the previous conversation in stored history.
+Claude's `/clear`, and `/resume` from inside a session, do the same. Claude
+leaves no pointer to the new conversation in the old one, but it records the
+session each running process is on, and mico follows that.
 
 Content that Codex or omp emits in a format mico cannot translate appears as a
 warning in chat, at every density. Click it to inspect a bounded preview of the

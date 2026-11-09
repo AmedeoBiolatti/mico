@@ -47,6 +47,7 @@ class ClaudeAdapter final : public Adapter {
   void prepare(Launch& l, const LaunchExtras& x) const override;
   bool continue_session(Launch& l, std::string_view id, bool fork, std::string* note) const override;
   bool find_transcript(const TranscriptQuery& q, FoundTranscript& out) const override;
+  bool find_replacement_transcript(const TranscriptQuery& q, FoundTranscript& out) const override;
   std::string continued_in(std::string_view line) const override;
   bool busy(const Liveness& l) const override;
   bool awaits_input(const Vt& vt) const override;

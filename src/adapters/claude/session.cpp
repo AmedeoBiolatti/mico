@@ -2,6 +2,7 @@
 
 #include "adapters/cmdline.h"
 #include "base/fs.h"
+#include "base/json.h"
 #include "base/uuid.h"
 
 namespace mico {
@@ -105,6 +106,33 @@ bool ClaudeAdapter::find_transcript(const TranscriptQuery& q, FoundTranscript& o
   });
   out.session_id = q.session_id;
   return !out.path.empty();
+}
+
+// /clear (and /resume from inside a session) moves claude on to another
+// transcript and writes nothing more to the old one, which holds no pointer to
+// the new. Claude keeps the session each process is on in sessions/<pid>.json,
+// rewritten on every switch: the pane follows that. A file older than this
+// launch is a dead process's that had the same pid.
+bool ClaudeAdapter::find_replacement_transcript(const TranscriptQuery& q, FoundTranscript& out) const {
+  if (q.pid <= 0) return false;
+  std::string buf;
+  const std::string_view rec =
+      fs::read_prefix(claude_home() + "/sessions/" + std::to_string(q.pid) + ".json", 16384, buf);
+  std::string id;
+  int64_t pid = -1, started_ms = 0;
+  js::scan_object(rec, [&](std::string_view key, const js::Value& v) {
+    if (key == "pid") pid = strtoll(std::string(v.raw).c_str(), nullptr, 10);
+    else if (key == "startedAt") started_ms = strtoll(std::string(v.raw).c_str(), nullptr, 10);
+    else if (key == "sessionId" && v.is_string() && v.literal()) id = v.body();
+    return true;
+  });
+  if (pid != q.pid || id.empty() || id == q.session_id) return false;
+  if (q.started_at > 0 && started_ms / 1000 + 5 < q.started_at) return false;
+  for (char c : id)
+    if (!isalnum(static_cast<unsigned char>(c)) && c != '-') return false;
+  TranscriptQuery next = q;
+  next.session_id = id;
+  return find_transcript(next, out);
 }
 
 // {"type":"continued-in",...,"continuedInSessionId":"<id>"}: claude went on in

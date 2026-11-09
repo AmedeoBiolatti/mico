@@ -2560,6 +2560,77 @@ os.read(0, 1)
     session.pty().terminate();
   }
 
+  // Claude /clear moves on to a new transcript and leaves no pointer in the
+  // old one; sessions/<pid>.json names the session the process is now on.
+  {
+    const std::string root = base + "/claude-clear";
+    const std::string home = root + "/claude-home";
+    EnvScope claude_home("CLAUDE_CONFIG_DIR", home);
+    const std::string old_file = home + "/projects/slug/before-clear.jsonl";
+    const std::string next_file = home + "/projects/slug/after-clear.jsonl";
+    put(old_file, R"({"type":"user","message":{"role":"user","content":"OLDCHAT"}})" "\n");
+    put(home + "/sessions/.keep", "");
+    const std::string fixture = root + "/clear.py";
+    put(fixture, R"PY(import json, os, pathlib, sys, time, tty
+home, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+tty.setraw(0)
+def record(sid):
+    (home / 'sessions' / (str(os.getpid()) + '.json')).write_text(json.dumps(
+        {'pid': os.getpid(), 'sessionId': sid, 'cwd': '/', 'startedAt': int(time.time() * 1000)}))
+record('before-clear')
+(root / 'ready').touch()
+def line():
+    text = b''
+    while not text.endswith(b'\r'):
+        text += os.read(0, 1)
+    return text[:-1].decode()
+assert line() == '/clear'
+new = home / 'projects' / 'slug' / 'after-clear.jsonl'
+with new.open('w') as w:
+    w.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content':
+        '<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>'}}) + '\n')
+record('after-clear')
+(root / 'cleared').touch()
+prompt = line()
+with new.open('a') as w:
+    w.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': prompt}}) + '\n')
+    w.write(json.dumps({'type': 'assistant', 'message': {'id': 'm1', 'role': 'assistant',
+        'content': [{'type': 'text', 'text': 'NEWANSWER'}]}}) + '\n')
+(root / 'answered').touch()
+os.read(0, 1)
+)PY");
+    LiveSession session;
+    Launch l;
+    l.agent = "claude"; l.cwd = project; l.session_id = "before-clear"; l.origin = "before-clear";
+    l.argv = {"python3", fixture, home, root};
+    session.start(l);
+    App app;
+    auto pane = make_session_pane(&session); pane->set_app(&app);
+    Surface sf; sf.resize(100, 32); Painter p(sf, {0, 0, 100, 32});
+    const auto wait_for = [&](const char* marker, const std::string& path) {
+      for (int i = 0; i < 500; i++) {
+        session.pump(); pane->render(p, true);
+        if (std::filesystem::exists(root + "/" + marker) && session.transcript() == path) return true;
+        if (session.exited()) return false;
+        usleep(5000);
+      }
+      return false;
+    };
+    check(wait_for("ready", old_file), "claude clear: resumed chat initially attaches to its old transcript");
+    for (int i = 0; i < 120; i++) { session.pump(); usleep(5000); }
+    check(session.transcript() == old_file, "claude clear: the chat stays on its transcript while the process does");
+    session.pty().write("/clear\r");
+    check(wait_for("cleared", next_file) && session.session_id() == "after-clear" && session.origin().empty(),
+          "claude clear: the pane follows the process to its new session");
+    session.pty().write("FIRSTAFTERCLEAR\r");
+    check(wait_for("answered", next_file), "claude clear: the first turn is delivered to the new chat");
+    for (int i = 0; i < 40; i++) { session.pump(); pane->render(p, true); usleep(5000); }
+    check(screen(sf).find("FIRSTAFTERCLEAR") != std::string::npos && screen(sf).find("NEWANSWER") != std::string::npos &&
+              screen(sf).find("OLDCHAT") == std::string::npos,
+          "claude clear: the new chat shows its prompt and answer, not the old conversation");
+    session.pty().terminate();
+  }
+
   // OMP /fork changes session files inside the existing PTY.
   {
     const std::string root = base + "/omp-fork";
