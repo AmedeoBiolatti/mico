@@ -263,6 +263,13 @@ interrupts it.
 - **A permission dialog or a plan** to approve takes the message box's place:
   each choice a button, with a note field where the dialog takes one.
 - **Interrupt** sends Esc, as in the terminal; **Stop** ends the agent.
+- **Images go with a message**: paste one into the message box, drop one on
+  it, or press **+** to pick some (a phone offers its gallery and camera). They
+  wait above the box, each with a × to take it off, up to eight a message. A
+  large picture is scaled to 2000 px on its longer side before it leaves the
+  browser. The daemon saves each where a terminal paste goes
+  (`$XDG_RUNTIME_DIR/mico/images`) and hands the agent its path ahead of the
+  text, as the terminal's Ctrl+V does (`send {key, text, images}`).
 
 mico answers as its terminal panel does: the protocol carries the *choice*
 (`answer_permission {key, index, note}`, `answer {key, tool, chosen}`,

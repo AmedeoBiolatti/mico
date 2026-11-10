@@ -424,6 +424,40 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
               'and sends an interrupt, not a message')
         page.eval("(() => { const t = document.getElementById('prompt-text'); t.value = 'steer'; t.dispatchEvent(new Event('input')); })()")
         check(page.eval("document.getElementById('send').getAttribute('aria-label')") == 'Send', 'typed text makes it Send again')
+        # Pictures go with a message: one pasted, one picked from the gallery.
+        # A large one is drawn again smaller; each comes off with its ×.
+        page.eval("""(async () => {
+          const c = document.createElement('canvas'); c.width = 4000; c.height = 3000;
+          const g = c.getContext('2d'); g.fillStyle = '#3a7'; g.fillRect(0, 0, 4000, 3000);
+          const big = await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.9));
+          const small = new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='), ch => ch.charCodeAt(0))]);
+          const paste = new DataTransfer();
+          paste.items.add(new File([small], 'shot.png', {type: 'image/png'}));
+          document.getElementById('prompt-text').dispatchEvent(new ClipboardEvent('paste', {clipboardData: paste, bubbles: true, cancelable: true}));
+          const pick = new DataTransfer();
+          pick.items.add(new File([big], 'photo.jpg', {type: 'image/jpeg'}));
+          pick.items.add(new File([small], 'gone.png', {type: 'image/png'}));
+          const input = document.getElementById('attach-file');
+          input.files = pick.files;
+          input.dispatchEvent(new Event('change'));
+        })()""")
+        check(page.wait("st.attached.length === 3 && st.attached.every(p => !p.busy) && "
+                        "document.querySelectorAll('#tray .thumb').length === 3 && !document.getElementById('tray').hidden"),
+              'a pasted and two picked pictures wait in the tray')
+        page.eval("document.querySelectorAll('#tray .thumb button')[2].click()")
+        check(page.eval("st.attached.length === 2 && document.querySelectorAll('#tray .thumb').length === 2"),
+              'the × takes one off')
+        check(page.eval("""(async () => {
+          const im = new Image(); im.src = 'data:image/jpeg;base64,' + st.attached[1].data; await im.decode();
+          return st.attached[0].data.startsWith('iVBOR') && im.naturalWidth === 2000 && im.naturalHeight === 1500;
+        })()"""), 'the pasted PNG goes as it came, the large photo at 2000 px')
+        page.eval("window.sent = []; document.getElementById('prompt').requestSubmit()")
+        msg = (page.eval("sent.find(m => m.type === 'send')") or {})
+        check(msg.get('text') == 'steer' and len(msg.get('images') or []) == 2, 'the message carries its pictures')
+        page.eval(f"receive({{type: 'result', rid: {json.dumps(msg.get('rid'))}, ok: true}})")
+        check(page.eval("st.attached.length === 0 && document.getElementById('tray').hidden && "
+                        "document.getElementById('prompt-text').value === ''"), 'sent, the tray empties')
+        page.eval("(() => { const t = document.getElementById('prompt-text'); t.value = 'steer'; t.dispatchEvent(new Event('input')); })()")
         page.eval("document.getElementById('chat-menu').click()")
         labels = page.eval("[...document.querySelectorAll('#sheet .sheet-item')].map(b => b.textContent)") or []
         check(labels[:2] == ['Work', 'Interrupt'] and 'Rename…' in labels and 'Open' not in labels and

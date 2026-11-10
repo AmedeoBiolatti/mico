@@ -80,7 +80,7 @@ std::string image_dir() {
   return dir;
 }
 
-std::string save(const std::string& bytes, const char* ext) {
+std::string save(std::string_view bytes, const char* ext) {
   const std::string dir = image_dir();
   if (dir.empty()) return {};
   static unsigned seq = 0;
@@ -154,6 +154,19 @@ Content read(int timeout_ms) {
   }
   if (run(tool.text, timeout_ms, c.text) && !c.text.empty()) c.kind = Content::Kind::Text;
   return c;
+}
+
+std::string save_image(std::string_view bytes) {
+  // Named by what the bytes are, never by what the sender says they are.
+  const char* ext = bytes.starts_with("\x89PNG\r\n\x1a\n")                       ? "png"
+                    : bytes.starts_with("\xff\xd8\xff")                             ? "jpg"
+                    : bytes.starts_with("GIF87a") || bytes.starts_with("GIF89a")     ? "gif"
+                    : bytes.size() > 12 && bytes.starts_with("RIFF") && bytes.substr(8, 4) == "WEBP" ? "webp"
+                                                                                     : nullptr;
+  if (!ext) return {};
+  const std::string path = save(bytes, ext);
+  if (!path.empty()) MLOG("clipboard: saved %zu byte .%s to %s", bytes.size(), ext, path.c_str());
+  return path;
 }
 
 std::vector<std::string> image_paths(std::string_view pasted) {

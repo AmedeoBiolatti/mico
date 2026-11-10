@@ -77,7 +77,9 @@
 //   archive {rid, agent, id, on}       put a chat away (on) or bring it back.
 //                                      Archiving stops the chat's agent when
 //                                      it is idle; mid-turn it is refused
-//   send   {rid, key, text}            a message to a running agent
+//   send   {rid, key, text, images?}   a message to a running agent; images:
+//                                      base64 PNG, JPEG, GIF or WebP, at most
+//                                      kMaxImages, attached ahead of the text
 //   answer_permission {rid, key, index, note?}
 //                                      choice `index` of the dialog the agent
 //                                      shows; `note` goes where it has room
@@ -91,6 +93,8 @@
 namespace mico::api {
 
 inline constexpr int kProtocol = 1;
+// Pictures one `send` may carry.
+inline constexpr size_t kMaxImages = 8;
 
 class Client {
  public:
@@ -125,7 +129,8 @@ class Client {
   void stop(std::string_view rid, uint64_t key);
   void rename(std::string_view rid, const std::string& agent, const std::string& id, const std::string& title);
   void archive(std::string_view rid, const std::string& agent, const std::string& id, bool on);
-  void send(std::string_view rid, uint64_t key, const std::string& text);
+  void send(std::string_view rid, uint64_t key, const std::string& text,
+            const std::vector<std::string_view>& images);
   void answer_permission(std::string_view rid, uint64_t key, int index, const std::string& note);
   void answer_question(std::string_view rid, uint64_t key, const std::string& tool, std::string_view chosen);
   void interrupt(std::string_view rid, uint64_t key);
