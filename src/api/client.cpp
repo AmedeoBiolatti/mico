@@ -116,6 +116,10 @@ void Client::receive(std::string_view message) {
     return true;
   });
   if (!object) return error("a message is a JSON object");
+  if (type == "ping") {
+    queued_.emplace_back(R"({"type":"pong"})");
+    return;
+  }
   if (type == "open") return open_chat(path);
   if (type == "older") return older(path);
   if (type == "close") {

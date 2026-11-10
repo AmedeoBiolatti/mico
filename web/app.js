@@ -66,9 +66,17 @@ const STATUS = { working: "working", waiting: "needs you", idle: "ready", exited
 
 // ------------------------------------------------------------------ connection
 
+const CONNECTION_TIMEOUT = 10000;
+let connectionTimer = 0;
+let retryTimer = 0;
+let connected = false;
+let needsLink = !/^[0-9a-f]{64}$/.test(token);
+
 function connect() {
-  if (!/^[0-9a-f]{64}$/.test(token)) {
-    $("empty-text").textContent = "No token, or not a whole one. Open the address mico gave you: type :web in mico, which copies it.";
+  clearTimeout(retryTimer);
+  if (st.ws) return;
+  if (needsLink) {
+    setConn(false, "Open the full link from :web in mico.");
     return;
   }
   // Over https (tailscale serve) the socket is wss, from the same host.
@@ -79,20 +87,56 @@ function connect() {
   // they could connect with.
   const ws = new WebSocket(`${scheme}://${location.host}/ws`, ["mico"]);
   st.ws = ws;
+  connectionTimer = setTimeout(() => disconnected(ws), CONNECTION_TIMEOUT);
   ws.onmessage = (e) => {
+    if (st.ws !== ws) return;
     const m = JSON.parse(e.data);
-    if (m.type !== "challenge") return receive(m);
-    ws.send(JSON.stringify({ type: "auth", proof: hmacSha256(token, "mico-auth " + m.nonce) }));
-    opened();
+    if (m.type === "challenge") {
+      ws.send(JSON.stringify({ type: "auth", proof: hmacSha256(token, "mico-auth " + m.nonce) }));
+      return;
+    }
+    if (m.type === "pong" && connected) {
+      clearTimeout(connectionTimer);
+      connectionTimer = 0;
+      return;
+    }
+    receive(m);
+    if (m.type === "folders" && !connected) opened();
   };
-  ws.onclose = () => {
-    setConn(false);
-    setTimeout(connect, st.backoff);
-    st.backoff = Math.min(st.backoff * 2, 10000);
-  };
+  ws.onclose = (e) => disconnected(ws, e.code);
+}
+
+function disconnected(ws, code) {
+  if (st.ws !== ws) return;
+  st.ws = null;
+  clearTimeout(connectionTimer);
+  connectionTimer = 0;
+  st.pending.clear();
+  if (ws.readyState < WebSocket.CLOSING) ws.close();
+  if (code === 1008) {
+    needsLink = true;
+    setConn(false, "This link was rejected. Open a current link from :web in mico.");
+    return;
+  }
+  setConn(false, "Disconnected from mico. Reconnecting…");
+  retryTimer = setTimeout(connect, st.backoff);
+  st.backoff = Math.min(st.backoff * 2, CONNECTION_TIMEOUT);
+}
+
+function checkConnection() {
+  if (document.hidden || needsLink) return;
+  if (!st.ws) return connect();
+  // A phone can return with a socket that still looks open. Check for a
+  // reply from the daemon before trusting it to keep delivering updates.
+  if (!connectionTimer && send({ type: "ping" })) {
+    const ws = st.ws;
+    connectionTimer = setTimeout(() => disconnected(ws), CONNECTION_TIMEOUT);
+  }
 }
 
 function opened() {
+  clearTimeout(connectionTimer);
+  connectionTimer = 0;
   st.backoff = 500;
   setConn(true);
   if (st.chat && st.chat.path) {
@@ -164,21 +208,26 @@ function hmacSha256(key, message) {
   return Array.from(sha256(b), (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-function setConn(on) {
+function setConn(on, message) {
+  connected = on;
   const c = $("conn");
   c.className = "conn " + (on ? "on" : "off");
   c.title = on ? "Connected" : "Not connected";
-  $("banner").hidden = on;
+  const banner = $("banner");
+  if (!on) banner.textContent = message;
+  banner.hidden = on;
 }
 
 function send(msg) {
-  if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.send(JSON.stringify(msg));
+  if (!connected || st.ws?.readyState !== WebSocket.OPEN) return false;
+  st.ws.send(JSON.stringify(msg));
+  return true;
 }
 
 function command(msg, then) {
   msg.rid = String(++st.rid);
+  if (!send(msg)) return toast("mico is disconnected.", true);
   if (then) st.pending.set(msg.rid, then);
-  send(msg);
 }
 
 let toastTimer = 0;
@@ -192,7 +241,7 @@ function toast(text, bad) {
 
 function receive(m) {
   switch (m.type) {
-    case "hello": st.adapters = m.adapters || []; renderSide(); break;
+    case "hello": st.adapters = m.adapters || []; break;
     case "folders": st.folders = m.folders; renderSide(); renderHead(); break;
     case "agents": st.agents = m.agents; agentsChanged(); break;
     case "chat": if (st.chat && m.path === st.chat.path) addEvents(m); break;
@@ -2445,4 +2494,11 @@ if (window.visualViewport) {
 narrow.addEventListener("change", () => { renderSide(); renderHead(); });
 
 setInterval(renderSide, 60000);  // "3m" moves on its own
+setInterval(checkConnection, 25000);
+document.addEventListener("visibilitychange", checkConnection);
+window.addEventListener("online", checkConnection);
+window.addEventListener("pageshow", (e) => { if (e.persisted) checkConnection(); });
+window.addEventListener("hashchange", () => {
+  if ((new URLSearchParams(location.hash.slice(1)).get("token") || "") !== token) location.reload();
+});
 connect();

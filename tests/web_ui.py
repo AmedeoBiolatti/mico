@@ -324,6 +324,53 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
         token = (root / 'mico/web-token').read_text().strip()
         base = f'http://127.0.0.1:{port}/#token={token}'
 
+        # Simulate a phone socket that stays open while the page stops receiving
+        # either its first listing or replies after coming back to the foreground.
+        page = Page(debug_port, '')
+        page.call('Page.addScriptToEvaluateOnNewDocument', source="""
+          window.sockets = [];
+          window.WebSocket = class extends WebSocket {
+            constructor(...args) {
+              super(...args);
+              const index = sockets.push(this);
+              this.addEventListener('message', e => {
+                const {type} = JSON.parse(e.data);
+                if (index === 1 && type === 'folders') {
+                  window.listingStalled = true;
+                  e.stopImmediatePropagation();
+                }
+                if (this.dropPong && type === 'pong') {
+                  window.probeStalled = true;
+                  e.stopImmediatePropagation();
+                }
+              });
+            }
+          };
+        """)
+        page.open(f'{base}&chat={chat}', 390, 844, True)
+        check(page.wait("window.listingStalled && sockets[0].readyState === WebSocket.OPEN && "
+                        "!document.getElementById('banner').hidden && !document.querySelector('.conn.on')", 5),
+              'an open socket without a listing still shows the loading status')
+        ready = ("document.querySelector('.conn.on') && document.querySelectorAll('#folders .row').length > 0 && "
+                 "document.querySelectorAll('#events .ev').length >= 4")
+        check(page.wait(f"sockets.length === 2 && ({ready})"), 'a stalled listing retries and opens the linked chat')
+        page.eval("sockets[1].dropPong = true; document.dispatchEvent(new Event('visibilitychange'))")
+        check(page.wait("window.probeStalled && sockets[1].readyState === WebSocket.OPEN", 5),
+              'returning to the phone page checks the apparently open socket')
+        check(page.wait(f"sockets.length === 3 && ({ready}) && sockets[1].readyState === WebSocket.CLOSED"),
+              'a stalled reply reconnects and restores the open chat and folders')
+        page.call('Page.close')
+
+        page = Page(debug_port, '')
+        page.open(f'http://127.0.0.1:{port}/', 390, 844, True)
+        check(page.wait("!document.getElementById('banner').hidden && "
+                        "document.getElementById('banner').textContent.includes('full link from :web')", 5),
+              'a phone opened without a token shows how to get the full link')
+        page.open(f'http://127.0.0.1:{port}/#token={"0" * 64}', 390, 844, True)
+        check(page.wait("document.getElementById('banner').textContent.includes('link was rejected')", 5),
+              'an old token shows how to get a current link')
+        page.call('Page.close')
+
         # A desk: the list beside the chat.
         dom = dom_of(f'{base}&chat={chat}', 1200, 900, ready="document.querySelectorAll('#events .ev').length >= 4")
         tree = parse(dom)

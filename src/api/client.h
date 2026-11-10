@@ -16,6 +16,7 @@
 //
 // Server to client:
 //   hello      {protocol, adapters: [{id, name}]}              first, once
+//   pong                                                     answers ping
 //   folders    {folders: [{path, name, subs: [{name, path}],   whenever the
 //               chats: [{agent, id, path, title, cwd, mtime,    listing changed
 //               bytes, sub, archived, parent?}]}]}
@@ -57,6 +58,7 @@
 //     tool: a call's id as 16 hex digits, which links a result to its call
 //
 // Client to server (rid, when given, comes back on the result):
+//   ping                              check that the client can receive replies
 //   open   {path}                      a stored or running chat: its tail, then
 //                                      what is appended as it grows
 //   older  {path}                      the next slab of history before the window
