@@ -86,7 +86,10 @@
     <div id="toast" role="status" aria-live="polite"></div>
     <div id="perm" role="alertdialog" aria-label="The agent needs your permission" hidden></div>
     <form id="prompt" hidden>
+      <div id="tray" hidden></div>
       <div class="box">
+        <button id="attach" type="button" aria-label="Attach images" title="Attach images">+</button>
+        <input id="attach-file" type="file" accept="image/*" multiple hidden>
         <textarea id="prompt-text" rows="1" aria-label="Message" enterkeyhint="send"></textarea>
         <button id="send" type="submit" aria-label="Send" disabled>↑</button>
       </div>

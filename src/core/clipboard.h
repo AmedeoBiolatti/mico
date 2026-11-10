@@ -25,6 +25,11 @@ struct Content {
 // answers must not freeze the UI.
 Content read(int timeout_ms = 2000);
 
+// Saves an image that came some other way (a browser's paste or upload) where
+// read() saves the clipboard's, for the agent to open: its path, or empty when
+// the bytes are not a PNG, JPEG, GIF or WebP, or could not be written.
+std::string save_image(std::string_view bytes);
+
 // The image files `pasted` names, when it names nothing else: one path or
 // file:// URI per line, optionally quoted, the way file managers and
 // terminals paste a copied file. Empty when any line is not an existing image.

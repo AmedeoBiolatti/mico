@@ -35,7 +35,8 @@ namespace mico {
 namespace {
 
 constexpr size_t kMaxRequest = 16u << 10;   // request line and headers
-constexpr size_t kMaxMessage = 1u << 20;    // one WebSocket message
+constexpr size_t kMaxMessage = 16u << 20;   // one WebSocket message: a send can carry pictures
+constexpr size_t kMaxGreeting = 64u << 10;  // one before the browser has answered the challenge
 constexpr size_t kMaxQueued = 64u << 20;    // unsent output before a client is dropped
 constexpr size_t kMaxConns = 32;            // connections at once; more are turned away
 constexpr int64_t kHttpTimeoutMs = 10'000;  // for a request to arrive whole
@@ -502,7 +503,8 @@ void WebServer::read_ws(Conn& c) {
       for (int i = 0; i < 8; i++) len = len << 8 | uint8_t(c.in[2 + i]);
       at = 10;
     }
-    if (len > kMaxMessage || c.message.size() + len > kMaxMessage) {
+    const size_t limit = c.api ? kMaxMessage : kMaxGreeting;
+    if (len > limit || c.message.size() + len > limit) {
       send_frame(c, 8, "\x03\xf1");  // 1009: too big
       c.closing = true;
       return;

@@ -10,6 +10,7 @@
 #include "base/json_write.h"
 #include "base/text.h"
 #include "core/answers.h"
+#include "core/clipboard.h"
 #include "core/images.h"
 #include "base/base64.h"
 
@@ -81,6 +82,7 @@ void Client::receive(std::string_view message) {
   bool panel_open = false, on = false;
   uint64_t at = 0, off = 0, len = 0;
   std::string_view chosen;
+  std::vector<std::string_view> images;
   bool fork = false;
   bool object = false;
   js::scan_object(message, [&](std::string_view k, const js::Value& v) {
@@ -106,6 +108,11 @@ void Client::receive(std::string_view message) {
     else if (k == "note") note = text_of(v);
     else if (k == "tool") tool = text_of(v);
     else if (k == "chosen" && v.is_array()) chosen = v.raw;
+    else if (k == "images" && v.is_array())
+      js::scan_array(v.raw, [&](const js::Value& e) {
+        images.push_back(e.is_string() ? e.body() : std::string_view{});
+        return true;
+      });
     return true;
   });
   if (!object) return error("a message is a JSON object");
@@ -122,7 +129,7 @@ void Client::receive(std::string_view message) {
   if (type == "stop") return stop(rid, key);
   if (type == "rename") return rename(rid, agent, id, title);
   if (type == "archive") return archive(rid, agent, id, on);
-  if (type == "send") return send(rid, key, text);
+  if (type == "send") return send(rid, key, text, images);
   if (type == "answer_permission") return answer_permission(rid, key, index, note);
   if (type == "answer") return answer_question(rid, key, tool, chosen);
   if (type == "interrupt") return interrupt(rid, key);
@@ -570,13 +577,27 @@ void Client::archive(std::string_view rid, const std::string& agent, const std::
   result(rid, true);
 }
 
-void Client::send(std::string_view rid, uint64_t key, const std::string& text) {
+void Client::send(std::string_view rid, uint64_t key, const std::string& text,
+                  const std::vector<std::string_view>& images) {
   LiveSession* s = session(key);
   if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
-  if (text.empty()) return result(rid, false, "nothing to send");
+  if (text.empty() && images.empty()) return result(rid, false, "nothing to send");
+  if (images.size() > kMaxImages) return result(rid, false, "at most " + std::to_string(kMaxImages) + " images a message");
+  if (s->message_sending()) return result(rid, false, "the agent is not ready");
+  // Each picture is saved where a pasted one is, and goes to the agent the way
+  // the terminal sends one: its path pasted on its own, ahead of the text.
+  std::vector<MessagePart> parts;
+  std::string bytes;
+  for (std::string_view b64 : images) {
+    std::string path;
+    if (base64_decode(b64, bytes)) path = clip::save_image(bytes);
+    if (path.empty()) return result(rid, false, "not a PNG, JPEG, GIF or WebP image");
+    parts.push_back(MessagePart{true, std::move(path)});
+  }
+  if (!text.empty()) parts.push_back(MessagePart{false, text});
   BtwPanel panel;
   const bool side = s->driver().side_panel(s->vt(), panel);
-  if (!s->send_parts({MessagePart{false, text}}, side ? "\x1b" : "")) return result(rid, false, "the agent is not ready");
+  if (!s->send_parts(parts, side ? "\x1b" : "")) return result(rid, false, "the agent is not ready");
   result(rid, true, {}, key);
 }
 

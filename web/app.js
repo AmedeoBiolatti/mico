@@ -52,6 +52,8 @@ const st = {
   newFor: null,         // the folder whose "start an agent" row is open
   project: null,        // on a phone, the folder whose own screen is up
   drafts: new Map(),    // chat id -> an unsent message
+  attached: [],         // images going with the message being written: {url, data, busy}
+  attachedFor: new Map(), // chat id -> those of a chat not on screen
   atBottom: true,
   unread: 0,
   loadingOlder: false,
@@ -904,7 +906,10 @@ function openChat(path, title, key) {
     showChatScreen();
     return;
   }
-  if (st.chat) st.drafts.set(chatId(), $("prompt-text").value);
+  if (st.chat) {
+    st.drafts.set(chatId(), $("prompt-text").value);
+    if (st.attached.length) st.attachedFor.set(chatId(), st.attached);
+  }
   if (st.chat && st.chat.path) send({ type: "close", path: st.chat.path });
   st.chat = { path, key: key || null, title: title || "", start: false };
   st.state = {};
@@ -920,6 +925,9 @@ function openChat(path, title, key) {
   $("older").hidden = true;
   $("latest").hidden = true;
   $("prompt-text").value = st.drafts.get(chatId()) || "";
+  st.attached = st.attachedFor.get(chatId()) || [];
+  st.attachedFor.delete(chatId());
+  renderTray();
   sizePrompt();
   if (path) send({ type: "open", path });
   else $("events").append(notice("Nothing written yet: the chat starts with your first message."));
@@ -2217,7 +2225,8 @@ function sizePrompt() {
 // On a phone the header has no room for Interrupt: while the agent works and
 // nothing is typed, the send button interrupts, as a phone's chat apps do.
 function renderSend() {
-  const b = $("send"), a = liveAgent(), typed = !!$("prompt-text").value.trim();
+  const b = $("send"), a = liveAgent();
+  const typed = !!$("prompt-text").value.trim() || st.attached.length > 0;
   const halt = narrow.matches && !typed && !!a && a.status === "working";
   b.classList.toggle("halt", halt);
   b.textContent = halt ? "■" : "↑";
@@ -2238,11 +2247,18 @@ $("prompt").onsubmit = (e) => {
   e.preventDefault();
   const a = liveAgent();
   const text = $("prompt-text").value.trim();
-  if (!a || !text) return;
+  const sent = st.attached;
+  if (!a || (!text && !sent.length)) return;
+  if (sent.some((p) => p.busy)) { toast("Still preparing an image…"); return; }
   $("send").disabled = true;
-  command({ type: "send", key: a.key, text }, () => {
+  const msg = { type: "send", key: a.key, text };
+  if (sent.length) msg.images = sent.map((p) => p.data);
+  command(msg, () => {
     $("prompt-text").value = "";
     st.drafts.delete(chatId());
+    if (st.attached === sent) st.attached = [];
+    for (const p of sent) URL.revokeObjectURL(p.url);
+    renderTray();
     sizePrompt();
     st.atBottom = true;
     scrollToBottom();
@@ -2250,6 +2266,140 @@ $("prompt").onsubmit = (e) => {
   // A refused message leaves the text where it was.
   setTimeout(sizePrompt, 600);
 };
+
+// ------------------------------------------------------------ attached images
+
+// Pictures go with the message: pasted, picked (a phone offers its gallery and
+// camera), or dropped on the box. Each is made small enough for the agent,
+// which scales a large one down anyway, and for one message to carry them all.
+const MAX_IMAGES = 8;          // as the daemon allows a message
+const MAX_EDGE = 2000;         // px on the longer side
+const MAX_BYTES = 1400 * 1024; // each, so that eight fit one message
+
+function blobBase64(blob) {
+  return new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result).slice(String(r.result).indexOf(",") + 1));
+    r.onerror = () => fail(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+function canvasBlob(canvas, type, quality) {
+  return new Promise((ok) => canvas.toBlob(ok, type, quality));
+}
+
+// The picture as it is sent: as it came when it is already small and of a
+// kind the agent reads; otherwise drawn again, smaller, as PNG when that stays
+// small (a screenshot's text stays sharp) and else as JPEG.
+async function prepareImage(file) {
+  if (MEDIA.has(file.type) && file.size <= MAX_BYTES) {
+    const bmp = await createImageBitmap(file).catch(() => null);
+    const fits = bmp && Math.max(bmp.width, bmp.height) <= MAX_EDGE;
+    if (bmp) bmp.close();
+    if (fits || file.type === "image/gif") return file;
+  }
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, MAX_EDGE / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bmp.width * k));
+  canvas.height = Math.max(1, Math.round(bmp.height * k));
+  const g = canvas.getContext("2d");
+  g.fillStyle = "#fff";  // a transparent picture turned JPEG is on white, not black
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  g.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close();
+  if (file.type === "image/png") {
+    const png = await canvasBlob(canvas, "image/png");
+    if (png && png.size <= MAX_BYTES) return png;
+  }
+  for (const q of [0.85, 0.7, 0.55, 0.4]) {
+    const jpeg = await canvasBlob(canvas, "image/jpeg", q);
+    if (jpeg && (jpeg.size <= MAX_BYTES || q === 0.4)) return jpeg;
+  }
+  throw new Error("could not encode");
+}
+
+function addImages(files) {
+  const images = [...files].filter((f) => f && f.type.startsWith("image/"));
+  if (!images.length) return false;
+  if (!liveAgent()) { toast("Images go to a running agent", true); return true; }
+  const room = MAX_IMAGES - st.attached.length;
+  if (images.length > room) toast(`At most ${MAX_IMAGES} images a message`, true);
+  const list = st.attached;
+  for (const file of images.slice(0, Math.max(0, room))) {
+    const p = { url: URL.createObjectURL(file), data: "", busy: true };
+    list.push(p);
+    prepareImage(file)
+      .then(blobBase64)
+      .then((data) => { p.data = data; p.busy = false; })
+      .catch(() => {
+        const i = list.indexOf(p);
+        if (i >= 0) list.splice(i, 1);
+        URL.revokeObjectURL(p.url);
+        toast(`Could not read ${file.name || "that image"}`, true);
+      })
+      .finally(() => { if (list === st.attached) { renderTray(); renderSend(); } });
+  }
+  renderTray();
+  renderSend();
+  return true;
+}
+
+function renderTray() {
+  const tray = $("tray");
+  tray.replaceChildren();
+  for (const p of st.attached) {
+    const t = el("div", "thumb" + (p.busy ? " busy" : ""));
+    const img = el("img");
+    img.src = p.url;
+    img.alt = "Attached image";
+    const x = el("button", "", "×");
+    x.type = "button";
+    x.setAttribute("aria-label", "Remove image");
+    x.onclick = () => {
+      st.attached = st.attached.filter((q) => q !== p);
+      URL.revokeObjectURL(p.url);
+      renderTray();
+      renderSend();
+    };
+    t.append(img, x);
+    tray.append(t);
+  }
+  tray.hidden = !st.attached.length;
+}
+
+$("attach").onclick = () => $("attach-file").click();
+$("attach-file").addEventListener("change", (e) => {
+  addImages(e.target.files);
+  e.target.value = "";  // the same picture can be picked again
+});
+
+// A pasted picture is attached. Copied from a spreadsheet or a document,
+// a clipboard carries a picture of the text as well: there the text is meant.
+$("prompt-text").addEventListener("paste", (e) => {
+  const cd = e.clipboardData;
+  if (!cd || [...cd.types].includes("text/plain")) return;
+  const files = [...cd.items].filter((i) => i.kind === "file").map((i) => i.getAsFile());
+  if (addImages(files)) e.preventDefault();
+});
+
+{
+  const box = $("prompt").querySelector(".box");
+  const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  box.addEventListener("dragover", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    box.classList.add("drop");
+  });
+  box.addEventListener("dragleave", () => box.classList.remove("drop"));
+  box.addEventListener("drop", (e) => {
+    box.classList.remove("drop");
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    addImages(e.dataTransfer.files);
+  });
+}
 
 // Enter sends with a keyboard; on a touch screen it is a new line, and Send is the button.
 $("prompt-text").addEventListener("keydown", (e) => {

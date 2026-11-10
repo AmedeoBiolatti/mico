@@ -1,10 +1,12 @@
 // `mico-test --api-test`: the state protocol against a workspace over fixture
 // transcripts. Runs under the test HOME ctest sets up; starts no agent.
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -230,6 +232,33 @@ int run_api_test() {
     }
     check(s && s->spawned() && !s->exited(), "one that nothing sizes is launched at a default size");
     if (s) {
+      // Pictures a browser sends are saved where a pasted one is, by what
+      // their bytes are; anything else is refused before the agent sees it.
+      const std::string runtime = dir + "/runtime";
+      mkdir(runtime.c_str(), 0700);
+      const char* was = getenv("XDG_RUNTIME_DIR");
+      const std::string saved_rt = was ? was : "";
+      setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
+      const std::string key = std::to_string(s->serial());
+      const std::string png =
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+      c.receive(R"({"type":"send","rid":"i1","key":)" + key + R"(,"text":"","images":["aGVsbG8="]})");
+      got = poll_all(c);
+      check(has(got, R"("rid":"i1","ok":false)") && has(got, "not a PNG"), "a send's image must be a picture");
+      c.receive(R"({"type":"send","rid":"i2","key":)" + key + R"(,"text":"look","images":[")" + png + R"("]})");
+      got = poll_all(c);
+      check(has(got, R"("rid":"i2","ok":true)"), "a message with a picture is sent");
+      std::string listing;
+      if (DIR* d = opendir((runtime + "/mico/images").c_str())) {
+        while (dirent* e = readdir(d)) if (e->d_name[0] != '.') listing += e->d_name;
+        closedir(d);
+      }
+      check(listing.starts_with("paste-") && listing.ends_with(".png"), "the picture is saved as a PNG for the agent");
+      c.receive(R"({"type":"send","rid":"i3","key":)" + key + R"(,"text":"","images":[]})");
+      check(has(poll_all(c), R"("rid":"i3","ok":false)"), "an empty message is still refused");
+      if (was) setenv("XDG_RUNTIME_DIR", saved_rt.c_str(), 1);
+      else unsetenv("XDG_RUNTIME_DIR");
+      std::filesystem::remove_all(runtime);
       ws.close(s);
       ws.reap([](LiveSession*) {});
     }

@@ -472,10 +472,26 @@ details.tool .out.err { border-color: var(--bad); }
   border-top: 1px solid var(--line); background: var(--bg); padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
 }
 @media (min-width: 860px) { #prompt, #resume-bar { padding-left: 28px; padding-right: 28px; } }
-#prompt .box, #hint { max-width: 860px; margin: 0 auto; }
+#prompt .box, #hint, #tray { max-width: 860px; margin: 0 auto; }
 #prompt .box {
   display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--line); background: var(--surface);
-  border-radius: 22px; padding: 5px 5px 5px 16px;
+  border-radius: 22px; padding: 5px 5px 5px 5px;
+}
+#prompt .box.drop { border-color: var(--accent); background: var(--accent-soft); }
+#attach {
+  width: 36px; height: 36px; border-radius: 50%; border: 0; background: none; color: var(--dim);
+  font-size: 24px; line-height: 1; flex: none; margin-bottom: 1px;
+}
+#attach:hover { background: var(--accent-soft); color: var(--ink); }
+#tray { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 4px 8px; }
+#tray[hidden] { display: none; }
+#tray .thumb { position: relative; width: 64px; height: 64px; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--line); background: var(--surface); flex: none; }
+#tray .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#tray .thumb.busy img { opacity: .4; }
+#tray .thumb button {
+  position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; border-radius: 50%; border: 0; padding: 0;
+  background: rgba(0, 0, 0, .6); color: #fff; font-size: 15px; line-height: 22px;
 }
 #prompt .box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 #prompt-text {
