@@ -171,11 +171,12 @@ class ProjectList final : public Pane {
   }
 
   // The open chats a folder's row stands for: all of those running in it and
-  // its sub-projects, or, on a sub-project's row, that sub-project's alone.
+  // its sub-projects, or, on a sub-project's row, that sub-project's and
+  // those of the ones nested in it.
   std::vector<LiveSession*> open_chats(const Project& pr, const SubProject* sp) const {
     std::vector<LiveSession*> out;
     for (LiveSession* s : app_->live_sessions())
-      if (in_project(pr, s->cwd()) && (!sp || app_->live_sub(*s) == sp->name)) out.push_back(s);
+      if (in_project(pr, s->cwd()) && (!sp || sub_within(app_->live_sub(*s), sp->name))) out.push_back(s);
     return out;
   }
 
@@ -228,8 +229,17 @@ class ProjectList final : public Pane {
     }
   }
 
-  // A sub-project, indented under its folder: its name, then where it runs —
-  // "same folder" or the path under the project — and its chats.
+  // The folder sub-project `sp` sits in: its parent's, or the project's.
+  static const std::string& parent_dir(const Project& pr, const SubProject& sp) {
+    if (!sp.parent().empty())
+      for (const auto& up : pr.subs)
+        if (up.name == sp.parent()) return up.path;
+    return pr.path;
+  }
+
+  // A sub-project, indented under its folder or the sub-project it is in:
+  // its name, then where it runs — "same folder" as what it is in, or the
+  // path under the project — and its chats, those nested in it included.
   void draw_sub(Painter& p, const Project& pr, const SubProject& sp, int y, bool sel, bool focused, Color bg) {
     const Theme& th = app_->theme();
     Style st{sel ? th.text : th.dim, sel ? (focused ? th.sel_bg : th.sel_inactive) : bg,
@@ -238,32 +248,36 @@ class ProjectList final : public Pane {
     p.fill(Rect{0, y, p.width(), TallList::kItemH}, st);
     for (int dy = 0; dy < TallList::kItemH; dy++)
       p.put(0, y + dy, sel ? U'▌' : U' ', Style{th.accent, st.bg, attr::kDecor});
-    p.put(3, y, U'└', Style{th.border, st.bg});  // └
-    draw_dot(p, 4, y, st.bg, [&](const LiveSession& s) {
-      return in_project(pr, s.cwd()) && app_->live_sub(s) == sp.name;
+    // Two columns more for each level down, while the pane leaves room.
+    const int x = 3 + std::min(2 * (sp.depth() - 1), std::max(0, (p.width() - 16) / 2));
+    p.put(x, y, U'└', Style{th.border, st.bg});  // └
+    draw_dot(p, x + 1, y, st.bg, [&](const LiveSession& s) {
+      return in_project(pr, s.cwd()) && sub_within(app_->live_sub(s), sp.name);
     });
-    p.text_clipped(6, y, sp.name, st, std::max(0, p.width() - 7));
+    const int tx = x + 3;
+    p.text_clipped(tx, y, sp.leaf(), st, std::max(0, p.width() - tx - 1));
     size_t n = 0;
     int64_t newest = 0;
     for (const auto& s : pr.sessions)
-      if (s.sub == sp.name && s.parent.empty() && !app_->store().archived(s.agent, s.id)) {
+      if (sub_within(s.sub, sp.name) && s.parent.empty() && !app_->store().archived(s.agent, s.id)) {
         n++;
         newest = std::max(newest, s.mtime);
       }
     std::string info = n == 0 ? "no chats" : std::to_string(n) + (n == 1 ? " chat" : " chats");
     if (n > 0 && p.width() > 30) info += " \xC2\xB7 " + rel_time(newest);
-    const std::string where = sp.path == pr.path ? "same folder" : "." + sp.path.substr(pr.path.size());
+    const bool same = sp.path == parent_dir(pr, sp);
+    const std::string where = same ? "same folder" : "." + sp.path.substr(pr.path.size());
     const int iw = text::str_width(info);
-    const int room = p.width() - 6 - iw - 2;
+    const int room = p.width() - tx - iw - 2;
     if (room >= 6) {
       // A sub-project in a folder of its own may be on another branch, or
-      // another repository: it says so. One in the project's folder would
-      // only repeat the folder's line.
-      const int g = sp.path == pr.path ? 0 : draw_git(p, 6, y + 1, room, sp.path, st.bg);
-      if (room - g - 2 >= 4) p.text_clipped(6 + (g ? g + 2 : 0), y + 1, where, meta, room - (g ? g + 2 : 0));
+      // another repository: it says so. One in its parent's folder would
+      // only repeat the parent's line.
+      const int g = same ? 0 : draw_git(p, tx, y + 1, room, sp.path, st.bg);
+      if (room - g - 2 >= 4) p.text_clipped(tx + (g ? g + 2 : 0), y + 1, where, meta, room - (g ? g + 2 : 0));
       p.text(p.width() - iw, y + 1, info, meta);
     } else {
-      p.text_clipped(6, y + 1, info, meta, std::max(0, p.width() - 7));
+      p.text_clipped(tx, y + 1, info, meta, std::max(0, p.width() - tx - 1));
     }
   }
 
@@ -335,8 +349,8 @@ class ProjectList final : public Pane {
     const Project& pr = ps[size_t(menu_target_.project)];
     if (menu_target_.sub >= 0 && size_t(menu_target_.sub) >= pr.subs.size()) return {};
     if (menu_target_.sub >= 0)
-      return {MenuItem{"New chat here\xE2\x80\xA6", "new_agent"}, MenuItem{"Rename sub-project\xE2\x80\xA6", "rename_sub"},
-              MenuItem{"Copy path", "copy_path"}, MenuItem::sep(),
+      return {MenuItem{"New chat here\xE2\x80\xA6", "new_agent"}, MenuItem{"Add sub-project\xE2\x80\xA6", "add_sub"},
+              MenuItem{"Rename sub-project\xE2\x80\xA6", "rename_sub"}, MenuItem{"Copy path", "copy_path"}, MenuItem::sep(),
               stop_all_item(pr, &pr.subs[size_t(menu_target_.sub)]), MenuItem{"Remove sub-project", "remove_sub"}};
     return {MenuItem{"New chat here\xE2\x80\xA6", "new_agent"}, MenuItem{"Add sub-project\xE2\x80\xA6", "add_sub"},
             MenuItem{"Copy path", "copy_path"}, MenuItem::sep(),
@@ -370,22 +384,31 @@ class ProjectList final : public Pane {
           (s->exited() ? exited : running)++;
           app_->close_session(s);
         }
-        const std::string where = sp ? sp->name : pr->name.empty() ? pr->path : pr->name;
+        const std::string where = sp ? sub_label(sp->name) : pr->name.empty() ? pr->path : pr->name;
         std::string msg = running ? "stopped " + std::to_string(running) + (running == 1 ? " agent" : " agents") : "no agent was running";
         if (exited) msg += " \xC2\xB7 closed " + std::to_string(exited) + " that had exited";
         app_->set_status(msg + " in " + where);
       }
     } else if (a == "add_sub") {
-      if (pr) app_->pick_subproject_folder(pr->path);
+      if (pr) app_->pick_subproject_folder(pr->path, sp ? sp->name : std::string());
     } else if (a == "rename_sub") {
-      if (pr && sp) app_->ask("Rename sub-project", "rename_sub", sp->name, pr->path + "\n" + sp->name);
+      if (pr && sp) app_->ask("Rename sub-project", "rename_sub", std::string(sp->leaf()), pr->path + "\n" + sp->name);
     } else if (a == "remove_sub") {
       if (pr && sp) {
-        const std::string name = sp->name, project = pr->path;
-        if (app_->current_sub() && app_->current_sub()->name == name && app_->current_project() == pr)
-          app_->select_project(menu_target_.project);  // back to the folder, before it goes
-        if (app_->store().remove_subproject(project, name))
-          app_->set_status("removed sub-project " + name + " \xE2\x80\x94 its chats are back in the folder");
+        const std::string name = sp->name, project = pr->path, up(sp->parent());
+        size_t nested = 0;
+        for (const auto& o : pr->subs) nested += o.name != name && sub_within(o.name, name);
+        // Back to what it was in, before it goes.
+        if (app_->current_sub() && sub_within(app_->current_sub()->name, name) && app_->current_project() == pr) {
+          app_->select_project(menu_target_.project);
+          if (!up.empty()) app_->select_sub(up);
+        }
+        if (app_->store().remove_subproject(project, name)) {
+          std::string msg = "removed sub-project " + sub_label(name);
+          if (nested) msg += " and " + std::to_string(nested) + " nested in it";
+          app_->set_status(msg + " \xE2\x80\x94 its chats are back in " +
+                           (up.empty() ? std::string("the folder") : sub_label(up)));
+        }
       }
     } else if (a == "add_folder_menu") {
       app_->pick_folder();

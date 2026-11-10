@@ -213,6 +213,50 @@ void Store::save_marks() const {
 
 // ------------------------------------------------------------ sub-projects
 
+std::string sub_label(std::string_view name) {
+  std::string out;
+  for (size_t a = 0;;) {
+    const size_t b = name.find('/', a);
+    out += name.substr(a, b == std::string_view::npos ? std::string_view::npos : b - a);
+    if (b == std::string_view::npos) return out;
+    out += " \xE2\x80\xBA ";  // ›
+    a = b + 1;
+  }
+}
+
+namespace {
+
+// Each sub-project right after its parent, then those nested in it; siblings
+// keep the order they were added in.
+void tree_order(std::vector<SubProject>& list) {
+  std::vector<SubProject> out;
+  out.reserve(list.size());
+  const auto place = [&](auto&& self, std::string_view parent) -> void {
+    for (const auto& sp : list)
+      if (sp.parent() == parent) {
+        out.push_back(sp);
+        self(self, sp.name);
+      }
+  };
+  place(place, {});
+  list = std::move(out);
+}
+
+const SubProject* find_sub(const std::vector<SubProject>& list, std::string_view name) {
+  for (const auto& sp : list)
+    if (sp.name == name) return &sp;
+  return nullptr;
+}
+
+// The folder a sub-project's parent runs in: the parent's, or the project's.
+const std::string& parent_path(const std::vector<SubProject>& list, const SubProject& sp,
+                               const std::string& project) {
+  const SubProject* up = sp.parent().empty() ? nullptr : find_sub(list, sp.parent());
+  return up ? up->path : project;
+}
+
+}  // namespace
+
 // "sub\t<project>\t<name>\t<folder>" and "chat\t<project>\t<agent>\t<id>\t<sub>",
 // one per line.
 void Store::load_subs() {
@@ -233,6 +277,28 @@ void Store::load_subs() {
     else if (f.size() == 5 && f[0] == "chat") sub_of_chat_[f[1] + "\n" + mark_key(f[2], f[3])] = f[4];
     return true;
   });
+  // A name with a "/" from before sub-projects nested, or one whose parent is
+  // gone, would hang from nothing: it stays at the top, its "/" a look-alike.
+  for (auto& [project, list] : subs_) {
+    std::map<std::string, std::string> renamed;
+    bool again = true;
+    while (again) {
+      again = false;
+      for (auto& sp : list) {
+        const std::string_view up = sp.parent();
+        if (up.empty() || find_sub(list, up)) continue;
+        std::string flat = sp.name;
+        for (size_t at; (at = flat.find('/')) != std::string::npos;) flat.replace(at, 1, "\xE2\x88\x95");  // ∕
+        renamed[sp.name] = flat;
+        sp.name = flat;
+        again = true;
+      }
+    }
+    for (auto& [key, sub] : sub_of_chat_)
+      if (key.starts_with(project + "\n"))
+        if (auto it = renamed.find(sub); it != renamed.end()) sub = it->second;
+    tree_order(list);
+  }
 }
 
 void Store::save_subs() const {
@@ -252,14 +318,21 @@ bool Store::add_subproject(const std::string& project, const std::string& name, 
   if (!subs_loaded_) load_subs();
   std::string p = path;
   while (p.size() > 1 && p.back() == '/') p.pop_back();
-  if (name.empty() || name.find('\t') != std::string::npos || name.find('\n') != std::string::npos)
-    return false;
-  if (p != project && !p.starts_with(project + "/")) return false;  // inside the project only
-  if (!fs::exists(p)) return false;
+  if (name.empty() || name.find_first_of("\t\n") != std::string::npos) return false;
+  if (name.front() == '/' || name.back() == '/' || name.find("//") != std::string::npos) return false;
   auto& list = subs_[project];
-  for (const auto& sp : list)
-    if (sp.name == name) return false;
-  list.push_back({name, p});
+  const SubProject made{name, p};
+  // Inside its parent's folder, which is inside the project's.
+  const SubProject* up = made.parent().empty() ? nullptr : find_sub(list, made.parent());
+  const std::string& within = up ? up->path : project;
+  const bool ok = (made.parent().empty() || up) && (p == within || p.starts_with(within + "/")) &&
+                  !find_sub(list, name) && fs::exists(p);
+  if (!ok) {
+    if (list.empty()) subs_.erase(project);
+    return false;
+  }
+  list.push_back(made);
+  tree_order(list);
   save_subs();
   scan();
   return true;
@@ -268,15 +341,16 @@ bool Store::add_subproject(const std::string& project, const std::string& name, 
 bool Store::remove_subproject(const std::string& project, const std::string& name) {
   ++version_;
   auto it = subs_.find(project);
-  if (it == subs_.end()) return false;
-  const size_t before = it->second.size();
-  std::erase_if(it->second, [&](const SubProject& sp) { return sp.name == name; });
-  if (it->second.size() == before) return false;
+  if (it == subs_.end() || !find_sub(it->second, name)) return false;
+  const std::string up(SubProject{name, {}}.parent());
+  std::erase_if(it->second, [&](const SubProject& sp) { return sub_within(sp.name, name); });
   if (it->second.empty()) subs_.erase(it);
-  // Its chats go back to the project.
-  std::erase_if(sub_of_chat_, [&](const auto& kv) {
-    return kv.second == name && kv.first.starts_with(project + "\n");
-  });
+  // Its chats, and those of the ones nested in it, go to its parent.
+  for (auto c = sub_of_chat_.begin(); c != sub_of_chat_.end();) {
+    if (!c->first.starts_with(project + "\n") || !sub_within(c->second, name)) ++c;
+    else if (up.empty()) c = sub_of_chat_.erase(c);
+    else (c++)->second = up;
+  }
   save_subs();
   scan();
   return true;
@@ -285,16 +359,18 @@ bool Store::remove_subproject(const std::string& project, const std::string& nam
 bool Store::rename_subproject(const std::string& project, const std::string& from, const std::string& to) {
   ++version_;
   auto it = subs_.find(project);
-  if (it == subs_.end() || to.empty() || to.find('\t') != std::string::npos) return false;
-  SubProject* found = nullptr;
-  for (auto& sp : it->second) {
-    if (sp.name == to) return false;
-    if (sp.name == from) found = &sp;
-  }
-  if (!found) return false;
-  found->name = to;
+  if (it == subs_.end() || to.empty() || to.find_first_of("\t\n") != std::string::npos) return false;
+  // Only its own name changes: the same parent, one more name in it.
+  const SubProject was{from, {}}, now{to, {}};
+  if (was.parent() != now.parent() || now.leaf().empty() || now.leaf().find('/') != std::string_view::npos)
+    return false;
+  if (!find_sub(it->second, from) || find_sub(it->second, to)) return false;
+  const auto moved = [&](std::string& n) {
+    if (sub_within(n, from)) n = to + n.substr(from.size());
+  };
+  for (auto& sp : it->second) moved(sp.name);
   for (auto& [key, sub] : sub_of_chat_)
-    if (sub == from && key.starts_with(project + "\n")) sub = to;
+    if (key.starts_with(project + "\n")) moved(sub);
   save_subs();
   scan();
   return true;
@@ -326,13 +402,13 @@ std::string Store::sub_for(const Project& project, const std::string& agent, con
   if (!id.empty())
     if (auto it = sub_of_chat_.find(project.path + "\n" + mark_key(agent, id)); it != sub_of_chat_.end()) {
       if (it->second == "-") return {};
-      for (const auto& sp : project.subs)
-        if (sp.name == it->second) return sp.name;
+      if (find_sub(project.subs, it->second)) return it->second;
     }
   // By folder: the sub-project with the deepest folder holding the chat's.
+  // One in its parent's folder claims nothing by folder: its parent's does.
   const SubProject* best = nullptr;
   for (const auto& sp : project.subs) {
-    if (sp.path == project.path) continue;
+    if (sp.path == parent_path(project.subs, sp, project.path)) continue;
     if (cwd != sp.path && !cwd.starts_with(sp.path + "/")) continue;
     if (!best || sp.path.size() > best->path.size()) best = &sp;
   }

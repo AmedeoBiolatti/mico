@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -14,10 +15,33 @@ namespace mico {
 // A part of a project: a name, and the folder its chats run in — the
 // project's own folder, or one under it. mico's own grouping; the agents
 // never see it.
+//
+// Sub-projects nest: the name is the path down to it, "web/api" for "api"
+// inside "web". A nested one runs in its parent's folder or one under it.
 struct SubProject {
   std::string name;
   std::string path;
+  // "api" of "web/api".
+  std::string_view leaf() const {
+    const size_t s = name.rfind('/');
+    return s == std::string::npos ? std::string_view(name) : std::string_view(name).substr(s + 1);
+  }
+  // "web" of "web/api"; "" for one directly in the project.
+  std::string_view parent() const {
+    const size_t s = name.rfind('/');
+    return s == std::string::npos ? std::string_view() : std::string_view(name).substr(0, s);
+  }
+  // 1 for one directly in the project, 2 for one inside that, …
+  int depth() const { return 1 + int(std::count(name.begin(), name.end(), '/')); }
 };
+
+// Whether a chat filed under sub-project `sub` is in `scope`: it is that one,
+// or one nested inside it.
+inline bool sub_within(std::string_view sub, std::string_view scope) {
+  return sub == scope || (sub.size() > scope.size() && sub.starts_with(scope) && sub[scope.size()] == '/');
+}
+// How a sub-project's name reads: "web › api".
+std::string sub_label(std::string_view name);
 
 struct Project {
   std::string path;  // working directory the sessions ran in
@@ -69,11 +93,18 @@ class Store {
 
   // Sub-projects. Which chats one holds: those assigned to it — started from
   // it, or moved there — and, for one in a folder of its own, every chat run
-  // in that folder or under it. A sub-project in the project's own folder has
-  // only its assigned chats: the folder cannot tell it from the project.
-  // Persisted to $XDG_CONFIG_HOME/mico/subprojects.
+  // in that folder or under it, unless a sub-project nested deeper claims it.
+  // A sub-project in its parent's own folder (the project's, for one at the
+  // top) has only its assigned chats: the folder cannot tell it from the
+  // parent. Persisted to $XDG_CONFIG_HOME/mico/subprojects.
+  //
+  // `name` is the whole path, "web/api": its parent has to exist, and its
+  // folder has to be the parent's or one under it.
   bool add_subproject(const std::string& project, const std::string& name, const std::string& path);
+  // Removes it with every sub-project nested in it; their chats go to its
+  // parent.
   bool remove_subproject(const std::string& project, const std::string& name);
+  // A new name in the same parent; the ones nested in it follow.
   bool rename_subproject(const std::string& project, const std::string& from, const std::string& to);
   // Puts a chat in `sub` of `project`; "" takes it out of any.
   void assign_sub(const std::string& project, const std::string& agent, const std::string& id,

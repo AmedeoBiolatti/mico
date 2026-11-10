@@ -21,6 +21,9 @@
 //               bytes, sub, archived, parent?}]}]}
 //               parent: a subagent's run, and the transcript of the session
 //               that started it; the terminal's list leaves these out
+//               subs[].name is a path, "web/api" for "api" inside "web",
+//               listed each after what it is in; a chat's sub is the
+//               one it is in, a chat of "web/api" being in "web" too
 //   agents     {agents: [{key, agent, title, cwd, session_id,  whenever a running
 //               transcript, status, used_at, archived,           agent changed
 //               queued: [text]}]}

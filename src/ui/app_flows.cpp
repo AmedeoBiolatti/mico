@@ -162,9 +162,17 @@ void App::open_new_chat() {
             "enter start \xC2\xB7 esc close", selected_cwd());
 }
 
-void App::pick_subproject_folder(const std::string& project) {
-  open_flow("subdir", "Sub-project of " + abbreviate(project) + " \xE2\x80\x94 its folder",
-            "enter use \xC2\xB7 tab open folder \xC2\xB7 esc close", project, abbreviate(project) + "/");
+void App::pick_subproject_folder(const std::string& project, const std::string& parent) {
+  // Where it can run: the parent's folder or one under it.
+  std::string root = project;
+  for (const auto& pr : ws_.store().projects())
+    if (pr.path == project)
+      for (const auto& sp : pr.subs)
+        if (sp.name == parent) root = sp.path;
+  const std::string of = parent.empty() ? abbreviate(project) : sub_label(parent);
+  open_flow("subdir", "Sub-project of " + of + " \xE2\x80\x94 its folder",
+            "enter use \xC2\xB7 tab open folder \xC2\xB7 esc close", root + "\n" + project + "\n" + parent,
+            abbreviate(root) + "/");
 }
 
 void App::pick_folder() {
@@ -184,25 +192,30 @@ std::vector<PickItem> App::flow_items(const std::string& flow, const std::string
   if (flow == "agent_dir") return folder_items(query, true);
   if (flow == "folder") return folder_items(query, false);
   if (flow == "subdir") {
-    // Browsing, but only inside the project: its own folder first, then the
-    // folders under it; what is typed can be used as it is.
-    const std::string project = menu_ ? menu_->carry : std::string();
-    auto inside = [&](const std::string& p) { return p == project || p.starts_with(project + "/"); };
+    // Browsing, but only inside the project, or the sub-project it goes in:
+    // that folder first, then the folders under it; what is typed can be used
+    // as it is. The carry is "root\nproject\nparent".
+    const std::string carry = menu_ ? menu_->carry : std::string();
+    const std::string root = carry.substr(0, carry.find('\n'));
+    const bool nested = !carry.ends_with("\n");  // it has a parent sub-project
+    auto inside = [&](const std::string& p) { return p == root || p.starts_with(root + "/"); };
     std::vector<PickItem> out;
     PickItem same;
     // Labelled with its path, so the path typed to browse still matches it.
-    same.label = abbreviate(project) + "/";
-    same.detail = "same folder as the project: holds the chats you put in it";
-    same.id = "dir:" + project;
+    same.label = abbreviate(root) + "/";
+    same.detail = nested ? "same folder as its parent: holds the chats you put in it"
+                         : "same folder as the project: holds the chats you put in it";
+    same.id = "dir:" + root;
     out.push_back(std::move(same));
     for (auto& it : folder_items(query, false)) {
       const std::string dir = it.id.substr(4);
       if (it.pinned) {
-        it.label = "Use \xE2\x80\x9C" + (query.empty() ? abbreviate(project) : query) + "\xE2\x80\x9D";
+        it.label = "Use \xE2\x80\x9C" + (query.empty() ? abbreviate(root) : query) + "\xE2\x80\x9D";
         it.detail.clear();
         it.enabled = is_dir(dir) && inside(dir);
-        if (!it.enabled) it.detail = is_dir(dir) ? "not inside the project" : "not a folder";
-        if (dir == project) continue;  // the first row says it already
+        if (!it.enabled)
+          it.detail = !is_dir(dir) ? "not a folder" : nested ? "not inside the sub-project" : "not inside the project";
+        if (dir == root) continue;  // the first row says it already
       } else if (!inside(dir)) {
         continue;
       }
@@ -468,9 +481,11 @@ void App::flow_chosen(const PickItem& it) {
   if (flow == "subdir") {
     close_menu();
     const std::string dir = it.id.substr(4);
-    // A name to go with it: the folder's own, for one under the project.
-    std::string name = dir == carry ? std::string() : dir.substr(dir.find_last_of('/') + 1);
-    ask("Sub-project name", "add_sub_name", name, carry + "\n" + dir);
+    // carry: "root\nproject\nparent"; the prompt takes "project\nparent\ndir".
+    const std::string root = carry.substr(0, carry.find('\n'));
+    // A name to go with it: the folder's own, for one under the root.
+    std::string name = dir == root ? std::string() : dir.substr(dir.find_last_of('/') + 1);
+    ask("Sub-project name", "add_sub_name", name, carry.substr(carry.find('\n') + 1) + "\n" + dir);
     return;
   }
   if (flow == "folder") {
