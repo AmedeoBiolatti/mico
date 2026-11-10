@@ -501,49 +501,71 @@ function renderFolders() {
 }
 
 // What an open folder lists: the chats of the folder itself, then each
-// sub-project with its own.
+// sub-project with its own, and the sub-projects nested in it inside it.
+// A sub-project's name is its path down from the folder: "web/api" is
+// "api" inside "web".
+const subParent = (name) => (name.includes("/") ? name.slice(0, name.lastIndexOf("/")) : "");
+const subLeaf = (name) => name.slice(name.lastIndexOf("/") + 1);
+const subWithin = (sub, scope) => sub === scope || (!!sub && sub.startsWith(scope + "/"));
+const subLabel = (name) => name.split("/").join(" › ");
+
 function folderBody(div, f, chats, hits) {
+  // One in the folder's own folder is not listed (a chat cannot be started
+  // in it from here): its chats, and the sub-projects in it, show under what
+  // it is in.
   const subs = (f.subs || []).filter((sp) => sp.path !== f.path);
   const known = new Set(subs.map((sp) => sp.name));
-  const own = hits.filter((c) => !c.sub || !known.has(c.sub));
+  // Where a sub-project's name lands: it, or the nearest listed one it is in.
+  const home = (name) => {
+    while (name && !known.has(name)) name = subParent(name);
+    return name || "";
+  };
+  const own = hits.filter((c) => home(c.sub) === "");
   const limit = st.showAll.has(f.path) || st.filter ? own.length : foldAt(own);
   for (const c of own.slice(0, limit)) div.append(chatRow(c));
   if (own.length > limit) div.append(moreRow(own, limit, () => { st.showAll.add(f.path); renderFolders(); }));
-  for (const sp of subs) {
-    const mine = chats.filter((c) => c.sub === sp.name);
-    const shownHere = hits.filter((c) => c.sub === sp.name);
-    if (st.filter && !shownHere.length && !matches(sp.name)) continue;
-    const sk = `${f.path}\u0000${sp.name}`;
-    const sopen = st.filter ? true : !st.collapsed.has(sk);
-    const sdiv = el("div", "subfolder" + (sopen ? " open" : ""));
-    const shead = el("div", "folder-head sub-head");
-    const stoggle = el("button", "folder-toggle");
-    stoggle.type = "button";
-    stoggle.append(el("span", "chev", "▶"), el("span", "name", sp.name), el("span", "n", String(mine.length)));
-    stoggle.title = sp.path;
-    stoggle.setAttribute("aria-expanded", String(sopen));
-    stoggle.onclick = () => {
-      if (st.collapsed.has(sk)) st.collapsed.delete(sk); else st.collapsed.add(sk);
-      store.set("collapsed", [...st.collapsed]);
-      renderFolders();
-    };
-    const splus = el("button", "icon-btn", "+");
-    splus.type = "button";
-    splus.title = `Start an agent in ${sp.name}`;
-    splus.setAttribute("aria-label", splus.title);
-    splus.onclick = () => { st.newFor = st.newFor === sp.path ? null : sp.path; renderFolders(); };
-    shead.append(stoggle, splus);
-    sdiv.append(shead);
-    if (st.newFor === sp.path) sdiv.append(newRow(sp.path, sp.name));
-    if (sopen) {
-      const slimit = st.showAll.has(sk) || st.filter ? shownHere.length : foldAt(shownHere);
-      for (const c of shownHere.slice(0, slimit)) sdiv.append(chatRow(c));
-      if (shownHere.length > slimit)
-        sdiv.append(moreRow(shownHere, slimit, () => { st.showAll.add(sk); renderFolders(); }));
-      if (!shownHere.length && !st.filter) sdiv.append(el("div", "dim-note", "No chats yet."));
+  const level = (box, scope) => {
+    for (const sp of subs) {
+      if (home(subParent(sp.name)) !== scope) continue;
+      const inside = (c) => subWithin(home(c.sub), sp.name);
+      const mine = chats.filter(inside);
+      const shownHere = hits.filter((c) => home(c.sub) === sp.name);
+      if (st.filter && !hits.some(inside) && !matches(sp.name)) continue;
+      const sk = `${f.path}\u0000${sp.name}`;
+      const sopen = st.filter ? true : !st.collapsed.has(sk);
+      const sdiv = el("div", "subfolder" + (sopen ? " open" : ""));
+      const shead = el("div", "folder-head sub-head");
+      const stoggle = el("button", "folder-toggle");
+      stoggle.type = "button";
+      stoggle.append(el("span", "chev", "▶"), el("span", "name", subLeaf(sp.name)), el("span", "n", String(mine.length)));
+      stoggle.title = sp.path;
+      stoggle.setAttribute("aria-expanded", String(sopen));
+      stoggle.onclick = () => {
+        if (st.collapsed.has(sk)) st.collapsed.delete(sk); else st.collapsed.add(sk);
+        store.set("collapsed", [...st.collapsed]);
+        renderFolders();
+      };
+      const splus = el("button", "icon-btn", "+");
+      splus.type = "button";
+      splus.title = `Start an agent in ${subLabel(sp.name)}`;
+      splus.setAttribute("aria-label", splus.title);
+      splus.onclick = () => { st.newFor = st.newFor === sp.path ? null : sp.path; renderFolders(); };
+      shead.append(stoggle, splus);
+      sdiv.append(shead);
+      if (st.newFor === sp.path) sdiv.append(newRow(sp.path, subLabel(sp.name)));
+      if (sopen) {
+        const slimit = st.showAll.has(sk) || st.filter ? shownHere.length : foldAt(shownHere);
+        for (const c of shownHere.slice(0, slimit)) sdiv.append(chatRow(c));
+        if (shownHere.length > slimit)
+          sdiv.append(moreRow(shownHere, slimit, () => { st.showAll.add(sk); renderFolders(); }));
+        const nested = subs.some((o) => home(subParent(o.name)) === sp.name);
+        if (!shownHere.length && !nested && !st.filter) sdiv.append(el("div", "dim-note", "No chats yet."));
+        level(sdiv, sp.name);
+      }
+      box.append(sdiv);
     }
-    div.append(sdiv);
-  }
+  };
+  level(div, "");
   if (!hits.length && !subs.length && !st.filter) div.append(el("div", "dim-note", "No chats yet."));
 }
 
@@ -557,7 +579,7 @@ function renderRecent() {
   all.sort((x, y) => y[0] - x[0]);
   const box = $("recent");
   box.replaceChildren();
-  for (const [, c, f] of all.slice(0, RECENT_N)) box.append(chatRow(c, f.name + (c.sub ? ` › ${c.sub}` : "")));
+  for (const [, c, f] of all.slice(0, RECENT_N)) box.append(chatRow(c, f.name + (c.sub ? ` › ${subLabel(c.sub)}` : "")));
   $("recent-sec").hidden = !all.length;
 }
 

@@ -101,7 +101,7 @@ void build_rows(App* app, std::vector<Row>& out, bool show_archived, bool held) 
       if (every && std::find(live_ids.begin(), live_ids.end(), key_of(s->agent(), s->session_id())) != live_ids.end() &&
           !s->session_id().empty())
         continue;  // already listed under a folder that holds its cwd
-      if (sub && app->live_sub(*s) != sub->name) {
+      if (sub && !sub_within(app->live_sub(*s), sub->name)) {
         live_ids.push_back(key_of(s->agent(), s->session_id()));  // nor its stored row
         continue;
       }
@@ -129,7 +129,7 @@ void build_rows(App* app, std::vector<Row>& out, bool show_archived, bool held) 
   for (const Project* pr : folders) {
     for (const auto& sr : pr->sessions) {
       if (std::find(live_ids.begin(), live_ids.end(), key_of(sr.agent, sr.id)) != live_ids.end()) continue;
-      if (sub && sr.sub != sub->name) continue;
+      if (sub && !sub_within(sr.sub, sub->name)) continue;
       // A subagent's run is not a chat of the list's: it opens from the call
       // that started it, in its session's chat.
       if (!sr.parent.empty()) continue;
@@ -180,7 +180,7 @@ class ChatList final : public Pane {
   std::string title() const override {
     const Project* p = app_->current_project();
     std::string t = app_->all_folders() ? "Chats · all folders" : p ? "Chats · " + p->name : "Chats";
-    if (const SubProject* sp = app_->all_folders() ? nullptr : app_->current_sub()) t += " \xE2\x80\xBA " + sp->name;  // ›
+    if (const SubProject* sp = app_->all_folders() ? nullptr : app_->current_sub()) t += " \xE2\x80\xBA " + sub_label(sp->name);  // ›
     if (marked_shown_ > 0) t += " · " + std::to_string(marked_shown_) + " selected";
     else if (show_archived_) t += " · archived";
     return t;
@@ -439,9 +439,9 @@ class ChatList final : public Pane {
       const std::string now = r->live ? app_->live_sub(*r->live) : r->stored ? r->stored->sub : std::string();
       std::vector<PickItem> items;
       int cursor = 0;
-      for (const auto& sp : pr->subs) {
+      for (const auto& sp : pr->subs) {  // in tree order: each under what it is in
         PickItem it;
-        it.label = sp.name;
+        it.label = std::string(size_t(2 * (sp.depth() - 1)), ' ') + std::string(sp.leaf());
         it.detail = sp.path == pr->path ? "same folder" : "." + sp.path.substr(pr->path.size());
         it.id = "movesub:" + r->key + "\n" + sp.name;
         it.checked = sp.name == now;
@@ -467,7 +467,7 @@ class ChatList final : public Pane {
       if (!pr || id.empty() || nl == std::string::npos) return;
       const std::string sub = rest.substr(nl + 1);
       app_->store().assign_sub(pr->path, agent, id, sub);
-      app_->set_status(sub.empty() ? "moved out of its sub-project" : "moved to " + sub);
+      app_->set_status(sub.empty() ? "moved out of its sub-project" : "moved to " + sub_label(sub));
       return;
     }
     if (a == "archive" && r && !r->key.empty()) { set_archived_for({r->key}, true); return; }

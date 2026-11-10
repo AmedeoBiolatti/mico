@@ -700,7 +700,7 @@ App::ViewFilter App::view_filter() const {
   f.project = current_project();
   f.label = f.project ? f.project->name : "all folders";
   f.sub = current_sub();
-  if (f.sub) f.label += " \xE2\x80\xBA " + f.sub->name;  // ›
+  if (f.sub) f.label += " \xE2\x80\xBA " + sub_label(f.sub->name);  // ›
   if (!f.project || !chat_filter_) return f;
   if (selected_live_) {
     f.chat_path = selected_live_->transcript();
@@ -727,7 +727,7 @@ std::vector<Project> App::filtered_projects() const {
   if (!f.chat_path.empty())
     std::erase_if(one.sessions, [&](const SessionRef& s) { return s.path != f.chat_path; });
   else if (f.sub)
-    std::erase_if(one.sessions, [&](const SessionRef& s) { return s.sub != f.sub->name; });
+    std::erase_if(one.sessions, [&](const SessionRef& s) { return !sub_within(s.sub, f.sub->name); });
   return {std::move(one)};
 }
 
@@ -736,7 +736,7 @@ bool App::in_filter(const std::string& project_name, const std::string& path) co
   if (!f.project) return true;
   if (project_name != f.project->name) return false;
   if (!f.chat_path.empty()) return path == f.chat_path;
-  if (f.sub) return ws_.store().sub_of_path(path) == f.sub->name;
+  if (f.sub) return sub_within(ws_.store().sub_of_path(path), f.sub->name);
   return true;
 }
 
@@ -911,18 +911,35 @@ void App::prompt_submit() {
     return;
   }
   if (p.action == "add_sub_name" || p.action == "rename_sub") {
+    // Adding: "project\nparent\nfolder"; renaming: "project\nname".
     const size_t nl = p.carry.find('\n');
     if (nl == std::string::npos) return;
     const std::string project = p.carry.substr(0, nl), other = p.carry.substr(nl + 1);
-    std::string name = text;
-    while (!name.empty() && name.back() == ' ') name.pop_back();
-    while (!name.empty() && name.front() == ' ') name.erase(0, 1);
-    if (name.empty()) return;
+    std::string leaf = text;
+    while (!leaf.empty() && leaf.back() == ' ') leaf.pop_back();
+    while (!leaf.empty() && leaf.front() == ' ') leaf.erase(0, 1);
+    if (leaf.empty()) return;
+    // A "/" would make it a sub-project of one that is not there.
+    if (leaf.find('/') != std::string::npos) {
+      set_status("a sub-project\xE2\x80\x99s name cannot hold \xE2\x80\x9C/\xE2\x80\x9D");
+      return;
+    }
     const bool add = p.action == "add_sub_name";
-    const bool ok = add ? ws_.store().add_subproject(project, name, other)
-                        : ws_.store().rename_subproject(project, other, name);
+    std::string name;
+    bool ok = false;
+    if (add) {
+      const size_t nl2 = other.find('\n');
+      if (nl2 == std::string::npos) return;
+      const std::string parent = other.substr(0, nl2), dir = other.substr(nl2 + 1);
+      name = parent.empty() ? leaf : parent + "/" + leaf;
+      ok = ws_.store().add_subproject(project, name, dir);
+    } else {
+      const std::string up(SubProject{other, {}}.parent());
+      name = up.empty() ? leaf : up + "/" + leaf;
+      ok = ws_.store().rename_subproject(project, other, name);
+    }
     if (!ok) {
-      set_status("could not " + std::string(add ? "add" : "rename") + " \xE2\x80\x9C" + name +
+      set_status("could not " + std::string(add ? "add" : "rename") + " \xE2\x80\x9C" + leaf +
                  "\xE2\x80\x9D \xE2\x80\x94 is the name taken?");
       return;
     }
@@ -931,7 +948,7 @@ void App::prompt_submit() {
     for (size_t i = 0; i < ps.size(); i++)
       if (ps[i].path == project) select_project(int(i));
     select_sub(name);
-    set_status(add ? "added sub-project " + name : "renamed to " + name);
+    set_status(add ? "added sub-project " + sub_label(name) : "renamed to " + leaf);
     return;
   }
   if (p.action == "rename") {

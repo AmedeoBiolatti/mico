@@ -531,6 +531,9 @@ details.tool .out.err { border-color: var(--bad); }
 .in-project .subfolder { margin: 10px 0 0; border-left: 0; padding-left: 0; }
 .in-project .sub-head .folder-toggle { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
 .in-project .sub-head .folder-toggle .n { text-transform: none; letter-spacing: 0; }
+/* One nested in a sub-project is a tree again, inside its section. */
+.in-project .subfolder .subfolder { margin: 4px 0 0 8px; border-left: 1px solid var(--line); padding-left: 4px; }
+.in-project .subfolder .subfolder .sub-head .folder-toggle { text-transform: none; letter-spacing: 0; }
 
 /* Sub-projects under a folder */
 .subfolder { margin: 1px 0 4px 12px; border-left: 1px solid var(--line); padding-left: 4px; }

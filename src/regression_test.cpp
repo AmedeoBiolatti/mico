@@ -1378,6 +1378,50 @@ int run_regression_tests() {
               "sub: in_filter agrees");
         check(app.view_filter().label.find("web") != std::string::npos, "sub: the filter names it");
 
+        // Nested: a sub-project of a sub-project, in a folder of its own or in
+        // its parent's, as deep as wanted.
+        std::filesystem::create_directories(project + "/web/api/v1");
+        chat("sub-api", project + "/web/api/v1", "api work");
+        st.scan();
+        check(find("sub-api") && find("sub-api")->sub == "web", "nested: before it, the parent's folder claims the chat");
+        check(!st.add_subproject(project, "nope/api", project + "/web/api"), "nested: only in one that exists");
+        check(!st.add_subproject(project, "web/out", project), "nested: only inside its parent's folder");
+        check(!st.add_subproject(project, "web//x", project + "/web"), "nested: no empty name on the way");
+        check(st.add_subproject(project, "web/api", project + "/web/api"), "nested: one in a folder of its own");
+        check(find("sub-api")->sub == "web/api", "nested: the deepest folder claims the chat");
+        check(find("sub-web")->sub == "web", "nested: the parent keeps its own");
+        check(st.add_subproject(project, "web/api/v2", project + "/web/api"), "nested: a third level, in its parent's folder");
+        check(find("sub-api")->sub == "web/api", "nested: one in its parent's folder claims nothing by folder");
+        {
+          std::vector<std::string> order;
+          for (const auto& pr : st.projects())
+            if (pr.path == project)
+              for (const auto& sp : pr.subs) order.push_back(sp.name);
+          check(order == std::vector<std::string>{"web", "web/api", "web/api/v2", "notes"},
+                "nested: listed in tree order, each under what it is in");
+        }
+        app.select_sub("web");
+        {
+          const auto web = app.filtered_projects();
+          check(web.size() == 1 && web[0].sessions.size() == 2 && app.in_filter(web[0].name, find("sub-api")->path),
+                "nested: the parent's filter holds the chats of those nested in it");
+        }
+        app.select_sub("web/api");
+        check(app.view_filter().label.find("web \xE2\x80\xBA api") != std::string::npos, "nested: the filter names the path");
+        app.select_project(pi);
+        st.assign_sub(project, "claude", "sub-api", "web/api/v2");
+        check(find("sub-api")->sub == "web/api/v2", "nested: a chat put in the third level is there");
+        check(st.rename_subproject(project, "web", "site"), "nested: renamed");
+        check(find("sub-api")->sub == "site/api/v2" && find("sub-web")->sub == "site",
+              "nested: a rename carries what is in it");
+        check(!st.rename_subproject(project, "site/api", "other/api"), "nested: a rename keeps its parent");
+        check(st.remove_subproject(project, "site/api/v2"), "nested: removed");
+        check(find("sub-api")->sub == "site/api", "nested: its chats go to its parent");
+        check(st.rename_subproject(project, "site", "web"), "nested: renamed back");
+        check(st.remove_subproject(project, "web/api"), "nested: removed with what is in it");
+        check(find("sub-api")->sub == "web", "nested: up to the parent again");
+        app.select_sub("web");
+
         // Kept across a restart, and gone with the folder's own removal.
         Store again;
         again.scan();

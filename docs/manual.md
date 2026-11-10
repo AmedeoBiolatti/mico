@@ -193,19 +193,28 @@ narrows the chat list to its chats, a new chat started there runs in its
 folder, and on Usage, Search, Tools and Diff it is one more level of the filter:
 All folders → a folder → a sub-project → a chat.
 
+Sub-projects nest: right-click a sub-project → **Add sub-project…** puts one
+inside it, in its folder or one under it, and so on as deep as you like
+(`shop › web › api`). Each level is indented under the one it is in, counts
+the chats of those nested in it too, and selecting it lists them all: `web`
+shows its own chats and `web › api`'s.
+
 Which chats a sub-project holds depends on its folder:
 
-- **A folder of its own** (anywhere under the project): every chat run in
-  that folder or below it. Such chats are listed under the project even though
+- **A folder of its own** (anywhere under its parent's): every chat run in
+  that folder or below it, unless a sub-project nested deeper has a folder
+  closer to the chat's. Such chats are listed under the project even though
   their folder is not the project's own — a tracked folder used to show only
   chats run exactly there.
-- **The project's own folder**: the folder cannot tell its chats from the
-  project's, so it holds the chats started from it, and the ones you put in it
-  with right-click on a chat → **Move to sub-project…**.
+- **Its parent's own folder** (the project's, for one at the top): the
+  folder cannot tell its chats from the parent's, so it holds the chats started
+  from it, and the ones you put in it with right-click on a chat → **Move to
+  sub-project…**.
 
 A move overrides the folder either way, including "No sub-project". Right-click
-a sub-project to rename or remove it; removing one sends its chats back to the
-folder. It is all mico's own bookkeeping, in `$XDG_CONFIG_HOME/mico/subprojects`
+a sub-project to rename or remove it. A rename takes those nested in it along;
+removing one removes those nested in it too, and sends their chats to what it
+was in (the folder, for one at the top). It is all mico's own bookkeeping, in `$XDG_CONFIG_HOME/mico/subprojects`
 — the agents' files are never touched.
 
 The selected folder is remembered by its path, not its place in the list: the
@@ -263,7 +272,7 @@ that is waiting, read from the agent's own transcript, never as a client says it
 was.
 
 - **Sub-projects** are listed under their folder, each with its own chats and a
-  **+** to start an agent in it.
+  **+** to start an agent in it, and the sub-projects nested in it inside it.
 - **Minimal, Normal, Full** (beside the chat's title; in its **⋯** on a phone): minimal keeps the
   conversation and folds every run of steps to its line, normal opens short
   runs, full opens every step with its output and the thinking. The choice is

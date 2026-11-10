@@ -203,9 +203,10 @@ class App {
   // skips to where.
   void open_new_agent(std::string command = {});
   void open_new_chat();
-  // Adding a sub-project to the folder `project`: which folder it runs in —
-  // the project's own, or one under it — then its name.
-  void pick_subproject_folder(const std::string& project);
+  // Adding a sub-project to the folder `project`, inside sub-project `parent`
+  // when one is given: which folder it runs in — the parent's (the
+  // project's) own, or one under it — then its name.
+  void pick_subproject_folder(const std::string& project, const std::string& parent = {});
 
   // Routes every mouse event to `p` until the button is released. Without it a
   // drag dies the moment the pointer leaves the pane that started it.
