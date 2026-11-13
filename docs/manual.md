@@ -1610,6 +1610,11 @@ end says which text was the answer. A cancelled turn has no answer and keeps
 its steps. Questions, charts and notices stay out of the fold: they were said
 to you. Full density shows every step.
 
+Claude's text also stays visible at every density. Claude can write a full
+proposal or ask questions, then call a tool to save memory before ending with
+a short acknowledgement. The earlier reply remains visible when those tool
+calls fold.
+
 Steps loaded while folded keep no text, only what the fold line counts; opening
 a fold reads them again. Scrolling back past a long autonomous turn then costs
 a few bytes per step instead of filling the window with text that is never
