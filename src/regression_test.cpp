@@ -2398,9 +2398,8 @@ int run_regression_tests() {
     std::filesystem::remove_all(dir);
   }
 
-  // Commentary and answers: a finished turn's steps and what the agent said
-  // between them fold into one line above its answer, which has a bar of its
-  // own; a turn still running shows everything.
+  // Claude's replies stay visible when a finished turn's steps fold above
+  // its final answer. A turn still running shows every step.
   {
     const std::string path = base + "/turns.jsonl";
     const auto asst = [](const std::string& block, const char* stop) {
@@ -2433,9 +2432,9 @@ int run_regression_tests() {
     };
     chat.render(p, theme, filters);
     std::string shown = screen(sf);
-    check(shown.find("\xE2\x96\xB8 1 step \xC2\xB7 1 comment") != std::string::npos &&
-              shown.find("COMMENTMARK") == std::string::npos && shown.find("TOOLMARK") == std::string::npos,
-          "a finished turn's steps fold into one line");
+    check(shown.find("\xE2\x96\xB8 1 step") != std::string::npos &&
+              shown.find("COMMENTMARK") != std::string::npos && shown.find("TOOLMARK") == std::string::npos,
+          "a finished Claude turn folds its steps and keeps its replies visible");
     const int ans = row_of("ANSWERMARK");
     check(ans >= 0 && line(ans).find("\xE2\x96\x8E") != std::string::npos && row_of("1 step") < ans,
           "the answer follows the fold, with a bar of its own");
@@ -2463,7 +2462,7 @@ int run_regression_tests() {
     shown = screen(sf);
     const int live = row_of("LIVEMARK");
     check(live >= 0 && shown.find("LIVETOOL") != std::string::npos &&
-              line(live).find("\xE2\x96\x8E") == std::string::npos && shown.find("COMMENTMARK") == std::string::npos,
+              line(live).find("\xE2\x96\x8E") == std::string::npos && shown.find("COMMENTMARK") != std::string::npos,
           "a running turn is not folded, and its text is not an answer");
     // It ends: its steps fold as well.
     put(path,
@@ -2473,15 +2472,15 @@ int run_regression_tests() {
     chat.poll_growth();
     chat.render(p, theme, filters);
     shown = screen(sf);
-    check(shown.find("LIVEMARK") == std::string::npos && shown.find("DONEMARK") != std::string::npos &&
+    check(shown.find("LIVEMARK") != std::string::npos && shown.find("DONEMARK") != std::string::npos &&
               line(row_of("DONEMARK")).find("\xE2\x96\x8E") != std::string::npos,
           "a turn folds when it ends");
 
     // Finding text in a folded turn opens it.
-    chat.set_find_query("COMMENTMARK");
+    chat.set_find_query("TOOLMARK");
     chat.find_next(-1);
     chat.render(p, theme, filters);
-    check(screen(sf).find("COMMENTMARK") != std::string::npos, "a match inside a fold opens it");
+    check(screen(sf).find("TOOLMARK") != std::string::npos, "a match inside a fold opens it");
 
     // Full density folds nothing.
     ChatRenderer full;
@@ -2495,6 +2494,51 @@ int run_regression_tests() {
     check(shown.find("COMMENTMARK") != std::string::npos && shown.find("LIVEMARK") != std::string::npos &&
               shown.find("1 step") == std::string::npos,
           "at full density every step shows");
+  }
+
+  // Claude can write the whole answer, then save memory before a brief final
+  // acknowledgement. The proposal and its questions remain part of the chat.
+  {
+    const std::string path = base + "/claude-proposal.jsonl";
+    const std::string proposal =
+        R"({"parentUuid":"request","message":{"content":[{"type":"text","text":"## PROPOSALMARK\n\nBuild a shared library and editor.\n\n## Decisions\n\n1. LANGUAGEQUESTION: which language?\n2. EDITORQUESTION: standalone or integrated?\n3. STYLEQUESTION: stylized or realistic?\n4. EXPORTQUESTION: which engines?"}],"stop_reason":"tool_use"},"type":"assistant"})" "\n";
+    const std::string memory =
+        R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"memory","name":"Write","input":{"file_path":"MEMORYFILE","content":"project goals"}}],"stop_reason":"tool_use"}})" "\n"
+        R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"memory","content":"saved"}]}})" "\n";
+    const std::string done =
+        R"({"type":"assistant","message":{"content":[{"type":"text","text":"Waiting for your answers. ACKNOWLEDGEMENT"}],"stop_reason":"end_turn"}})" "\n";
+    put(path, R"({"type":"user","message":{"content":"Discuss a first version"}})" "\n" + proposal + memory);
+    Surface sf; sf.resize(80, 40);
+    Painter painter(sf, {0, 0, 80, 40});
+    ChatRenderer live;
+    live.open(path, &claude_adapter());
+    live.render(painter, Theme{}, Filters{});
+    put(path, done, true);
+    live.poll_growth();
+    live.render(painter, Theme{}, Filters{});
+    check(screen(sf).find("PROPOSALMARK") != std::string::npos &&
+              screen(sf).find("EXPORTQUESTION") != std::string::npos &&
+              screen(sf).find("ACKNOWLEDGEMENT") != std::string::npos &&
+              screen(sf).find("MEMORYFILE") == std::string::npos,
+          "Claude's proposal and questions survive live turn completion after saving memory");
+    for (const Density density : {Density::Minimal, Density::Normal, Density::Full}) {
+      ChatRenderer stored;
+      stored.open(path, &claude_adapter());
+      Filters filters; filters.density = density;
+      stored.render(painter, Theme{}, filters);
+      sf.resize(60, 40);
+      Painter narrow(sf, {0, 0, 60, 40});
+      stored.render(narrow, Theme{}, filters);
+      const std::string shown = screen(sf);
+      check(shown.find("PROPOSALMARK") != std::string::npos &&
+                shown.find("LANGUAGEQUESTION") != std::string::npos &&
+                shown.find("EDITORQUESTION") != std::string::npos &&
+                shown.find("STYLEQUESTION") != std::string::npos &&
+                shown.find("EXPORTQUESTION") != std::string::npos &&
+                shown.find("ACKNOWLEDGEMENT") != std::string::npos,
+            "a reopened Claude chat preserves its proposal through density and width changes");
+      sf.resize(80, 40);
+    }
   }
 
   // pi: a turn that stops with text has its steps folded above that text.

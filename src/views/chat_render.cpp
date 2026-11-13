@@ -1272,6 +1272,10 @@ bool ChatRenderer::take_answer(Answer& out) {
 
 void ChatRenderer::classify(size_t prepended) {
   const size_t n = conv_.events().size();
+  // Claude has no commentary/final phase on its text blocks. A proposal or
+  // question can precede a tool call (such as saving memory), so every reply
+  // stays visible even when the turn's tool activity is folded.
+  const bool keep_replies = conv_.adapter()->id() == "claude";
   const size_t appended = n - prepended - roles_.size();
   if (prepended) {
     zeros_.assign(prepended, 0);
@@ -1325,7 +1329,8 @@ void ChatRenderer::classify(size_t prepended) {
         const Event& ev = conv_.events()[i];
         // A question, a chart, a notice and agents' messages are said in
         // the open: they stay.
-        if (ev.kind == EventKind::Question || ev.kind == EventKind::Chart || ev.kind == EventKind::Notice ||
+        if ((keep_replies && ev.kind == EventKind::Assistant) ||
+            ev.kind == EventKind::Question || ev.kind == EventKind::Chart || ev.kind == EventKind::Notice ||
             ev.kind == EventKind::Peer || spawns_agents(ev) || (ev.kind == EventKind::Image && !ev.tool_id) ||
             silent(ev))
           continue;
@@ -1342,6 +1347,7 @@ void ChatRenderer::classify(size_t prepended) {
       }
       uint8_t role = ev.kind == EventKind::Assistant ? kWork : 0;
       const bool folds = head != SIZE_MAX && i >= head && ev.kind != EventKind::Question &&
+                         !(keep_replies && ev.kind == EventKind::Assistant) &&
                          ev.kind != EventKind::Chart && ev.kind != EventKind::Notice && ev.kind != EventKind::Peer &&
                          !spawns_agents(ev) &&
                          !(ev.kind == EventKind::Image && !ev.tool_id) && !silent(ev);
