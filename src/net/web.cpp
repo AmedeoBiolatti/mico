@@ -10,11 +10,13 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <map>
 #include <optional>
 
 #include "base/json.h"
 #include "base/log.h"
 #include "core/web_access.h"
+#include "math/deflate.h"
 
 // The page, its script and its styles, linked in whole, as the math atlas is.
 #define MICO_WEB_ASSET(name, file)                  \
@@ -40,6 +42,36 @@ constexpr size_t kMaxGreeting = 64u << 10;  // one before the browser has answer
 constexpr size_t kMaxQueued = 64u << 20;    // unsent output before a client is dropped
 constexpr size_t kMaxConns = 32;            // connections at once; more are turned away
 constexpr int64_t kHttpTimeoutMs = 10'000;  // for a request to arrive whole
+// Messages shorter than this go as they are: deflate saves them little.
+constexpr size_t kDeflateFrom = 512;
+
+// Whether a browser's Sec-WebSocket-Extensions offers permessage-deflate on
+// terms mico keeps: no context carried between messages either way, each one
+// compressed on its own, and the full window. An offer that asks the server
+// for a smaller window is passed over (mico's matcher looks 32 KiB back).
+bool deflate_offered(std::string_view header) {
+  while (!header.empty()) {
+    const size_t comma = header.find(',');
+    std::string_view offer = header.substr(0, comma);
+    header = comma == std::string_view::npos ? std::string_view{} : header.substr(comma + 1);
+    bool ok = false, first = true;
+    while (!offer.empty()) {
+      const size_t semi = offer.find(';');
+      std::string_view param = offer.substr(0, semi);
+      offer = semi == std::string_view::npos ? std::string_view{} : offer.substr(semi + 1);
+      while (!param.empty() && (param.front() == ' ' || param.front() == '\t')) param.remove_prefix(1);
+      while (!param.empty() && (param.back() == ' ' || param.back() == '\t')) param.remove_suffix(1);
+      const std::string_view name = param.substr(0, param.find('='));
+      if (first) ok = param == "permessage-deflate";
+      else if (name != "client_max_window_bits" && name != "client_no_context_takeover" &&
+               name != "server_no_context_takeover")
+        ok = false;
+      first = false;
+    }
+    if (ok) return true;
+  }
+  return false;
+}
 
 int64_t now_ms() {
   timespec ts{};
@@ -235,6 +267,8 @@ struct WebServer::Conn {
   std::string token;     // the one it was let in with; another made since lets it go
   std::string nonce;     // the challenge it has yet to answer
   std::string message;   // a fragmented message, so far
+  bool deflate = false;     // permessage-deflate was agreed
+  bool compressed = false;  // the message so far came compressed (RSV1)
   std::unique_ptr<api::Client> api;
 };
 
@@ -396,7 +430,8 @@ void WebServer::read_http(Conn& c) {
     method = std::string(line.substr(0, a));
     target = std::string(line.substr(a + 1, b - a - 1));
   }
-  std::string host, origin, upgrade, connection, key, version, protocols;
+  std::string host, origin, upgrade, connection, key, version, protocols, extensions;
+  bool takes_deflate = false;  // Accept-Encoding names deflate
   for (size_t at = eol == std::string_view::npos ? req.size() : eol + 2; at < req.size();) {
     size_t e = req.find("\r\n", at);
     if (e == std::string_view::npos) e = req.size();
@@ -413,6 +448,9 @@ void WebServer::read_http(Conn& c) {
     else if (name == "sec-websocket-key") key = value;
     else if (name == "sec-websocket-version") version = value;
     else if (name == "sec-websocket-protocol") protocols += std::string(protocols.empty() ? "" : ",") + std::string(value);
+    else if (name == "accept-encoding") takes_deflate = takes_deflate || lower(value).find("deflate") != std::string::npos;
+    else if (name == "sec-websocket-extensions")
+      extensions += std::string(extensions.empty() ? "" : ",") + lower(value);
   }
   c.in.erase(0, end + 4);
 
@@ -445,8 +483,16 @@ void WebServer::read_http(Conn& c) {
     if (!token && (c.nonce = nonce()).empty()) return respond(c, 403, "text/plain", "no challenge\n");
     // The browser wants one of its subprotocols named back; "mico" is the one
     // that says nothing secret.
+    // Compressed, where the browser offers it: a chat's history is mostly
+    // text, a quarter of its size or so deflated, and a phone may be at the
+    // other end of a slow link.
+    c.deflate = deflate_offered(extensions);
     c.out += "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-             "Sec-WebSocket-Protocol: mico\r\nSec-WebSocket-Accept: " + websocket_accept(key) + "\r\n\r\n";
+             "Sec-WebSocket-Protocol: mico\r\nSec-WebSocket-Accept: " + websocket_accept(key) + "\r\n";
+    if (c.deflate)
+      c.out += "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; "
+               "client_no_context_takeover\r\n";
+    c.out += "\r\n";
     c.ws = true;
     if (token) {
       c.token = *token;
@@ -459,22 +505,33 @@ void WebServer::read_http(Conn& c) {
     if (!c.in.empty()) read_ws(c);
     return;
   }
+  // The page's files, deflated (a zlib stream, which is what browsers take
+  // "deflate" to mean) where the browser takes it: a third of their size.
+  const auto serve = [&](std::string_view type, std::string_view body) {
+    if (!takes_deflate) return respond(c, 200, type, body);
+    static std::map<const char*, std::string> deflated;
+    auto [it, fresh] = deflated.try_emplace(body.data());
+    if (fresh) it->second = math::zlib_compress(reinterpret_cast<const uint8_t*>(body.data()), body.size());
+    respond(c, 200, type, it->second, "deflate");
+  };
   if (path == "/" || path == "/index.html")
-    return respond(c, 200, "text/html; charset=utf-8", asset(mico_web_index, mico_web_index_end));
+    return serve("text/html; charset=utf-8", asset(mico_web_index, mico_web_index_end));
   if (path == "/app.js")
-    return respond(c, 200, "text/javascript; charset=utf-8", asset(mico_web_app_js, mico_web_app_js_end));
+    return serve("text/javascript; charset=utf-8", asset(mico_web_app_js, mico_web_app_js_end));
   if (path == "/app.css")
-    return respond(c, 200, "text/css; charset=utf-8", asset(mico_web_app_css, mico_web_app_css_end));
+    return serve("text/css; charset=utf-8", asset(mico_web_app_css, mico_web_app_css_end));
   respond(c, 404, "text/plain", "not found\n");
 }
 
-void WebServer::respond(Conn& c, int status, std::string_view type, std::string_view body) {
+void WebServer::respond(Conn& c, int status, std::string_view type, std::string_view body,
+                        std::string_view encoding) {
   const char* reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 403 ? "Forbidden"
                        : status == 405 ? "Method Not Allowed" : status == 421 ? "Misdirected Request"
                        : status == 431 ? "Request Header Fields Too Large" : "Bad Request";
   const std::string port = std::to_string(port_);
   c.out += "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\nContent-Type: " + std::string(type) +
            "\r\nContent-Length: " + std::to_string(body.size()) +
+           (encoding.empty() ? "" : "\r\nContent-Encoding: " + std::string(encoding) + "\r\nVary: Accept-Encoding") +
            "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer"
            "\r\nContent-Security-Policy: default-src 'self'; img-src 'self' data:; connect-src ws://127.0.0.1:" + port +
            " ws://localhost:" + port + (web_host().empty() ? "" : " wss://" + web_host()) +
@@ -491,6 +548,14 @@ void WebServer::read_ws(Conn& c) {
     const uint8_t b0 = uint8_t(c.in[0]), b1 = uint8_t(c.in[1]);
     const bool fin = b0 & 0x80;
     const int opcode = b0 & 0x0F;
+    // RSV1 marks a compressed message, on its first frame only; nothing else
+    // was agreed, so any other reserved bit is an error.
+    const bool rsv1 = b0 & 0x40;
+    if ((b0 & 0x30) || (rsv1 && (!c.deflate || opcode == 0x0 || opcode >= 0x8))) {
+      send_frame(c, 8, "\x03\xea");  // 1002: protocol error
+      c.closing = true;
+      return;
+    }
     size_t len = b1 & 0x7F, at = 2;
     if (!(b1 & 0x80)) { c.dead = true; return; }  // a client's frames are always masked
     if (len == 126) {
@@ -518,11 +583,23 @@ void WebServer::read_ws(Conn& c) {
     switch (opcode) {
       case 0x0:  // continuation
       case 0x1:  // text
+        if (opcode == 0x1) c.compressed = rsv1;
         c.message += payload;
         if (fin) {
+          if (c.compressed) {
+            std::string plain;
+            if (!math::inflate_message(reinterpret_cast<const uint8_t*>(c.message.data()), c.message.size(),
+                                       limit, plain)) {
+              send_frame(c, 8, "\x03\xef");  // 1007: invalid data (or 1009's size; either way, closed)
+              c.closing = true;
+              return;
+            }
+            c.message = std::move(plain);
+          }
           if (c.api) c.api->receive(c.message);
           else authenticate(c, c.message);
           c.message.clear();
+          c.compressed = false;
           if (c.closing) return;
         }
         break;
@@ -565,16 +642,22 @@ void WebServer::authenticate(Conn& c, std::string_view message) {
   MLOG("web: a browser connected%s", lan_host(c.host) ? " from the local network" : "");
 }
 
-void WebServer::send_text(Conn& c, std::string_view text) { send_frame(c, 1, text); }
+void WebServer::send_text(Conn& c, std::string_view text) {
+  if (c.deflate && text.size() >= kDeflateFrom) {
+    const std::string z = math::deflate_raw(reinterpret_cast<const uint8_t*>(text.data()), text.size(), false);
+    if (z.size() < text.size()) return send_frame(c, 1, z, true);
+  }
+  send_frame(c, 1, text);
+}
 
-void WebServer::send_frame(Conn& c, int opcode, std::string_view payload) {
+void WebServer::send_frame(Conn& c, int opcode, std::string_view payload, bool compressed) {
   if (c.out.size() > kMaxQueued) {
     // A browser this far behind is not reading; better to drop it than to
     // hold the daemon's memory for it.
     c.dead = true;
     return;
   }
-  c.out += char(0x80 | opcode);
+  c.out += char(0x80 | (compressed ? 0x40 : 0) | opcode);
   const size_t n = payload.size();
   if (n < 126) {
     c.out += char(n);

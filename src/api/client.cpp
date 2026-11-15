@@ -22,6 +22,10 @@ namespace {
 // chat, without reading a long transcript whole.
 constexpr size_t kChunkLines = 512;
 constexpr size_t kTailEvents = 200;
+// What an opening sends first: about a phone's screen of the latest events.
+// The rest of the window follows in a message of its own, so the end of the
+// chat shows while the rest is on its way.
+constexpr size_t kFirstEvents = 40;
 
 // The window read afresh at the end of the file, back to about a screen.
 void fill_tail(Conversation& conv) {
@@ -189,7 +193,7 @@ void Client::poll(std::vector<std::string>& out) {
       if (conv.take_rewound()) {
         // The agent dropped turns already sent: the tail again, without them.
         fill_tail(conv);
-        send_events(path, chat, 0, conv.events().size(), "tail", out);
+        send_tail(path, chat, out);
       } else {
         const size_t before = conv.events().size();
         const size_t added = conv.grow_forwards();
@@ -226,8 +230,30 @@ void Client::open_chat(const std::string& path) {
     return error("cannot read " + path);
   }
   fill_tail(conv);
-  send_events(path, chat, 0, conv.events().size(), "tail", queued_);
+  send_tail(path, chat, queued_);
   send_facts(path, chat, queued_);
+}
+
+void Client::send_tail(const std::string& path, Chat& chat, std::vector<std::string>& out) {
+  const auto& ev = chat.conv->events();
+  const size_t n = ev.size();
+  // Where the latest part starts: a turn or a reply, at or before the last
+  // kFirstEvents, and never between a call and its result, which a client
+  // draws together.
+  size_t cut = 0;
+  for (size_t i = n > kFirstEvents ? n - kFirstEvents + 1 : 0; i-- > 1 && !cut;) {
+    if (ev[i].kind != EventKind::User && ev[i].kind != EventKind::Assistant) continue;
+    bool split = false;
+    for (size_t r = i; r < n && !split; r++) {
+      if (ev[r].kind != EventKind::ToolResult || !ev[r].tool_id) continue;
+      for (size_t c = 0; c < i && !split; c++)
+        split = ev[c].kind == EventKind::ToolCall && ev[c].tool_id == ev[r].tool_id;
+    }
+    if (!split) cut = i;
+  }
+  if (!cut) return send_events(path, chat, 0, n, "tail", out);
+  send_events(path, chat, cut, n, "tail", out, true);
+  send_events(path, chat, 0, cut, "older", out);
 }
 
 void Client::send_work(const std::string& path, Chat& chat, std::vector<std::string>& out) {
@@ -340,13 +366,14 @@ void Client::older(const std::string& path) {
 }
 
 void Client::send_events(const std::string& path, Chat& chat, size_t from, size_t to,
-                         std::string_view where, std::vector<std::string>& out) {
+                         std::string_view where, std::vector<std::string>& out, bool more) {
   const Conversation& conv = *chat.conv;
   const Arena& arena = conv.arena();
   std::string m;
   jw::Writer w(m);
   w.begin_object().field("type", "chat").field("path", path).field("where", where);
-  w.field("start", conv.parsed_from() == 0 && conv.file().complete());
+  w.field("start", !more && conv.parsed_from() == 0 && conv.file().complete());
+  if (more) w.field("more", true);
   w.key("events").begin_array();
   for (size_t i = from; i < to; i++) {
     const Event& e = conv.events()[i];

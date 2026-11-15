@@ -64,21 +64,18 @@ void match(Bits& b, int len, int dist) {
   if (kDistExtra[di]) b.put(uint32_t(dist - kDistBase[di]), kDistExtra[di]);
 }
 
-}  // namespace
-
-std::string zlib_compress(const uint8_t* p, size_t n) {
-  std::string out("\x78\x01", 2);
-  out.reserve(n / 8 + 64);
+void deflate_blocks(std::string& out, const uint8_t* p, size_t n, bool final) {
   Bits b{out};
-  b.put(1, 1);  // the final block
+  b.put(final ? 1 : 0, 1);
   b.put(1, 2);  // fixed Huffman codes
 
-  constexpr int kHashBits = 15;
+  // A table sized to the input: a short message need not clear 128 KiB.
+  const int hash_bits = std::clamp(int(std::bit_width(n)), 10, 15);
   constexpr size_t kWindow = 32768;
-  std::vector<int32_t> head(size_t(1) << kHashBits, -1);
+  std::vector<int32_t> head(size_t(1) << hash_bits, -1);
   const auto hash = [&](size_t i) {
     const uint32_t v = uint32_t(p[i]) | uint32_t(p[i + 1]) << 8 | uint32_t(p[i + 2]) << 16;
-    return (v * 2654435761u) >> (32 - kHashBits);
+    return (v * 2654435761u) >> (32 - hash_bits);
   };
 
   size_t i = 0;
@@ -129,7 +126,26 @@ std::string zlib_compress(const uint8_t* p, size_t n) {
     }
   }
   symbol(b, 256);
+  // Not the last block: an empty stored block's header and the byte boundary
+  // after it, its LEN and NLEN (00 00 FF FF) left for the reader to supply,
+  // as a sync flush ends (RFC 7692, 7.2.1).
+  if (!final) b.put(0, 3);
   b.flush();
+}
+
+}  // namespace
+
+std::string deflate_raw(const uint8_t* p, size_t n, bool final) {
+  std::string out;
+  out.reserve(n / 3 + 16);
+  deflate_blocks(out, p, n, final);
+  return out;
+}
+
+std::string zlib_compress(const uint8_t* p, size_t n) {
+  std::string out("\x78\x01", 2);
+  out.reserve(n / 8 + 64);
+  deflate_blocks(out, p, n, true);
 
   // Adler-32, reduced once per 5536 bytes (the most that cannot overflow,
   // rounded down to whole blocks). Thirty-two bytes at a time: the block's
