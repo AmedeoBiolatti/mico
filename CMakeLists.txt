@@ -112,6 +112,7 @@ target_link_libraries(mico_adapters PUBLIC mico_model mico_vt)
 add_library(mico_core STATIC
   src/core/pty.cpp
   src/core/models.cpp
+  src/core/chips.cpp
   src/core/clipboard.cpp
   src/core/opener.cpp
   src/core/images.cpp

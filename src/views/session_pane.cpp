@@ -10,6 +10,7 @@
 #include <optional>
 #include <vector>
 
+#include "core/chips.h"
 #include "core/session.h"
 #include "core/work.h"
 #include "vt/keys.h"
@@ -1277,65 +1278,24 @@ class SessionPane final : public Pane {
       app_->set_status("sent \xE2\x87\xA7 Tab");
       return;
     }
-    if (a.rfind("chipmode:", 0) == 0) {
-      // "chipmode:<key>|<value>|<shift-tab bytes>" — walk Claude's permission
-      // ring to a named stop (default / accept edits / plan) and show it now.
-      const std::string rest = a.substr(9);
-      const size_t b1 = rest.find('|'), b2 = rest.find('|', b1 + 1);
-      const std::string key = rest.substr(0, b1);
-      const std::string val = rest.substr(b1 + 1, b2 - b1 - 1);
-      const std::string keys = rest.substr(b2 + 1);
-      if (!keys.empty()) s_->pty().write(keys);
-      choose_state(key, val);
-      app_->set_status(val == "acceptEdits" ? "mode: accept edits"
-                       : val == "plan"      ? "mode: plan"
-                                            : "mode: default");
-      return;
-    }
-    if (a.rfind("chipsteps:", 0) == 0) {
-      // "chipsteps:<key>|<value>|<steps>": keys that set it, steps apart by
-      // \x1f, taken one at a time as the screen settles (ChipControl::steps).
-      const std::string rest = a.substr(10);
-      const size_t b1 = rest.find('|'), b2 = rest.find('|', b1 + 1);
-      if (b1 == std::string::npos || b2 == std::string::npos) return;
-      const std::string key = rest.substr(0, b1), val = rest.substr(b1 + 1, b2 - b1 - 1);
-      const std::string body = rest.substr(b2 + 1);
-      std::vector<std::string> keys;
-      for (size_t at = 0; at <= body.size();) {
-        size_t end = body.find('\x1f', at);
-        if (end == std::string::npos) end = body.size();
-        keys.push_back(body.substr(at, end - at));
-        at = end + 1;
-      }
-      if (!s_->send_answer(std::move(keys))) {
+    if (a.starts_with("chipmode:") || a.starts_with("chipsteps:") || a.starts_with("chipset:")) {
+      // A value chosen from the chip menu: sent to the agent, and the chip
+      // updated now — the agent writes the change into its transcript only on
+      // its next turn.
+      std::string key, val;
+      if (apply_chip_choice(*s_, a, &key, &val) != ChipApplied::Done) {
         app_->set_status("busy; try again in a moment");
         return;
       }
-      choose_state(key, val);
-      app_->set_status("set " + key + " " + val);
-      return;
-    }
-    if (a.rfind("chipset:", 0) == 0) {
-      // A concrete value chosen from the chip menu: send it as the agent's own
-      // set command, stay in the chat, and update the chip now — the agent
-      // writes the change into its transcript only on its next turn.
-      const std::string line = a.substr(8);
-      // The command, then Enter once its completion has settled: both in one
-      // PTY read are taken for pasted text and go to the model as a message.
-      if (!s_->send_answer({line, "\r"})) {
-        app_->set_status("busy; try again in a moment");
-        return;
-      }
-      const size_t sp = line.find(' ');
-      if (sp != std::string::npos) {
-        const std::string cmd = line.substr(0, sp), val = line.substr(sp + 1);
-        const char* key = cmd == "/model"      ? "model"
-                          : cmd == "/effort"    ? "effort"
-                          : cmd == "/permissions" ? "perm"
-                                                  : nullptr;
-        if (key) choose_state(key, val);
-      }
-      app_->set_status("set " + line.substr(1));
+      if (!key.empty()) choose_state(key, val);
+      if (a.starts_with("chipmode:"))
+        app_->set_status(val == "acceptEdits" ? "mode: accept edits"
+                         : val == "plan"      ? "mode: plan"
+                                              : "mode: default");
+      else if (a.starts_with("chipset:"))
+        app_->set_status("set " + a.substr(9));
+      else
+        app_->set_status("set " + key + " " + val);
       return;
     }
     if (a.rfind("chipcmd:", 0) == 0) {

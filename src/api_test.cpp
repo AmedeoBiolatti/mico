@@ -113,13 +113,21 @@ int run_api_test() {
   api::Client c(ws);
 
   std::string got = poll_all(c);
-  check(has(got, R"("type":"hello","protocol":1)") && has(got, R"({"id":"claude","name":"Claude Code"})"),
+  check(has(got, R"("type":"hello","protocol":1)") && has(got, R"({"id":"claude","name":"Claude Code",)"),
         "hello comes first, naming the agents a client can start");
+  check(has(got, R"("chips":[{"key":"model","label":"model"},{"key":"effort","label":"effort"})"),
+        "hello names the settings each agent reports, so a fresh chat can offer them");
   check(has(got, R"("type":"folders")") && has(got, "\"path\":\"" + path + "\"") &&
             has(got, R"("title":"draw the loss curve")"),
         "the listing names the fixture chat by its first message");
   check(!has(got, R"("type":"folders")") || poll_all(c).find("folders") == std::string::npos,
         "an unchanged listing is not sent again");
+
+  c.receive(R"({"type":"chip_choices","rid":"c1","key":"999","field":"model"})");
+  c.receive(R"({"type":"chip_set","rid":"c2","key":"999","field":"model","id":"chipset:/model x"})");
+  got = poll_all(c);
+  check(has(got, R"("rid":"c1","ok":false)") && has(got, R"("rid":"c2","ok":false)"),
+        "a setting is offered and changed only on a running agent");
 
   c.receive(R"({"type":"open","path":")" + path + "\"}");
   got = poll_all(c);

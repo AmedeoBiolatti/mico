@@ -10,6 +10,7 @@
 #include "base/json_write.h"
 #include "base/text.h"
 #include "core/answers.h"
+#include "core/chips.h"
 #include "core/clipboard.h"
 #include "core/images.h"
 #include "base/base64.h"
@@ -63,6 +64,13 @@ const char* status_name(LiveSession::Status s) {
   return "idle";
 }
 
+// A chip choice a client can carry out; the rest need the agent's own screen
+// (its picker) or the terminal's clipboard.
+bool remote_choice(const ChipChoice& c) {
+  return c.enabled && (c.action.starts_with("chipset:") || c.action.starts_with("chipsteps:") ||
+                       c.action.starts_with("chipmode:"));
+}
+
 std::string text_of(const js::Value& v) {
   std::string s;
   if (v.is_string()) js::unescape_append(v.body(), s);
@@ -78,7 +86,7 @@ void Client::receive(std::string_view message) {
   std::string type, path, rid, agent, cwd, id, text;
   uint64_t key = 0;
   int index = -1;
-  std::string tool, note, file, item, action, title;
+  std::string tool, note, file, item, action, title, field;
   bool panel_open = false, on = false;
   uint64_t at = 0, off = 0, len = 0;
   std::string_view chosen;
@@ -99,6 +107,7 @@ void Client::receive(std::string_view message) {
     else if (k == "open") panel_open = v.is_true();
     else if (k == "on") on = v.is_true();
     else if (k == "title") title = text_of(v);
+    else if (k == "field") field = text_of(v);
     else if (k == "key") key = std::strtoull(std::string(v.is_string() ? v.body() : v.raw).c_str(), nullptr, 10);
     else if (k == "fork") fork = v.is_true();
     else if (k == "index" && v.type == js::Type::Number) index = std::atoi(std::string(v.raw).c_str());
@@ -138,6 +147,8 @@ void Client::receive(std::string_view message) {
   if (type == "answer") return answer_question(rid, key, tool, chosen);
   if (type == "interrupt") return interrupt(rid, key);
   if (type == "btw") return btw(rid, key, text, action);
+  if (type == "chip_choices") return send_chip_choices(rid, key, field);
+  if (type == "chip_set") return set_chip(rid, key, field, id);
   if (type == "work") {
     auto it = chats_.find(path);
     if (it == chats_.end()) return error("not open: " + path);
@@ -157,8 +168,14 @@ void Client::poll(std::vector<std::string>& out) {
     w.begin_object().field("type", "hello").field("protocol", kProtocol);
     // The agents a client can start, as menus name them.
     w.key("adapters").begin_array();
-    for (const Adapter* a : all_adapters())
-      w.begin_object().field("id", a->id()).field("name", a->name()).end_object();
+    for (const Adapter* a : all_adapters()) {
+      w.begin_object().field("id", a->id()).field("name", a->name());
+      SessionState seeded;
+      a->seed_state(seeded);
+      w.key("chips").begin_array();
+      for (const auto& f : seeded.fields) w.begin_object().field("key", f.key).field("label", f.label).end_object();
+      w.end_array().end_object();
+    }
     w.end_array().end_object();
     out.push_back(std::move(m));
   }
@@ -681,6 +698,56 @@ void Client::interrupt(std::string_view rid, uint64_t key) {
   LiveSession* s = session(key);
   if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
   s->pty().write("\x1b");
+  result(rid, true, {}, key);
+}
+
+SessionState Client::state_of(const LiveSession& s) const {
+  SessionState st;
+  if (const auto it = chats_.find(s.transcript()); !s.transcript().empty() && it != chats_.end())
+    st = it->second.conv->state();
+  if (st.empty() && s.adapter()) s.adapter()->seed_state(st);
+  return st;
+}
+
+void Client::send_chip_choices(std::string_view rid, uint64_t key, const std::string& field) {
+  LiveSession* s = session(key);
+  if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
+  std::string title;
+  const auto choices = chip_choices(state_of(*s), field, true, s->agent(), nullptr, &title);
+  std::string m;
+  jw::Writer w(m);
+  w.begin_object().field("type", "chip_choices").field("rid", rid).field("key", key).field("field", field);
+  w.field("title", title);
+  w.key("choices").begin_array();
+  for (const auto& c : choices) {
+    if (!remote_choice(c)) continue;
+    w.begin_object().field("label", c.label);
+    if (!c.detail.empty()) w.field("detail", c.detail);
+    if (!c.hint.empty()) w.field("hint", c.hint);
+    w.field("id", c.action).field("checked", c.checked).end_object();
+  }
+  w.end_array().end_object();
+  queued_.push_back(std::move(m));
+}
+
+void Client::set_chip(std::string_view rid, uint64_t key, const std::string& field, const std::string& id) {
+  LiveSession* s = session(key);
+  if (!s || s->exited()) return result(rid, false, "no running agent " + std::to_string(key));
+  // Only a choice mico offers now: the client names one, it never writes keys.
+  const auto choices = chip_choices(state_of(*s), field, true, s->agent());
+  if (std::none_of(choices.begin(), choices.end(),
+                   [&](const ChipChoice& c) { return c.action == id && remote_choice(c); }))
+    return result(rid, false, "that choice is not offered now");
+  std::string k, v;
+  switch (apply_chip_choice(*s, id, &k, &v)) {
+    case ChipApplied::Done: break;
+    case ChipApplied::Busy: return result(rid, false, "the agent is busy; try again in a moment");
+    case ChipApplied::Unsupported: return result(rid, false, "that choice is set in the agent's own terminal");
+  }
+  // Shown at once: the agent writes the change into its transcript only on
+  // its next turn.
+  if (const auto it = chats_.find(s->transcript()); !k.empty() && !s->transcript().empty() && it != chats_.end())
+    it->second.conv->state().set(k, k, v);
   result(rid, true, {}, key);
 }
 

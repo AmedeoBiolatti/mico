@@ -254,6 +254,12 @@ function receive(m) {
       else if (then) then(m);
       break;
     }
+    case "chip_choices": {
+      const then = st.pending.get(m.rid);
+      st.pending.delete(m.rid);
+      if (then) then(m);
+      break;
+    }
     case "image": case "file_image": gotPicture(m); break;
     case "error": toast(m.message, true); break;
   }
@@ -783,7 +789,8 @@ function renameSheet(s) {
 }
 
 // The sheet: at the pointer on a desk, from the bottom on a phone. Items are
-// {label, run, danger?}, {title}, {node}, or "-" for a rule.
+// {label, run, danger?, detail?, checked?}, {title}, {node}, or "-" for a
+// rule. `checked` (true or false) makes the item one of a set to pick from.
 let sheetFrom = null;  // what had focus, to give it back
 let sheetAt = 0;       // when it opened: the lift after a long press is not a tap on the backdrop
 function openSheet(items, x, y) {
@@ -795,7 +802,12 @@ function openSheet(items, x, y) {
     if (it.title !== undefined) { box.append(el("div", "sheet-title" + (it.whole ? " whole" : ""), it.title)); continue; }
     const b = el("button", "sheet-item" + (it.danger ? " danger" : ""), it.label);
     b.type = "button";
-    b.setAttribute("role", "menuitem");
+    b.setAttribute("role", it.checked !== undefined ? "menuitemradio" : "menuitem");
+    if (it.checked !== undefined) {
+      b.setAttribute("aria-checked", String(!!it.checked));
+      b.prepend(el("span", "check", it.checked ? "✓" : ""));
+    }
+    if (it.detail) b.append(el("span", "detail", it.detail));
     b.onclick = () => { closeSheet(); it.run(); };
     box.append(b);
   }
@@ -879,6 +891,7 @@ function headActions(s) {
   const { n, need } = workCount(a);
   items.push({ label: `Work${n ? ` · ${n}` : ""}${need ? " · needs you" : ""}`, run: () => openWork() });
   if (a && a.status === "working") items.push({ label: "Interrupt", run: interruptAgent });
+  for (const c of chipFields(a)) items.push({ label: chipText(c), run: () => openChipMenu(a, c) });
   return items.concat(actions.length ? ["-", ...actions.slice(1)] : []);
 }
 
@@ -1067,13 +1080,62 @@ function renderMeta(a, found) {
     if (found) box.append(sep(), el("span", "", found.chat.agent), sep(), el("span", "", ago(found.chat.mtime)));
   }
   const chips = el("span", "chips");
+  // A running agent's settings are buttons that change them; the rest only
+  // say what the transcript reported.
+  const fields = chipFields(a);
+  for (const f of fields) {
+    const b = el("button", "chip set", st.state[f.key] || f.label);
+    b.type = "button";
+    b.title = `${f.label}: change it`;
+    b.setAttribute("aria-haspopup", "menu");
+    b.onclick = () => {
+      const r = b.getBoundingClientRect();
+      openChipMenu(a, f, r.left, r.bottom + 4);
+    };
+    chips.append(b);
+  }
   for (const [k, v] of Object.entries(st.state || {})) {
-    if (!v) continue;
+    if (!v || fields.some((f) => f.key === k)) continue;
     const c = el("span", "chip", v);
     c.title = k;
     chips.append(c);
   }
   if (chips.childNodes.length) box.append(chips);
+}
+
+// The settings a running agent reports and mico may change: those its adapter
+// declares, there before the first turn has reported any.
+function chipFields(a) {
+  if (!a) return [];
+  const ad = (st.adapters || []).find((x) => x.id === a.agent);
+  return (ad && ad.chips) || [];
+}
+
+function chipText(f) {
+  const v = st.state[f.key];
+  return `${f.label[0].toUpperCase()}${f.label.slice(1)}${v ? ` · ${v}` : ""}…`;
+}
+
+// Asks mico what the setting can be, then offers it: a menu at the chip on a
+// desk, a sheet on a phone.
+function openChipMenu(a, f, x, y) {
+  command({ type: "chip_choices", key: a.key, field: f.key }, (m) => {
+    const items = [{ title: m.title || f.label }];
+    for (const c of m.choices || [])
+      items.push({ label: c.label, detail: c.detail, checked: !!c.checked, run: () => setChip(a, f, c) });
+    if (!(m.choices || []).length)
+      items.push({ node: el("div", "sheet-note", "mico has no choices it can set from here yet. Change it in the agent's own terminal.") });
+    openSheet(items, x, y);
+  });
+}
+
+function setChip(a, f, c) {
+  command({ type: "chip_set", key: a.key, field: f.key, id: c.id }, () => {
+    // Shown at once; the agent writes it into its transcript on its next turn.
+    st.state[f.key] = c.hint || c.label;
+    renderHead();
+    toast(`${f.label}: ${c.label}`);
+  });
 }
 
 function renderHint(a) {

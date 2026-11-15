@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Answering from the web: a permission dialog, a question card, an interrupt.
+"""Answering from the web: a permission dialog, a question card, an interrupt,
+a setting changed from its chip.
 
 Against an isolated daemon and a stand-in for claude that draws Claude's
 permission dialog and an AskUserQuestion menu, and records every key it gets:
@@ -68,6 +69,9 @@ buffer = b''
 while True:
     key = os.read(0, 1024)
     log(key)
+    if mode == 'chip':
+        os.write(1, key)  # claude's prompt echoes what is typed: the feedback paced keys wait for
+        continue
     if mode == 'btw':
         if key == b'\x1b':
             os.write(1, b'\x1b[2J\x1b[H> ')
@@ -314,6 +318,41 @@ finally:
     daemon.wait()
     shutil.rmtree(root, ignore_errors=True)
 
+# ---- a setting changed from its chip
+root, ws, key, chat, daemon = run('chip')
+try:
+    hello = next(m for m in ws.seen if m.get('type') == 'hello')
+    claude = next(a for a in hello['adapters'] if a['id'] == 'claude')
+    check(any(c['key'] == 'model' for c in claude['chips']) and any(c['key'] == 'effort' for c in claude['chips']),
+          'hello names the settings claude reports')
+    rid = 'choices'
+    ws.send({'type': 'chip_choices', 'rid': rid, 'key': key, 'field': 'effort'})
+    m = ws.wait('the effort choices', lambda m: m.get('type') == 'chip_choices' and m.get('rid') == rid)
+    effort = {c['label']: c['id'] for c in m['choices']}
+    check(effort.get('high') == 'chipset:/effort high', 'effort offers its levels, each a set command: ' + repr(m))
+    check(ws.ask(type='chip_set', key=key, field='effort', id='chipset:/model anything')['ok'] is False,
+          'a choice mico did not offer is refused')
+    check(ws.ask(type='chip_set', key=key, field='effort', id=effort.get('high', ''))['ok'], 'a choice offered is set')
+    end = time.monotonic() + 5
+    while time.monotonic() < end and repr(b'\r') not in keys_of(root):
+        ws.pump(0.2)
+    check(keys_of(root) == [repr(b'/effort high'), repr(b'\r')],
+          'the set command, then Enter once it settles: ' + repr(keys_of(root)))
+    rid = 'modes'
+    ws.send({'type': 'chip_choices', 'rid': rid, 'key': key, 'field': 'perm'})
+    m = ws.wait('the mode choices', lambda m: m.get('type') == 'chip_choices' and m.get('rid') == rid)
+    plan = next((c for c in m['choices'] if c['label'] == 'plan mode'), None)
+    check(plan is not None and ws.ask(type='chip_set', key=key, field='perm', id=plan['id'])['ok'],
+          'a mode is walked to: ' + repr(m))
+    ws.pump(0.8)
+    check(keys_of(root)[2:] == [repr(b'\x1b[Z\x1b[Z')], 'by Shift+Tab, twice from default: ' + repr(keys_of(root)))
+    check(ws.ask(type='chip_set', key=key + 99, field='effort', id='chipset:/effort high')['ok'] is False,
+          'an agent that is not there is refused')
+finally:
+    daemon.kill()
+    daemon.wait()
+    shutil.rmtree(root, ignore_errors=True)
+
 if not failures:
-    print('web answers: a permission dialog, a question card and an interrupt passed')
+    print('web answers: a permission dialog, a question card, an interrupt and chip settings passed')
 sys.exit(1 if failures else 0)

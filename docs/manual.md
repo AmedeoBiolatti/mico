@@ -263,6 +263,12 @@ interrupts it.
 - **A permission dialog or a plan** to approve takes the message box's place:
   each choice a button, with a note field where the dialog takes one.
 - **Interrupt** sends Esc, as in the terminal; **Stop** ends the agent.
+- **Model, effort and mode** are chips beside a running chat's state (in its
+  **⋯** on a phone): a click lists the values the terminal's chip would, the one
+  in use checked, and a pick sets it the same way (`chip_choices {key, field}`,
+  then `chip_set {key, field, id}` with a choice's id; anything else is
+  refused). A setting only the agent's own picker can change — the model chip
+  before mico has read the model list — says so instead.
 - **Images go with a message**: paste one into the message box, drop one on
   it, or press **+** to pick some (a phone offers its gallery and camera). They
   wait above the box, each with a × to take it off, up to eight a message. A
