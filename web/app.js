@@ -974,6 +974,8 @@ function openChat(path, title, key) {
   }
   if (st.chat && st.chat.path) send({ type: "close", path: st.chat.path });
   st.chat = { path, key: key || null, title: title || "", start: false };
+  // Asked first: the daemon reads it while the page clears the last chat.
+  if (path) send({ type: "open", path });
   st.state = {};
   st.waiting = new Set();
   st.optional = new Set();
@@ -991,8 +993,7 @@ function openChat(path, title, key) {
   st.attachedFor.delete(chatId());
   renderTray();
   sizePrompt();
-  if (path) send({ type: "open", path });
-  else $("events").append(notice("Nothing written yet: the chat starts with your first message."));
+  if (!path) $("events").append(notice("Nothing written yet: the chat starts with your first message."));
   keepAddress();
   renderHead();
   renderSide();
@@ -2243,6 +2244,14 @@ function scrollToBottom() {
 }
 
 function addEvents(m) {
+  // The rest of an opening's window, sent straight after its latest events:
+  // held until those have been painted, so the end of the chat shows first.
+  if (m.where === "older" && st.chat.rest) {
+    st.chat.rest = false;
+    const chat = st.chat;
+    requestAnimationFrame(() => setTimeout(() => { if (st.chat === chat) addEvents(m); }, 0));
+    return;
+  }
   const list = $("events");
   const chat = box();
   const wasBottom = st.atBottom;
@@ -2280,7 +2289,12 @@ function addEvents(m) {
     else if (visible) { st.unread += visible; showLatest(); }
   }
   if (m.where !== "newer") st.chat.start = m.start;
-  $("older").hidden = st.chat.start;
+  if (m.where === "tail" && m.more) {
+    // The rest is coming: no need to ask for it.
+    st.chat.rest = true;
+    st.loadingOlder = true;
+  }
+  $("older").hidden = st.chat.start || !!st.chat.rest;
   renderActivity(liveAgent());
 }
 

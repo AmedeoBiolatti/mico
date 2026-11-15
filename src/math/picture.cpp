@@ -504,4 +504,23 @@ bool zlib_inflate(const uint8_t* data, size_t n, std::vector<uint8_t>& out) {
   return true;
 }
 
+bool inflate_message(const uint8_t* data, size_t n, size_t limit, std::string& out) {
+  out.clear();
+  // The sync flush's LEN and NLEN, then an empty final stored block: the
+  // inflater stops at a final block rather than reading past the end.
+  std::string in(reinterpret_cast<const char*>(data), n);
+  in.append("\x00\x00\xff\xff\x01\x00\x00\xff\xff", 9);
+  // Deflate expands at most 1032 to 1: the buffer need be no larger, and is
+  // never larger than `limit`, which is what stops a small bomb.
+  const size_t room = std::min(limit, n * 1032 + 64);
+  out.resize(room);
+  const int got = stbi_zlib_decode_noheader_buffer(out.data(), int(room), in.data(), int(in.size()));
+  if (got < 0) {
+    out.clear();
+    return false;
+  }
+  out.resize(size_t(got));
+  return true;
+}
+
 }  // namespace mico::math

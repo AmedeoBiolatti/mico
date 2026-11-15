@@ -43,7 +43,10 @@
 //               only while the agent shows a permission dialog or a plan
 //               to approve: what a client answers with answer_permission
 //   chat       {path, events: [event], where: "tail"|"older"|"newer",
-//               start: bool}                                   start: nothing older
+//               start: bool, more?: true}                      start: nothing older
+//               more: a tail whose window goes on, sent at once after it
+//               as "older": the latest events first, to show while the
+//               rest is on its way
 //   chat_state {path, state: {key: value}, waiting: [id],      when it changed
 //               optional: [id], running: [id], held: [text]}
 //   result     {rid, ok, error?, key?}                         answers a command
@@ -164,9 +167,12 @@ class Client {
 
   void send_folders(std::vector<std::string>& out);
   void send_agents(std::vector<std::string>& out);
-  // Events [from, to) of a chat's window.
+  // Events [from, to) of a chat's window. `more`: a tail whose window goes
+  // on in an "older" message straight after.
   void send_events(const std::string& path, Chat& chat, size_t from, size_t to, std::string_view where,
-                   std::vector<std::string>& out);
+                   std::vector<std::string>& out, bool more = false);
+  // The window, as an opening sends it: the latest events, then the rest.
+  void send_tail(const std::string& path, Chat& chat, std::vector<std::string>& out);
   void send_facts(const std::string& path, Chat& chat, std::vector<std::string>& out);
   void send_work(const std::string& path, Chat& chat, std::vector<std::string>& out);
   void btw(std::string_view rid, uint64_t key, const std::string& text, const std::string& action);

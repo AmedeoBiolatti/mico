@@ -52,9 +52,12 @@ class WebServer {
   void accept_all();
   void read_http(Conn& c);
   void read_ws(Conn& c);
-  void respond(Conn& c, int status, std::string_view type, std::string_view body);
+  // `encoding`: the body's Content-Encoding, when it has one.
+  void respond(Conn& c, int status, std::string_view type, std::string_view body,
+               std::string_view encoding = {});
   void send_text(Conn& c, std::string_view text);
-  void send_frame(Conn& c, int opcode, std::string_view payload);
+  // `compressed`: the payload is a permessage-deflate message (RSV1).
+  void send_frame(Conn& c, int opcode, std::string_view payload, bool compressed = false);
   void flush(Conn& c);
   bool allowed_host(std::string_view host) const;
   bool lan_host(std::string_view host) const;

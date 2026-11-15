@@ -5391,6 +5391,25 @@ int run_selftest() {
       }
       check(ok, "math: deflate round-trips");
       check(packed * 4 < raw, "math: an image-like buffer compresses well");
+
+      // A permessage-deflate message: raw blocks ending as a sync flush does,
+      // its last four bytes left off, which the inflater puts back.
+      ok = true;
+      std::string text;
+      for (int k = 0; k < 400; k++) text += R"({"k":"tool_call","at":)" + std::to_string(k * 97) + R"(,"name":"Bash"},)";
+      for (int t = 0; t < 40 && ok; t++) {
+        std::string d = t == 0 ? std::string() : t == 1 ? text : text.substr(size_t(rng() % text.size()));
+        if (t % 2) for (char& c : d) if (rng() % 7 == 0) c = char(rng());
+        const std::string z = math::deflate_raw(reinterpret_cast<const uint8_t*>(d.data()), d.size(), false);
+        std::string back;
+        ok = math::inflate_message(reinterpret_cast<const uint8_t*>(z.data()), z.size(), 1 << 20, back) && back == d;
+      }
+      check(ok, "web: a permessage-deflate message round-trips");
+      const std::string z = math::deflate_raw(reinterpret_cast<const uint8_t*>(text.data()), text.size(), false);
+      std::string back;
+      check(z.size() * 4 < text.size(), "web: chat JSON deflates well");
+      check(!math::inflate_message(reinterpret_cast<const uint8_t*>(z.data()), z.size(), 1000, back) && back.empty(),
+            "web: a message inflating past the limit is refused");
     }
 
     // The probe: replies are pulled out of whatever was typed meanwhile, and
