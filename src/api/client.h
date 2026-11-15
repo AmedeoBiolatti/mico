@@ -15,7 +15,10 @@
 // feeds receive() and sends what poll() returns, one JSON object each.
 //
 // Server to client:
-//   hello      {protocol, adapters: [{id, name}]}              first, once
+//   hello      {protocol, adapters: [{id, name,                first, once
+//               chips: [{key, label}]}]}
+//               chips: the state fields the agent reports (model,
+//               effort…), there before its first turn has said any
 //   pong                                                     answers ping
 //   folders    {folders: [{path, name, subs: [{name, path}],   whenever the
 //               chats: [{agent, id, path, title, cwd, mtime,    listing changed
@@ -44,6 +47,10 @@
 //   chat_state {path, state: {key: value}, waiting: [id],      when it changed
 //               optional: [id], running: [id], held: [text]}
 //   result     {rid, ok, error?, key?}                         answers a command
+//   chip_choices {rid, key, field, title, choices: [{label,     answers
+//               detail?, hint?, id, checked}]}                 chip_choices
+//               the values a client can set the field to; empty when
+//               only the agent's own screen can change it
 //   error      {message}
 //   image      {path, at, off, media, data}                   answers `image`
 //   file_image {path, file, media, data | error}              answers `file_image`
@@ -92,6 +99,9 @@
 //   interrupt {rid, key}               Esc to the agent: stop what it is doing
 //   work {path, item, open}            subscribe to the selected work's detail
 //   btw {rid, key, text?, action?}     side question; action: previous|next|close
+//   chip_choices {rid, key, field}     what state field `field` (a chat_state
+//                                      key: model, effort…) can be set to
+//   chip_set {rid, key, field, id}     set it to the choice whose id is `id`
 namespace mico::api {
 
 inline constexpr int kProtocol = 1;
@@ -136,6 +146,11 @@ class Client {
   void answer_permission(std::string_view rid, uint64_t key, int index, const std::string& note);
   void answer_question(std::string_view rid, uint64_t key, const std::string& tool, std::string_view chosen);
   void interrupt(std::string_view rid, uint64_t key);
+  void send_chip_choices(std::string_view rid, uint64_t key, const std::string& field);
+  void set_chip(std::string_view rid, uint64_t key, const std::string& field, const std::string& id);
+  // What a running agent's chips show: its open chat's state, else the fields
+  // its adapter declares before the first turn.
+  SessionState state_of(const LiveSession& s) const;
   void result(std::string_view rid, bool ok, std::string_view error = {}, uint64_t key = 0);
   void error(std::string_view message);
 
