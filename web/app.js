@@ -2041,6 +2041,12 @@ function groupHeader(g) {
   if (failed) sum.append(el("span", "flag bad", ` · ${failed} failed`));
 }
 
+function thinkingNode(ev) {
+  const n = el("details", "ev thinking");
+  n.append(el("summary", "", "Thinking"), el("div", "body", ev.text || ""));
+  return n;
+}
+
 function newGroup() {
   const g = el("details", "ev tools");
   g._counts = { calls: 0, running: 0, failed: 0 };
@@ -2167,29 +2173,46 @@ function markOptional(d) {
 }
 
 // Builds the nodes for a batch of events. `last` is the group the page ends in,
-// which a following tool call joins.
+// which a following tool call joins. A run of work is one group: thinking, a
+// passing notice or a result without its call goes inside the group it falls
+// in, so a run that thinks between its calls still folds to one line.
 function buildEvents(events, last) {
   const frag = document.createDocumentFragment();
   const groups = new Set();
   let group = last || null;
   let visible = 0;
+  const join = (node) => {
+    if (!group) { group = newGroup(); frag.append(group); }
+    group.querySelector(".tools-body").append(node);
+    groups.add(group);
+  };
   for (const ev of events) {
     if (ev.k === "tool_call") {
-      if (!group) { group = newGroup(); frag.append(group); }
       const call = toolCall(ev);
-      group.querySelector(".tools-body").append(call);
+      join(call);
       group._counts.calls++;
       group._counts.running += Number(call.classList.contains("running"));
-      groups.add(group);
       visible++;
       continue;
     }
     if (ev.k === "tool_result") {
       const r = toolResult(ev, groups);
-      if (r.node) { frag.append(r.node); group = null; visible++; }
+      if (r.node) {
+        join(r.node);
+        group._counts.calls++;
+        group._counts.failed += Number(ev.ok === false);
+        visible++;
+      }
       continue;
     }
     if (ev.k === "turn_end" || ev.k === "meta" || ev.k === "queue_add" || ev.k === "queue_take") continue;
+    if (ev.k === "assistant" && !(ev.text || "").trim()) continue;
+    if (group && (ev.k === "thinking" || ((ev.k === "notice" || ev.k === "task") && ev.ok !== false))) {
+      const n = ev.k === "thinking" ? thinkingNode(ev) : notice(ev.text || "", false, ev.detail);
+      group.querySelector(".tools-body").append(n);
+      visible++;
+      continue;
+    }
     group = null;
     let n = null;
     switch (ev.k) {
@@ -2203,11 +2226,7 @@ function buildEvents(events, last) {
         n.append(markdown(ev.text || ""));
         break;
       }
-      case "thinking": {
-        n = el("details", "ev thinking");
-        n.append(el("summary", "", "Thinking"), el("div", "body", ev.text || ""));
-        break;
-      }
+      case "thinking": n = thinkingNode(ev); break;
       case "question": n = questionNode(ev); break;
       case "notice": case "task": n = notice(ev.text || "", ev.ok === false, ev.detail); break;
       case "peer": {
@@ -2270,6 +2289,14 @@ function addEvents(m) {
     const top = chat.scrollTop;
     const before = chat.scrollHeight;
     applyView(frag);
+    // A run cut in two by the slab's edge is still one group.
+    const tail = frag.lastChild, head = list.firstElementChild;
+    if (tail && head && tail.classList.contains("tools") && head.classList.contains("tools")) {
+      head.querySelector(".tools-body").prepend(...tail.querySelector(".tools-body").childNodes);
+      for (const k of ["calls", "running", "failed"]) head._counts[k] += tail._counts[k];
+      groupHeader(head);
+      tail.remove();
+    }
     list.prepend(frag);
     // The browser may already have anchored the old content during layout.
     // Use the position captured before the prepend, rather than adding the

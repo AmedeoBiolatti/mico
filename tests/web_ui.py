@@ -297,12 +297,15 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
                                 f'--user-data-dir={profile}', f'--remote-debugging-port={debug_port}', 'about:blank'],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    for _ in range(300):  # Chrome takes a moment to open its debugging port
+    # Chrome takes a moment to open its debugging port, longer on a loaded runner.
+    deadline = time.monotonic() + 60
+    while True:
         try:
             socket.create_connection(('127.0.0.1', debug_port), timeout=0.1).close()
             break
         except OSError:
             assert browser.poll() is None, 'the browser exited at startup'
+            assert time.monotonic() < deadline, 'the browser never opened its debugging port'
             time.sleep(0.05)
 
     def dom_of(url, width, height, touch=False, ready="document.querySelectorAll('.row').length > 0"):
@@ -803,6 +806,29 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
               '1 running' in tool_work['first'] and '1 failed' in tool_work['first'] and
               'running' not in tool_work['final'] and '1 failed' in tool_work['final'],
               f'large tool groups update their totals in linear work: {tool_work}')
+        run = page.eval("""(() => {
+          st.calls.clear();
+          const {frag} = buildEvents([
+            {k: 'thinking', text: 'first'},
+            {k: 'tool_call', name: 'Read', tool: 'r1'}, {k: 'tool_result', tool: 'r1', text: 'a'},
+            {k: 'thinking', text: 'then'}, {k: 'assistant', text: '  '},
+            {k: 'tool_call', name: 'Bash', tool: 'r2'}, {k: 'tool_result', tool: 'r2', text: 'b'},
+            {k: 'task', text: 'a background task finished'},
+            {k: 'tool_result', tool: 'gone', text: 'c'},
+            {k: 'tool_call', name: 'Edit', tool: 'r3'}, {k: 'tool_result', tool: 'r3', text: 'd'},
+            {k: 'assistant', text: 'done'},
+          ], null);
+          return [...frag.children].map(n => n.className + (n.classList.contains('tools') ? ':' + n.firstChild.textContent : ''));
+        })()""")
+        check(run == ['ev thinking', 'ev tools:4 tool calls', 'ev assistant'],
+              f'thinking, a notice or a lone result between calls keeps them one group: {run}')
+        edge = page.eval("""(() => {
+          closeWork(); st.chat.start = false; st.chat.rest = false; st.calls.clear(); $('events').replaceChildren();
+          addEvents({where: 'tail', start: false, events: [{k: 'tool_call', name: 'Bash', tool: 'e2'}, {k: 'tool_result', tool: 'e2', text: 'x'}]});
+          addEvents({where: 'older', start: true, events: [{k: 'user', text: 'go'}, {k: 'tool_call', name: 'Read', tool: 'e1'}, {k: 'tool_result', tool: 'e1', text: 'y'}]});
+          return [...$('events').children].map(n => n.className + (n.classList.contains('tools') ? ':' + n.firstChild.textContent : ''));
+        })()""")
+        check(edge == ['ev user', 'ev tools:2 tool calls'], f'a run cut by the edge of a slab of history is one group: {edge}')
         anchor = page.eval("""(async () => {
           closeWork(); st.chat.start = true; st.calls.clear(); $('events').replaceChildren();
           const events = n => Array.from({length:n}, (_,i) => ({k:'assistant', text:'Message '+i+' paragraph text. '.repeat(20)}));

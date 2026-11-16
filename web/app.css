@@ -405,6 +405,8 @@ details.tools[open] > summary::before { content: "▾"; }
 details.tools .flag.run { color: var(--working); }
 details.tools .flag.bad { color: var(--bad); }
 .tools-body { border-left: 2px solid var(--line); margin: 2px 0 0 4px; padding-left: 10px; }
+.tools-body > .ev { margin: 4px 0; }
+.tools-body > .ev.notice { text-align: left; }
 details.tool { margin: 1px 0; }
 details.tool > summary {
   list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 8px; padding: 4px 6px; margin-left: -6px;
