@@ -297,12 +297,15 @@ with tempfile.TemporaryDirectory(prefix='mico-webui-', ignore_cleanup_errors=Tru
                                 f'--user-data-dir={profile}', f'--remote-debugging-port={debug_port}', 'about:blank'],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    for _ in range(300):  # Chrome takes a moment to open its debugging port
+    # Chrome takes a moment to open its debugging port, longer on a loaded runner.
+    deadline = time.monotonic() + 60
+    while True:
         try:
             socket.create_connection(('127.0.0.1', debug_port), timeout=0.1).close()
             break
         except OSError:
             assert browser.poll() is None, 'the browser exited at startup'
+            assert time.monotonic() < deadline, 'the browser never opened its debugging port'
             time.sleep(0.05)
 
     def dom_of(url, width, height, touch=False, ready="document.querySelectorAll('.row').length > 0"):
