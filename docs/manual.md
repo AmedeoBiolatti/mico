@@ -211,6 +211,26 @@ Which chats a sub-project holds depends on its folder:
   from it, and the ones you put in it with right-click on a chat → **Move to
   sub-project…**.
 
+A folder or sub-project that holds sub-projects has a `▾` before its name;
+click it, or press `Space` (or `←`; `→` opens one again) to fold it to `▸`
+and hide what is inside. A folded row says how many it hides (`+3`), and its
+chats still show their state:
+
+- The mark before its name is the most urgent of every chat inside it.
+- At the right it counts them by state: `!2` need you, `●1` have a reply you
+  haven't read, `⠋3` are working. Ready chats are not counted.
+
+So `▸! shop  !1 ⠋2 +3` says one chat in there needs you, without opening
+it. On an open row the counts cover only the chats no row below shows, so
+each chat is counted once on the screen. Folding the sub-project the chat
+list is filtered to moves the selection onto the folded row. `←` on a row
+that is already folded, or holds nothing, goes up to the one it is in. In the
+compact layout `←` goes back, so use `Space` there. Folds are kept with the
+view.
+
+When the list is longer than the pane, a scrollbar in its last column shows
+where you are; click or drag it to scroll.
+
 A move overrides the folder either way, including "No sub-project". Right-click
 a sub-project to rename or remove it. A rename takes those nested in it along;
 removing one removes those nested in it too, and sends their chats to what it
@@ -873,7 +893,8 @@ command.
 ```
 
 How the view was left comes back after a restart: the density, the tab, the
-folder, sub-project and chat selected, the sidebar's "All" filters, the Diff
+folder, sub-project and chat selected, the folds in the Projects list, the
+sidebar's "All" filters, the Diff
 tab's span and grouping, the Git tab's view, and the last hundred command
 lines. They are kept in
 `~/.config/mico/view`, beside the split sizes in `~/.config/mico/layout`.

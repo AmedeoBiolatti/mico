@@ -17,6 +17,7 @@
 #include "base/jsonl.h"
 #include "base/line_reader.h"
 #include "base/records.h"
+#include "base/fs.h"
 #include "base/path.h"
 #include "core/session.h"
 #include "core/store.h"
@@ -1414,6 +1415,153 @@ int run_regression_tests() {
         check(st.remove_subproject(project, "web/api"), "nested: removed with what is in it");
         check(find("sub-api")->sub == "web", "nested: up to the parent again");
         app.select_sub("web");
+
+        // The Projects list folds a folder or a sub-project away, keeps what
+        // runs inside it marked on the folded row, says how many it hides,
+        // and scrolls with a scrollbar when it is longer than the pane.
+        {
+          check(st.add_subproject(project, "web/api", project + "/web/api"), "fold: a nested sub-project again");
+          LiveSession* inside = app.workspace().start_command({"/bin/sh", "-c", "sleep 30"}, project + "/web/api");
+          auto list = make_project_list();
+          list->set_app(&app);
+          Surface lsf;
+          lsf.resize(40, 40);
+          const auto draw = [&] {
+            Painter lp(lsf, Rect{0, 0, 40, 40});
+            list->render(lp, true);
+            return screen(lsf);
+          };
+          const auto row_of = [&](const std::string& sc, std::string_view what) {
+            std::string out;
+            size_t at = 0;
+            while (at < sc.size()) {
+              const size_t nl = sc.find('\n', at);
+              const std::string line = sc.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
+              if (line.find(what) != std::string::npos && out.empty()) out = line;
+              if (nl == std::string::npos) break;
+              at = nl + 1;
+            }
+            return out;
+          };
+          std::string sc = draw();
+          check(row_of(sc, " api").find("\xE2\x96\xB8") == std::string::npos && row_of(sc, " web").find("\xE2\x96\xBE") != std::string::npos,
+                "fold: a sub-project with others in it is open, ▾");
+          const std::string name = std::filesystem::path(project).filename().string();
+          const auto key = [&](Key k, char32_t ch = 0) {
+            KeyEvent e;
+            e.key = k;
+            e.ch = ch;
+            list->on_key(e);
+            return draw();
+          };
+          // The chats are filtered to "web": ← folds it, ← again goes up to
+          // the folder, and ← there folds the folder.
+          check(app.current_sub() && app.current_sub()->name == "web", "fold: the list is on the sub-project");
+          sc = key(Key::Left);
+          check(row_of(sc, " web").find("\xE2\x96\xB8") != std::string::npos && row_of(sc, " web").find("+1") != std::string::npos &&
+                    row_of(sc, " api").empty(),
+                "fold: ← folds it; its nested one is not listed and is counted");
+          check(row_of(sc, " web").find("\xE2\x97\x8B") != std::string::npos,
+                "fold: what runs in a folded-away sub-project still marks the row it is folded into");
+          sc = key(Key::Left);
+          check(app.current_sub() == nullptr, "fold: ← on a folded one goes up to what it is in");
+          sc = key(Key::Left);
+          check(row_of(sc, name).find("\xE2\x96\xB8") != std::string::npos && row_of(sc, " web").empty() &&
+                    row_of(sc, name).find("\xE2\x97\x8B") != std::string::npos,
+                "fold: a folded folder hides its sub-projects and keeps their mark");
+          {
+            // A chat at work inside it: the folded row counts it, by state.
+            std::filesystem::create_directories(base + "/foldbin");
+            put(base + "/foldbin/claude",
+                "#!/bin/sh\nprintf '\\342\\224\\200\\342\\224\\200\\342\\224\\200\\r\\n\\342\\235\\257 \\r\\n"
+                "\\342\\224\\200\\342\\224\\200\\342\\224\\200\\r\\n  esc to interrupt\\r\\n'\nexec sleep 30\n");
+            chmod((base + "/foldbin/claude").c_str(), 0755);
+            const char* old_path = getenv("PATH");
+            EnvScope fold_path("PATH", base + "/foldbin:" + (old_path ? old_path : "/bin"));
+            app.spawn_continuation("claude", "sub-api", project + "/web/api/v1", false);
+            LiveSession* busy = nullptr;
+            for (LiveSession* l : app.live_sessions()) if (l->session_id() == "sub-api") busy = l;
+            for (int i = 0; i < 200 && busy && !busy->busy(); i++) { app.workspace().service(false); usleep(10000); }
+            sc = draw();
+            const std::string folded_row = row_of(sc, name);
+            check(busy && busy->busy() && folded_row.find("1 +3") != std::string::npos,
+                  "fold: a folded row counts the chats inside it by state, before what it hides");
+            // Opened, the count moves to the row that shows the chat.
+            app.set_folded(App::fold_key(project), false);
+            app.set_folded(App::fold_key(project, "web"), false);
+            sc = draw();
+            // (The chat was moved into "web" earlier, so "web" is its row.)
+            check(row_of(sc, name).find("1") == std::string::npos && row_of(sc, " web").find("1") != std::string::npos,
+                  "fold: open, each chat is counted on its own row");
+            app.set_folded(App::fold_key(project, "web"), true);
+            app.set_folded(App::fold_key(project), true);
+            app.close_session(busy);
+            app.workspace().reap([](LiveSession*) {});
+          }
+          // Kept with the view; the view file is put back as it was after.
+          const std::string view_path = config_dir() + "/view";
+          std::string vbuf;
+          const bool had_view = fs::exists(view_path);
+          const std::string old_view(fs::read_prefix(view_path, 1 << 20, vbuf));
+          app.save_view_if_changed();
+          const std::string saved(fs::read_prefix(view_path, 1 << 20, vbuf));
+          check(saved.find("fold " + project + "\n") != std::string::npos &&
+                    saved.find("fold " + project + "\\nweb\n") != std::string::npos,
+                "fold: kept with the view");
+          if (had_view) write_file_atomic(view_path, old_view);
+          else unlink(view_path.c_str());
+          // Space opens it again; → opens the sub-project.
+          sc = key(Key::Char, U' ');
+          check(row_of(sc, name).find("\xE2\x96\xBE") != std::string::npos && !row_of(sc, " web").empty(),
+                "fold: Space opens a folded folder");
+          sc = key(Key::Down);
+          sc = key(Key::Right);
+          check(!row_of(sc, " api").empty(), "fold: → opens a folded sub-project");
+          // A click on its ▾ folds the one the chats are filtered to from
+          // inside, and moves the selection onto it.
+          app.select_sub("web/api");
+          sc = draw();
+          int web_y = -1;
+          for (int y = 0; y < 40 && web_y < 0; y++) {
+            std::string row;
+            for (int x = 0; x < 40; x++) text::encode(lsf.at(x, y).cp, row);
+            if (row.find("\xE2\x96\xBE") != std::string::npos && row.find(" web") != std::string::npos) web_y = y;
+          }
+          MouseEvent click;
+          click.kind = MouseKind::Press;
+          click.button = MouseButton::Left;
+          click.pos = Point{4, web_y};
+          list->on_mouse(click, Point{4, web_y});
+          sc = draw();
+          check(web_y >= 0 && row_of(sc, " api").empty() && app.current_sub() && app.current_sub()->name == "web",
+                "fold: a click on ▾ folds it, and the filter follows onto it");
+          app.set_folded(App::fold_key(project, "web"), false);
+          // A pane too short for every row: a scrollbar in the last column.
+          lsf.resize(40, 8);
+          Painter small(lsf, Rect{0, 0, 40, 8});
+          list->render(small, true);
+          sc = screen(lsf);
+          check(sc.find("\xE2\x96\x90") != std::string::npos, "fold: a list longer than its pane has a scrollbar");
+          // Pressed at its foot it shows the end of the list; dragged back up,
+          // past the pane even, the start again.
+          const std::string at_start = sc;
+          MouseEvent bar;
+          bar.kind = MouseKind::Press;
+          bar.button = MouseButton::Left;
+          list->on_mouse(bar, Point{39, 5});  // the last line of its track: the "All folders" row and the button take the rest
+          list->render(small, true);
+          const std::string at_end = screen(lsf);
+          bar.kind = MouseKind::Drag;
+          list->on_mouse(bar, Point{12, -5});
+          bar.kind = MouseKind::Release;
+          list->on_mouse(bar, Point{12, -5});
+          list->render(small, true);
+          check(at_end != at_start && screen(lsf) == at_start, "fold: the scrollbar is pressed and dragged to scroll");
+          app.close_session(inside);
+          app.workspace().reap([](LiveSession*) {});
+          check(st.remove_subproject(project, "web/api"), "fold: the nested one removed again");
+          app.select_sub("web");
+        }
 
         // Kept across a restart, and gone with the folder's own removal.
         Store again;
