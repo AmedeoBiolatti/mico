@@ -9,7 +9,6 @@ namespace mico {
 // found by name.
 class ClaudeAdapter final : public Adapter {
  public:
-  bool native_side_questions() const override { return true; }
   std::string_view id() const override { return "claude"; }
   std::string_view name() const override { return "Claude Code"; }
   std::string_view label() const override { return "Claude"; }
@@ -57,6 +56,11 @@ class ClaudeAdapter final : public Adapter {
   // screen.cpp
   bool permission_prompt(const Vt& vt, PermissionPrompt& out) const override;
   bool side_panel(const Vt& vt, BtwPanel& out) const override;
+
+  // side.cpp
+  std::vector<std::string> side_question_argv(std::string_view id) const override;
+  bool read_side_answer(std::string_view line, std::string& answer, std::string& error) const override;
+  std::string tool_description(std::string_view line, uint64_t tool_id) const override;
   bool compacting(const Vt& vt) const override;
   std::string screen_reply(const Vt& vt) const override;
   MenuKeys menu_keys() const override;

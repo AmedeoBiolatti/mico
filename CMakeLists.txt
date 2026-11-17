@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(mico VERSION 0.1.24 LANGUAGES CXX)
+project(mico VERSION 0.1.25 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,6 +82,7 @@ add_library(mico_adapters STATIC
   src/adapters/claude/transcript.cpp
   src/adapters/claude/session.cpp
   src/adapters/claude/screen.cpp
+  src/adapters/claude/side.cpp
   src/adapters/claude/list.cpp
   src/adapters/claude/changes.cpp
   src/adapters/claude/tools.cpp
@@ -91,6 +92,7 @@ add_library(mico_adapters STATIC
   src/adapters/codex/transcript.cpp
   src/adapters/codex/session.cpp
   src/adapters/codex/screen.cpp
+  src/adapters/codex/side.cpp
   src/adapters/codex/list.cpp
   src/adapters/codex/changes.cpp
   src/adapters/codex/tools.cpp
@@ -134,6 +136,7 @@ add_library(mico_core STATIC
   src/core/scope.cpp
   src/core/conversation.cpp
   src/core/work.cpp
+  src/core/side.cpp
   src/core/web_access.cpp
 )
 target_link_libraries(mico_core PUBLIC mico_adapters mico_vt PRIVATE util)
@@ -278,8 +281,8 @@ if(Python3_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_answers.py $<TARGET_FILE:mico>)
   add_test(NAME web-ui
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/web_ui.py $<TARGET_FILE:mico>)
-  add_test(NAME work-fork
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/work_fork.py $<TARGET_FILE:mico>)
+  add_test(NAME work-btw
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/work_btw.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-reset
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_reset.py $<TARGET_FILE:mico>)
   add_test(NAME daemon-update
@@ -308,6 +311,6 @@ if(Python3_FOUND)
     string(REPLACE "_" "-" name ${check})
     add_test(NAME ${name} COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/${check}.py)
   endforeach()
-  set_tests_properties(transcript-recovery daemon-input daemon-reset daemon-update web-answers web-ui work-fork daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
+  set_tests_properties(transcript-recovery daemon-input daemon-reset daemon-update web-answers web-ui work-btw daemon-restore daemon-postmortem agent-scopes compact-mode chat-images web-phone chat-copy git-commits git-repos web-view claude-questions claude-permission claude-paste claude-background
     PROPERTIES ENVIRONMENT "${MICO_TEST_ENV}")
 endif()

@@ -58,6 +58,8 @@
 #include "core/settings.h"
 #include "core/away.h"
 #include "core/git.h"
+#include "core/side.h"
+#include "core/work.h"
 #include "core/procmem.h"
 #include <sys/wait.h>
 #include "net/proto.h"
@@ -891,6 +893,27 @@ int run_selftest() {
       check(!ev[0].ok, "is_error propagates");
       check_str(a.view(ev[0].text), "boom", "result text");
     }
+
+    // Claude: a subagent's report, handed back through a tool, is its answer;
+    // the receipt that ends its turn is not output.
+    ev.clear();
+    claude_adapter().parse(
+        R"({"type":"assistant","message":{"role":"assistant","content":[)"
+        R"({"type":"tool_use","id":"tu_h","name":"SubagentHandback","input":{"message":"## Found\n- it"}}]}})",
+        a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Assistant && a.view(ev[0].text) == "## Found\n- it",
+          "a subagent's handback reads as its answer");
+    ev.clear();
+    claude_adapter().parse(
+        R"({"type":"user","message":{"role":"user","content":[{"tool_use_id":"tu_h","type":"tool_result",)"
+        R"("content":[{"type":"text","text":"{\"success\":true}"}]}]},"toolEndsTurn":true})",
+        a, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::TurnEnd, "its delivery receipt ends the turn, unseen");
+    check(claude_adapter().tool_description(
+              R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_b","name":"Bash",)"
+              R"("input":{"command":"make -j8","description":"Build the \"tests\""}}]}})",
+              hash_id("tu_b")) == "Build the \"tests\"",
+          "a command's description, in the agent's words");
 
     // Claude: a plain user turn, with escapes.
     ev.clear();
@@ -3872,6 +3895,135 @@ int run_selftest() {
     plain.resize(60, 10);
     plain.write("\xE2\x97\x8F done\r\n" + rule + "\r\n\xE2\x9D\xAF \r\n" + rule + "\r\n  esc to interrupt\r\n");
     check(!parse_btw_panel(plain, b), "btw: the input box is not the panel");
+  }
+
+  // Side questions: each agent's headless answer, read as it streams.
+  {
+    std::string answer, error;
+    const Adapter& c = claude_adapter();
+    check(!c.read_side_answer(R"({"type":"stream_event","event":{"type":"message_start"}})", answer, error) &&
+              !c.read_side_answer(R"({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Blue, "}}})", answer, error) &&
+              !c.read_side_answer(R"({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"\"sky\""}}})", answer, error) &&
+              answer == "Blue, \"sky\"",
+          "btw: claude's answer grows with its deltas");
+    check(c.read_side_answer(R"({"type":"result","subtype":"success","is_error":false,"result":"Blue sky."})", answer, error) &&
+              answer == "Blue sky." && error.empty(),
+          "btw: claude's result is the final answer");
+    answer.clear();
+    check(c.read_side_answer(R"({"type":"result","subtype":"error_during_execution","is_error":true})", answer, error) &&
+              !error.empty(),
+          "btw: claude's failure is reported");
+    const Adapter& x = codex_adapter();
+    answer.clear();
+    error.clear();
+    check(!x.read_side_answer(R"({"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"hmm"}})", answer, error) &&
+              !x.read_side_answer(R"({"type":"error","message":"Reconnecting... 1/5"})", answer, error) &&
+              !x.read_side_answer(R"({"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"PAPAYA"}})", answer, error) &&
+              x.read_side_answer(R"({"type":"turn.completed","usage":{}})", answer, error) &&
+              answer == "PAPAYA" && error.empty(),
+          "btw: codex's answer is its last message; a retried error does not fail it");
+    answer.clear();
+    check(x.read_side_answer(R"({"type":"turn.failed","error":{"message":"quota"}})", answer, error) && error == "quota",
+          "btw: codex's failure is reported");
+    check(!c.side_question_argv("s1").empty() && !x.side_question_argv("s1").empty() &&
+              pi_adapter().side_question_argv("s1").empty(),
+          "btw: claude and codex answer headless; pi keeps its fork");
+
+    std::vector<SideTurn> earlier(2);
+    earlier[0].question = "first?";
+    earlier[0].answer = "FIRST_ANSWER";
+    earlier[0].state = SideTurn::State::Done;
+    earlier[1].question = "broken?";
+    earlier[1].error = "x";
+    earlier[1].state = SideTurn::State::Failed;
+    const std::string p = SideThreads::prompt(earlier, "and then?");
+    check(p.find("first?") != std::string::npos && p.find("FIRST_ANSWER") != std::string::npos &&
+              p.find("broken?") == std::string::npos && p.ends_with("Side question: and then?\n") &&
+              p.find("do not edit") != std::string::npos,
+          "btw: a question carries the thread's answered questions, and not to edit");
+    const std::string shown = WorkSet::thread_text(earlier);
+    check(shown.find("**› first?**") != std::string::npos && shown.find("Could not answer: x") != std::string::npos,
+          "btw: the thread reads as questions and answers");
+
+    // A whole thread against a stand-in claude: it is asked in the chat's
+    // folder with the question on stdin, answers, is kept, and a follow-up
+    // carries the first answer.
+    char tmpl[] = "/tmp/mico_btw_XXXXXX";
+    if (mkdtemp(tmpl)) {
+      const std::string dir = tmpl;
+      const char* old_state = getenv("XDG_STATE_HOME");
+      const char* old_path = getenv("PATH");
+      const std::string keep_state = old_state ? old_state : "", keep_path = old_path ? old_path : "";
+      setenv("XDG_STATE_HOME", (dir + "/state").c_str(), 1);
+      setenv("PATH", (dir + ":" + keep_path).c_str(), 1);
+      if (FILE* f = fopen((dir + "/claude").c_str(), "w")) {
+        fputs("#!/bin/sh\ncat > \"$PWD/asked\"\npwd > \"$PWD/where\"\necho \"$@\" > \"$PWD/args\"\n"
+              "echo 'a note on stderr' >&2\n"
+              "echo '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"PART\"}}}'\n"
+              "echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ANSWER_ONE\"}'\n", f);
+        fclose(f);
+        chmod((dir + "/claude").c_str(), 0755);
+      }
+      std::string buf;
+      const auto read = [&](const std::string& name) { return std::string(fs::read_prefix(dir + "/" + name, 1 << 16, buf)); };
+      const auto wait = [&](SideThreads& t, size_t n) {
+        for (int i = 0; i < 1000; i++) {
+          t.pump();
+          const auto& turns = t.thread("claude", "sess-1");
+          if (turns.size() >= n && turns[n - 1].over()) return;
+          usleep(2000);
+        }
+      };
+      {
+        SideThreads threads;
+        check(threads.ask(c, "", dir, "q").find("first chat message") != std::string::npos,
+              "btw: a chat with no id yet cannot be asked about");
+        check(threads.ask(c, "sess-1", dir, "what is it?").empty(), "btw: a question is taken");
+        wait(threads, 1);
+        const auto& turns = threads.thread("claude", "sess-1");
+        check(turns.size() == 1 && turns[0].state == SideTurn::State::Done && turns[0].answer == "ANSWER_ONE",
+              "btw: the stand-in's answer is the turn's");
+        check(read("asked").ends_with("Side question: what is it?\n") && read("where") == dir + "\n" &&
+                  read("args").find("--resume sess-1 --fork-session --no-session-persistence") != std::string::npos,
+              "btw: asked on stdin, in the chat's folder, of a fork that is never saved");
+        threads.ask(c, "sess-1", dir, "and why?");
+        wait(threads, 2);
+        check(read("asked").find("ANSWER_ONE") != std::string::npos && read("asked").ends_with("Side question: and why?\n"),
+              "btw: a follow-up carries the thread so far");
+      }
+      {
+        SideThreads again;
+        const auto& turns = again.thread("claude", "sess-1");
+        check(turns.size() == 2 && turns[0].question == "what is it?" && turns[1].answer == "ANSWER_ONE",
+              "btw: the thread is kept for the next view");
+        again.clear("claude", "sess-1");
+        check(again.thread("claude", "sess-1").empty() && !fs::exists(SideThreads::file_for("claude", "sess-1")),
+              "btw: a new thread forgets the old");
+      }
+      {
+        // One that stops without an answer says why.
+        if (FILE* f = fopen((dir + "/claude").c_str(), "w")) {
+          fputs("#!/bin/sh\ncat >/dev/null\necho 'No conversation found with session ID: sess-1' >&2\nexit 1\n", f);
+          fclose(f);
+        }
+        SideThreads threads;
+        threads.ask(c, "sess-1", dir, "still there?");
+        wait(threads, 1);
+        const auto& turns = threads.thread("claude", "sess-1");
+        check(turns.size() == 1 && turns[0].state == SideTurn::State::Failed &&
+                  turns[0].error.find("No conversation found") != std::string::npos,
+              "btw: a failed answer says why");
+        threads.clear("claude", "sess-1");
+      }
+      for (const char* f : {"/claude", "/asked", "/where", "/args"}) unlink((dir + f).c_str());
+      rmdir((dir + "/state/mico/btw").c_str());
+      rmdir((dir + "/state/mico").c_str());
+      rmdir((dir + "/state").c_str());
+      rmdir(dir.c_str());
+      if (old_state) setenv("XDG_STATE_HOME", keep_state.c_str(), 1);
+      else unsetenv("XDG_STATE_HOME");
+      setenv("PATH", keep_path.c_str(), 1);
+    }
   }
 
   // The reply an agent is writing, read off its screen: both agents show it

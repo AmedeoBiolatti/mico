@@ -59,6 +59,10 @@ class CodexAdapter final : public Adapter {
   bool startup_prompt(const Vt& vt) const override;
   std::string startup_answer(const Vt& vt, bool* confirms) const override;
   bool permission_prompt(const Vt& vt, PermissionPrompt& out) const override;
+
+  // side.cpp
+  std::vector<std::string> side_question_argv(std::string_view id) const override;
+  bool read_side_answer(std::string_view line, std::string& answer, std::string& error) const override;
   std::string screen_reply(const Vt& vt) const override;
   // The envelope naming each question by its call (async_reply_envelope).
   std::string async_reply(const std::vector<AsyncReply>& replies) const override;

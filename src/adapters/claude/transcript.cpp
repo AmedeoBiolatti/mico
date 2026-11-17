@@ -263,6 +263,7 @@ void ClaudeAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>
   bool is_user = false, is_assistant = false, is_meta = false;
   bool is_system = false, compact_summary = false;
   bool is_queue = false, is_attachment = false;
+  bool ends_turn = false;  // the receipt of a subagent's handback
   std::string_view queue_op;
   js::Value queue_text{}, attachment{};
 
@@ -300,6 +301,7 @@ void ClaudeAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>
     }
     if (k == "message") { message = v; return true; }
     if (k == "isMeta") { is_meta = v.is_true(); return true; }
+    if (k == "toolEndsTurn") { ends_turn = v.is_true(); return true; }
     // The summary a compaction hands the model: pages of recap written for
     // it, not for the reader. The boundary's notice already marks the spot.
     if (k == "isCompactSummary") { compact_summary = v.is_true(); return !compact_summary; }
@@ -367,6 +369,14 @@ void ClaudeAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>
         });
         if (!is_result) return true;
         Event e;
+        // A subagent hands its report back through a tool whose result only
+        // says it was delivered, and ends the turn: the report is the answer.
+        if (ends_turn) {
+          e.kind = EventKind::TurnEnd;
+          out.push_back(e);
+          had_result = true;
+          return true;
+        }
         e.kind = EventKind::ToolResult;
         e.tool_id = id;
         e.ok = !err;
@@ -411,6 +421,16 @@ void ClaudeAdapter::parse(std::string_view raw, Arena& arena, std::vector<Event>
     } else if (bt == "thinking" && thinking.is_string() && !thinking.body().empty()) {
       e.kind = EventKind::Thinking;
       e.text = arena.add_json(thinking);
+    } else if (bt == "tool_use" && name.body() == "SubagentHandback" && input.is_object()) {
+      // A subagent's report to its caller: its answer, in markdown.
+      js::Value report{};
+      js::scan_object(input.raw, [&](std::string_view k, const js::Value& v) {
+        if (k == "message") report = v;
+        return true;
+      });
+      if (!report.is_string() || report.body().empty()) return true;
+      e.kind = EventKind::Assistant;
+      e.text = arena.add_json(report);
     } else if (bt == "tool_use") {
       e.kind = EventKind::ToolCall;
       e.name = name.is_string() ? arena.add_json(name) : arena.add("?");

@@ -288,17 +288,9 @@ void Client::btw(std::string_view rid, uint64_t key, const std::string& text, co
     const std::string error = ws_.ask_side_question(*s, text);
     return result(rid, error.empty(), error, key);
   }
-  if (!s->adapter() || !s->adapter()->native_side_questions()) return result(rid, false, "no native side question is open");
-  if (s->needs_input() || s->answer_sending()) return result(rid, false, "answer the agent's question first");
-  BtwPanel panel;
-  const bool shown = s->driver().side_panel(s->vt(), panel);
-  {
-    if (!shown) return result(rid, false, "no side question is open");
-    if (action == "previous") s->pty().write("\x1b[1;2D");
-    else if (action == "next") s->pty().write("\x1b[1;2C");
-    else if (action == "close") s->pty().write("\x1b");
-    else return result(rid, false, "unknown side question action");
-  }
+  if (action != "clear") return result(rid, false, "unknown side question action");
+  if (!Workspace::side_thread(*s) || s->session_id().empty()) return result(rid, false, "this chat has no side thread");
+  ws_.side_threads().clear(s->agent(), s->session_id());
   result(rid, true, {}, key);
 }
 

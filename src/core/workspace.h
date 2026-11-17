@@ -14,6 +14,7 @@
 #include "core/models.h"
 #include "core/search.h"
 #include "core/session.h"
+#include "core/side.h"
 #include "core/store.h"
 #include "core/usage.h"
 
@@ -117,9 +118,14 @@ class Workspace {
   // running already reports it, rather than starting a second.
   Started continue_session(const std::string& agent, const std::string& session_id,
                            const std::string& cwd, bool fork, const std::string& prefer = {});
-  // Native /btw where it can be read, otherwise a context-preserving fork.
-  // The fork is reused for follow-up questions and never resumes the parent.
+  // Asks in the chat's side thread (see SideThreads) where its agent can
+  // answer from a throwaway copy of it; otherwise in a context-preserving
+  // fork, reused for follow-up questions, that never resumes the parent.
   std::string ask_side_question(LiveSession& parent, const std::string& text);
+  // True when `parent`'s side questions go to a side thread, not a fork.
+  static bool side_thread(const LiveSession& parent);
+  SideThreads& side_threads() { return side_threads_; }
+  const SideThreads& side_threads() const { return side_threads_; }
   struct SideQuestion {
     uint64_t parent = 0, child = 0;
     std::string question;
@@ -192,6 +198,7 @@ class Workspace {
 
  private:
   std::vector<SideQuestion> side_questions_;
+  SideThreads side_threads_;
   Store store_;
   UsageIndex usage_;
   ChatSearch search_;

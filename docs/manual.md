@@ -1789,27 +1789,46 @@ cards keep the conversation in chat; F2 opens the terminal for other dialogs.
 Open **Work** in the web chat header, press `F11` in a terminal chat, or
 click its background-work chip. **Agents** shows subagent conversations,
 **Terminals** shows commands, progress and output, and **Btw** holds side
-questions. The main chat keeps its draft and position. On narrow screens
-the panel fills the chat area; closing it returns to the same conversation.
-Only the selected item's output is followed. Terminal output is a bounded
-tail of the recorded output; it is not an interactive shell.
+questions. Each tab says how many items it has. The main chat keeps its draft
+and position. On narrow screens the panel fills the chat area; beside the chat
+it takes two fifths of the width. Only the selected item's output is followed.
+
+Each item is one row: ● running, ✓ done, ✗ failed or ! needs you, then what it
+is, then its progress or kind on the right (or under it, when both do not fit).
+A command is named by the description its agent gave it when there is one,
+otherwise by the command without a leading `cd <dir> &&`. Its detail starts
+with the whole command line and whether it is running, finished or failed,
+then a bounded tail of its recorded output; it is not an interactive shell.
+A subagent's detail is its conversation, its steps folded into one line
+above its report. Claude's subagents hand their report back through a tool; mico shows
+that report as the subagent's answer.
 
 In the terminal panel, `Tab` changes tabs, `↑`/`↓` select work, `PgUp`/`PgDn`
-scroll its detail, and `Esc` or `F11` closes the panel. Clicking the main
-chat returns typing to its draft. On **Btw**, type a question and press
-`Enter`; in the web panel use its separate **Ask** box.
+scroll its detail, `s` shows a command's call in the chat, and `Esc` or `F11`
+closes the panel. Clicking the main chat returns typing to its draft.
 
-Claude uses its native `/btw` command. Its answer is read off its screen,
-and the panel keeps answers seen during the current view without adding
-them to the main transcript. `Ctrl+←`/`Ctrl+→` in the terminal panel, or the
-web panel's previous/next buttons, browse Claude's earlier answers.
-Sending an ordinary message closes Claude's native side dialog first.
+**Btw** is one side thread per chat. Type a question and press `Enter` (in the
+web panel, use its **Ask** box); `/btw <question>` typed in a terminal chat's
+own prompt goes to the same thread. The agent answers from a throwaway copy
+of the conversation as it is now, while the chat carries on:
 
-Codex and pi use a separate fork carrying the current conversation's
-context. The fork answers the side question while the parent continues;
-follow-ups reuse that side conversation. These replies have their own
-transcript and can be opened as a full conversation. Agents that cannot
-fork and whose native side answers cannot be read do not offer this box.
+- Claude runs `claude -p --resume <id> --fork-session --no-session-persistence`
+  with only its Read, Grep and Glob tools; Codex runs
+  `codex exec fork <id> --ephemeral` in a read-only sandbox. Both use low
+  effort and no MCP servers, so the answer comes in seconds.
+- Nothing reaches the chat or its transcript, no new chat appears, and no
+  file is edited.
+- Each question carries the thread's earlier questions and answers, so
+  follow-ups read as one conversation. Questions asked while one is being
+  answered wait their turn.
+- The thread is kept in `$XDG_STATE_HOME/mico/btw/`, so it is still there
+  after closing the panel, switching chats or restarting mico. `Ctrl+N` in
+  the panel (**New thread** in the web panel) starts a new one; so does the
+  chat's own `/clear`, which gives it a new session.
+
+Agents without such a mode (pi) answer in a separate fork of the chat, which
+is reused for follow-ups and can be opened as a full conversation. Agents that
+can do neither do not offer the box.
 
 ### Optional questions (Codex)
 

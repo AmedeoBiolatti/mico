@@ -284,7 +284,8 @@ class Adapter {
   // A panel whose content never reaches the transcript (claude's /btw), so the
   // screen is the only place to read it. False when none is open.
   virtual bool side_panel(const Vt& vt, BtwPanel& out) const { return false; }
-  virtual bool native_side_questions() const { return false; }
+  // Can a running chat be forked into a second live session? The fallback for
+  // side questions when side_question_argv() is empty.
   virtual bool can_fork() const { return true; }
   // True while the agent compacts its context: a wait of its own, which can
   // run for minutes.
@@ -295,6 +296,21 @@ class Adapter {
   // The reply the agent is writing, read off its screen as markdown, before
   // its transcript has it. Empty when there is none or it cannot be read.
   virtual std::string screen_reply(const Vt& vt) const { return {}; }
+
+  // --- Side questions --------------------------------------------------------
+
+  // A command that answers a question, written to its stdin, from a throwaway
+  // copy of session `id` as it is now: it saves nothing, leaves the session
+  // as it was and edits no file. Empty when the agent has no such mode.
+  virtual std::vector<std::string> side_question_argv(std::string_view id) const { return {}; }
+  // One line of what that command prints: updates `answer` to the reply so
+  // far, and sets `error` when it failed. True once the answer is over.
+  virtual bool read_side_answer(std::string_view line, std::string& answer, std::string& error) const {
+    return false;
+  }
+  // What tool call `tool_id`, in transcript line `line`, says it is for, in
+  // the agent's own words ("Rebuild the tests"); empty when it says nothing.
+  virtual std::string tool_description(std::string_view line, uint64_t tool_id) const { return {}; }
 
   // --- Commands, models and settings -----------------------------------------
 
