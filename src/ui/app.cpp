@@ -101,6 +101,7 @@ std::string App::view_state() const {
   s += "chat " + view_escape(chat) + "\n";
   s += "all-folders " + std::string(all_folders_ ? "on" : "off") + "\n";
   s += "chat-filter " + std::string(chat_filter_ ? "on" : "off") + "\n";
+  for (const auto& f : folded_) s += "fold " + view_escape(f) + "\n";
   s += "diff-span " + std::to_string(diff_.span) + "\n";
   s += "diff-by " + std::string(diff_.group == 2 ? "commit" : diff_.group == 1 ? "chat" : "file") + "\n";
   s += "diff-selected " + view_escape(diff_.sel_key) + "\n";
@@ -142,6 +143,8 @@ void App::load_view() {
       all_folders_ = value == "on";
     } else if (key == "chat-filter") {
       chat_filter_ = value == "on";
+    } else if (key == "fold" && !value.empty()) {
+      folded_.insert(value);
     } else if (key == "diff-span") {
       diff_.span = std::atoi(value.c_str());
     } else if (key == "diff-by") {

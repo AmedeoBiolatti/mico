@@ -74,6 +74,7 @@ struct TallList {
   int footer_y() const { return std::max(0, height - footer_h()); }
   int list_h() const { return footer_y(); }
   int visible() const { return std::max(1, list_h() / kItemH); }
+  bool scrolls() const { return count > visible(); }
 
   // Size to the pane and bring the selection into view — only when it or the
   // pane moved, so a wheel scroll is not snapped back on the next frame.
@@ -137,6 +138,16 @@ void draw_list_button(Painter& p, const Theme& th, const TallList& tl, std::stri
 // kFilterHeaderH lines; the list goes under it.
 inline constexpr int kFilterHeaderH = 2;
 void draw_filter_header(Painter& p, const Theme& th, std::string_view label, bool on, bool focused);
+
+// A scrollbar in the pane's last column beside a TallList's items, when they
+// do not all fit: the thumb shows where the view is and how much of the list
+// it shows. True when one is drawn (the items then leave that column free).
+bool draw_list_scrollbar(Painter& p, const Theme& th, const TallList& tl);
+// A press on that column scrolls the list to the point under it and holds
+// the bar (`held`): dragging then scrolls with the pointer, wherever it goes,
+// until the button is let go. True when the event was the scrollbar's; the
+// pane should capture the mouse while `held`.
+bool list_scrollbar_mouse(TallList& tl, const MouseEvent& m, Point local, int width, bool& held);
 
 // "3m", "5h", "2d" — compact enough for a narrow sidebar.
 std::string rel_time(int64_t mtime);

@@ -352,6 +352,16 @@ class App {
     filter_version_++;
     mark_dirty();
   }
+  // A folder or sub-project folded away in the Projects list, by
+  // fold_key(): its sub-projects are not listed until it is unfolded.
+  static std::string fold_key(const std::string& project, const std::string& sub = {}) {
+    return sub.empty() ? project : project + "\n" + sub;
+  }
+  bool folded(const std::string& key) const { return folded_.count(key) != 0; }
+  void set_folded(const std::string& key, bool on) {
+    if (on ? !folded_.insert(key).second : folded_.erase(key) == 0) return;
+    mark_dirty();
+  }
   bool chat_filter() const { return chat_filter_ && !all_folders_; }
   void set_chat_filter(bool on) {
     if (on == chat_filter_) return;
@@ -571,6 +581,7 @@ class App {
   std::string sub_;           // selected sub-project's name; "" whole folder
   bool all_folders_ = false;
   bool chat_filter_ = false;
+  std::set<std::string> folded_;  // see folded()
   uint64_t filter_version_ = 1;
   std::string selected_path_;       // transcript path of the selected stored chat
   LiveSession* selected_live_ = nullptr;

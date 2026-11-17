@@ -30,6 +30,38 @@ void draw_list_button(Painter& p, const Theme& th, const TallList& tl, std::stri
   p.text_clipped(std::max(0, (p.width() - w) / 2), y + h / 2, label, st, p.width());
 }
 
+bool draw_list_scrollbar(Painter& p, const Theme& th, const TallList& tl) {
+  if (!tl.scrolls() || p.width() < 8) return false;
+  const int track = tl.list_h();
+  const int span = tl.count - tl.visible();
+  const int thumb = std::clamp(track * tl.visible() / std::max(1, tl.count), 1, track);
+  const int at = (track - thumb) * std::clamp(tl.list.top, 0, span) / std::max(1, span);
+  for (int y = 0; y < track; y++) {
+    const bool on = y >= at && y < at + thumb;
+    p.put(p.width() - 1, y, on ? U'\u2590' : U'\u2502', Style{on ? th.dim : th.border, th.panel, attr::kDecor});  // ▐ │
+  }
+  return true;
+}
+
+bool list_scrollbar_mouse(TallList& tl, const MouseEvent& m, Point local, int width, bool& held) {
+  if (held && m.kind == MouseKind::Release) {
+    held = false;
+    return true;
+  }
+  const bool press = m.kind == MouseKind::Press && m.button == MouseButton::Left;
+  if (!tl.scrolls() || width < 8) return held = false;
+  if (press) {
+    if (local.x != width - 1 || local.y < 0 || local.y >= tl.list_h()) return false;
+    held = true;
+  } else if (!(held && (m.kind == MouseKind::Drag || m.kind == MouseKind::Move))) {
+    return false;
+  }
+  const int span = tl.count - tl.visible();
+  const int y = std::clamp(local.y, 0, tl.list_h() - 1);
+  tl.list.top = std::clamp((y * span + (tl.list_h() - 1) / 2) / std::max(1, tl.list_h() - 1), 0, span);
+  return true;
+}
+
 void draw_filter_header(Painter& p, const Theme& th, std::string_view label, bool on, bool focused) {
   const Style st{on ? th.text : th.dim, on ? (focused ? th.sel_bg : th.sel_inactive) : th.panel,
                  on ? attr::kBold : attr::kNone};
@@ -59,30 +91,101 @@ class ProjectList final : public Pane {
   // One row of the tree: a tracked folder, or one of its sub-projects.
   struct Item {
     int project = 0;
-    int sub = -1;  // index into the project's subs; -1 for the folder itself
+    int sub = -1;     // index into the project's subs; -1 for the folder itself
+    int kids = 0;     // sub-projects directly in it: it can be folded
+    int hidden = 0;   // sub-projects under it not listed, while it is folded
   };
 
+  // The fold key of a row: its folder's, or its sub-project's.
+  std::string fold_key(const Item& it) const {
+    const Project& pr = app_->store().projects()[size_t(it.project)];
+    return App::fold_key(pr.path, it.sub < 0 ? std::string() : pr.subs[size_t(it.sub)].name);
+  }
+
+  // The rows: every folder, and its sub-projects but those inside one that
+  // is folded away. A sub-project is listed after the one it is in.
   void rebuild() {
     items_.clear();
     const auto& projects = app_->store().projects();
     for (size_t i = 0; i < projects.size(); i++) {
-      items_.push_back({int(i), -1});
-      for (size_t j = 0; j < projects[i].subs.size(); j++) items_.push_back({int(i), int(j)});
+      const Project& pr = projects[i];
+      Item head{int(i), -1};
+      for (const auto& sp : pr.subs) head.kids += sp.parent().empty();
+      const bool folded = head.kids && app_->folded(App::fold_key(pr.path));
+      if (folded) head.hidden = int(pr.subs.size());
+      items_.push_back(head);
+      if (folded) continue;
+      std::string skip;  // a folded sub-project, while in its nested ones
+      for (size_t j = 0; j < pr.subs.size(); j++) {
+        const SubProject& sp = pr.subs[j];
+        if (!skip.empty() && sub_within(sp.name, skip) && sp.name != skip) { items_.back().hidden++; continue; }
+        skip.clear();
+        Item it{int(i), int(j)};
+        for (const auto& o : pr.subs) it.kids += o.parent() == sp.name;
+        if (it.kids && app_->folded(App::fold_key(pr.path, sp.name))) skip = sp.name;
+        items_.push_back(it);
+      }
     }
   }
 
-  // The row the app has selected: the folder, or its sub-project.
+  // The row the app has selected: the folder, or its sub-project — or, when
+  // that is folded away, the row it is folded into.
   int app_row() const {
     const int p = app_->project_index();
     const SubProject* sp = app_->current_sub();
+    if (p < 0 || size_t(p) >= app_->store().projects().size()) return 0;
+    const Project& pr = app_->store().projects()[size_t(p)];
+    int best = 0;
+    size_t depth = 0;  // how much of the selected sub-project's name the best row covers
     for (size_t r = 0; r < items_.size(); r++) {
       if (items_[r].project != p) continue;
-      if (!sp && items_[r].sub < 0) return int(r);
-      if (sp && items_[r].sub >= 0 &&
-          app_->store().projects()[size_t(p)].subs[size_t(items_[r].sub)].name == sp->name)
-        return int(r);
+      if (items_[r].sub < 0) {
+        if (!sp) return int(r);
+        if (depth == 0) best = int(r);
+        continue;
+      }
+      const std::string& name = pr.subs[size_t(items_[r].sub)].name;
+      if (sp && sub_within(sp->name, name) && name.size() + 1 > depth) {
+        best = int(r);
+        depth = name.size() + 1;
+      }
     }
-    return 0;
+    return best;
+  }
+
+  // Folds a row away or opens it. Folding the one the chats are filtered to
+  // from inside it moves the selection onto it, so what is lit is what shows.
+  void set_fold(int row, bool fold) {
+    if (row < 0 || row >= add_row() || !items_[size_t(row)].kids) return;
+    const Item it = items_[size_t(row)];
+    if (fold && it.project == app_->project_index() && app_->current_sub()) {
+      const Project& pr = app_->store().projects()[size_t(it.project)];
+      if (it.sub < 0 || (sub_within(app_->current_sub()->name, pr.subs[size_t(it.sub)].name) &&
+                         app_->current_sub()->name != pr.subs[size_t(it.sub)].name))
+        set_sel(row);
+    }
+    app_->set_folded(fold_key(it), fold);
+    rebuild();
+    for (size_t r = 0; r < items_.size(); r++)
+      if (items_[r].project == it.project && items_[r].sub == it.sub) { sel_ = last_ext_ = int(r); break; }
+    list_.list.sel = sel_;
+  }
+  bool folded_row(int row) const {
+    return row >= 0 && row < add_row() && items_[size_t(row)].kids && app_->folded(fold_key(items_[size_t(row)]));
+  }
+  // The column of a row's ▸/▾, where a click folds or opens it.
+  int chevron_x(const Item& it, int width) const {
+    if (it.sub < 0) return 1;
+    const Project& pr = app_->store().projects()[size_t(it.project)];
+    return sub_x(pr.subs[size_t(it.sub)], width);
+  }
+  static int sub_x(const SubProject& sp, int width) {
+    return 4 + std::min(2 * (sp.depth() - 1), std::max(0, (width - 16) / 2));
+  }
+  // ▾ open, ▸ folded; lit when something folded away needs you.
+  void draw_chevron(Painter& p, int x, int y, Color bg, bool folded) {
+    const Theme& th = app_->theme();
+    p.put(x, y, folded ? U'\u25B8' : U'\u25BE', Style{folded ? th.accent : th.dim, bg, attr::kBold});
   }
 
   void render(Painter& whole, bool focused) override {
@@ -104,6 +207,9 @@ class ProjectList final : public Pane {
     list_.list.sel = sel_;
     list_.fit(add, p.height());
     sel_ = list_.list.sel;
+    width_ = p.width();
+    // A list longer than the pane says where it is, in its last column.
+    Painter rows = draw_list_scrollbar(p, th, list_) ? p.sub(Rect{0, 0, p.width() - 1, p.height()}) : p;
 
     // With every folder in the filter, no one folder is lit.
     const bool lit = !(head_ && app_->all_folders());
@@ -111,8 +217,8 @@ class ProjectList final : public Pane {
       const Item& it = items_[size_t(i)];
       const Project& pr = projects[size_t(it.project)];
       const Color bg = i % 2 ? th.panel_alt : th.panel;  // by index: the stripes scroll with the rows
-      if (it.sub < 0) draw_item(p, pr, y, lit && i == sel_, focused, bg);
-      else draw_sub(p, pr, pr.subs[size_t(it.sub)], y, lit && i == sel_, focused, bg);
+      if (it.sub < 0) draw_item(rows, pr, it, y, lit && i == sel_, focused, bg);
+      else draw_sub(rows, pr, it, y, lit && i == sel_, focused, bg);
     }
     draw_list_button(p, th, list_, "+ Add folder", sel_ == add, focused);
   }
@@ -129,6 +235,38 @@ class ProjectList final : public Pane {
       if (!best || cs.rank < best->rank) best = cs;
     }
     if (best && best->rank < 4) p.put(x, y, best->glyph, Style{best->color, bg, attr::kBold});
+  }
+
+  // How many of a row's chats are in each state that wants a look — "!2"
+  // needing you, "●1" with a reply not yet read, "⠋3" working — drawn so
+  // they end at column `right`. Ready chats are left out: nothing to do
+  // there. Returns the columns used, 0 for none.
+  int draw_states(Painter& p, int right, int y, Color bg, int max_w, auto&& in) {
+    const Theme& th = app_->theme();
+    int count[3] = {0, 0, 0};
+    ChatState look[3]{};
+    for (LiveSession* s : app_->live_sessions()) {
+      if (s->exited() || !in(*s)) continue;
+      const ChatState cs = chat_state(s, th, app_->anim());
+      if (cs.rank > 2) continue;
+      if (!count[cs.rank]++) look[cs.rank] = cs;
+    }
+    std::string part[3];
+    int w = 0;
+    for (int r = 0; r < 3; r++)
+      if (count[r]) {
+        part[r] = std::to_string(count[r]);
+        const int pw = 1 + text::str_width(part[r]);
+        if (w + (w ? 1 : 0) + pw > max_w) { count[r] = 0; continue; }  // the most urgent first
+        w += (w ? 1 : 0) + pw;
+      }
+    int x = right - w;
+    for (int r = 0; r < 3; r++) {
+      if (!count[r]) continue;
+      p.put(x, y, look[r].glyph, Style{look[r].color, bg, attr::kBold});
+      x += 1 + p.text(x + 1, y, part[r], Style{look[r].color, bg, attr::kBold}) + 1;
+    }
+    return w;
   }
 
   // What git says of `dir`, in at most `w` columns from x: the branch, then
@@ -192,7 +330,7 @@ class ProjectList final : public Pane {
   }
 
   // Two lines: the name, then its path with how many chats and how recent.
-  void draw_item(Painter& p, const Project& pr, int y, bool sel, bool focused, Color bg) {
+  void draw_item(Painter& p, const Project& pr, const Item& it, int y, bool sel, bool focused, Color bg) {
     const Theme& th = app_->theme();
     Style st{sel ? th.text : th.dim, sel ? (focused ? th.sel_bg : th.sel_inactive) : bg,
              sel ? attr::kBold : attr::kNone};
@@ -200,8 +338,22 @@ class ProjectList final : public Pane {
     p.fill(Rect{0, y, p.width(), TallList::kItemH}, st);
     for (int dy = 0; dy < TallList::kItemH; dy++)
       p.put(0, y + dy, sel ? U'▌' : U' ', Style{th.accent, st.bg, attr::kDecor});
-    draw_dot(p, 1, y, st.bg, [&](const LiveSession& s) { return in_project(pr, s.cwd()); });
-    p.text_clipped(3, y, pr.name.empty() ? pr.path : pr.name, st, std::max(0, p.width() - 4));
+    // ▸/▾ for a folder with sub-projects, then the mark of its chats, those
+    // folded away included: one that needs you still shows on a folded row.
+    if (it.kids) draw_chevron(p, 1, y, st.bg, it.hidden > 0);
+    draw_dot(p, 2, y, st.bg, [&](const LiveSession& s) { return in_project(pr, s.cwd()); });
+    // At the right: its chats' states, then how many sub-projects it hides.
+    // Open, it counts only the chats no listed sub-project row shows; folded,
+    // everything inside it.
+    const std::string more = it.hidden ? "+" + std::to_string(it.hidden) : "";
+    const int mw = more.empty() ? 0 : text::str_width(more) + 1;
+    if (mw && p.width() > 12) p.text(p.width() - mw, y, more, Style{th.dim, st.bg});
+    const int sw = p.width() > 16 ? draw_states(p, p.width() - mw - (mw ? 1 : 0), y, st.bg, (p.width() - 5) / 2,
+        [&](const LiveSession& s) {
+          return in_project(pr, s.cwd()) && (it.hidden || app_->live_sub(s).empty());
+        }) : 0;
+    const int right = mw + (sw ? sw + 1 + (mw ? 1 : 0) : 0);
+    p.text_clipped(4, y, pr.name.empty() ? pr.path : pr.name, st, std::max(0, p.width() - 5 - right));
 
     // Second line: git's branch and state, then the path, on the left;
     // "12 chats · 3h" on the right. The path gives way first on a narrow
@@ -219,13 +371,13 @@ class ProjectList final : public Pane {
     const std::string when = " \xC2\xB7 " + rel_time(newest);
     if (n > 0 && text::str_width(info) + text::str_width(when) <= p.width() - 4) info += when;
     const int iw = text::str_width(info);
-    const int room = p.width() - 3 - iw - 2;
+    const int room = p.width() - 4 - iw - 2;
     if (room >= 6) {
-      const int g = draw_git(p, 3, y + 1, room, pr.path, st.bg);
-      if (room - g - 2 >= 4) p.text_clipped(3 + (g ? g + 2 : 0), y + 1, abbreviate(pr.path), meta, room - (g ? g + 2 : 0));
+      const int g = draw_git(p, 4, y + 1, room, pr.path, st.bg);
+      if (room - g - 2 >= 4) p.text_clipped(4 + (g ? g + 2 : 0), y + 1, abbreviate(pr.path), meta, room - (g ? g + 2 : 0));
       p.text(p.width() - iw, y + 1, info, meta);
     } else {
-      p.text_clipped(3, y + 1, info, meta, std::max(0, p.width() - 4));
+      p.text_clipped(4, y + 1, info, meta, std::max(0, p.width() - 5));
     }
   }
 
@@ -240,7 +392,8 @@ class ProjectList final : public Pane {
   // A sub-project, indented under its folder or the sub-project it is in:
   // its name, then where it runs — "same folder" as what it is in, or the
   // path under the project — and its chats, those nested in it included.
-  void draw_sub(Painter& p, const Project& pr, const SubProject& sp, int y, bool sel, bool focused, Color bg) {
+  void draw_sub(Painter& p, const Project& pr, const Item& it, int y, bool sel, bool focused, Color bg) {
+    const SubProject& sp = pr.subs[size_t(it.sub)];
     const Theme& th = app_->theme();
     Style st{sel ? th.text : th.dim, sel ? (focused ? th.sel_bg : th.sel_inactive) : bg,
              sel ? attr::kBold : attr::kNone};
@@ -249,13 +402,25 @@ class ProjectList final : public Pane {
     for (int dy = 0; dy < TallList::kItemH; dy++)
       p.put(0, y + dy, sel ? U'▌' : U' ', Style{th.accent, st.bg, attr::kDecor});
     // Two columns more for each level down, while the pane leaves room.
-    const int x = 3 + std::min(2 * (sp.depth() - 1), std::max(0, (p.width() - 16) / 2));
-    p.put(x, y, U'└', Style{th.border, st.bg});  // └
+    // One that holds others has its ▸/▾ where the others have their └.
+    const int x = sub_x(sp, p.width());
+    if (it.kids) draw_chevron(p, x, y, st.bg, it.hidden > 0);
+    else p.put(x, y, U'└', Style{th.border, st.bg});  // └
     draw_dot(p, x + 1, y, st.bg, [&](const LiveSession& s) {
       return in_project(pr, s.cwd()) && sub_within(app_->live_sub(s), sp.name);
     });
     const int tx = x + 3;
-    p.text_clipped(tx, y, sp.leaf(), st, std::max(0, p.width() - tx - 1));
+    const std::string more = it.hidden ? "+" + std::to_string(it.hidden) : "";
+    const int mw = more.empty() ? 0 : text::str_width(more) + 1;
+    if (mw && p.width() - tx > 8) p.text(p.width() - mw, y, more, Style{th.dim, st.bg});
+    const int sw = p.width() - tx > 12 ? draw_states(p, p.width() - mw - (mw ? 1 : 0), y, st.bg, (p.width() - tx) / 2,
+        [&](const LiveSession& s) {
+          if (!in_project(pr, s.cwd())) return false;
+          const std::string sub = app_->live_sub(s);
+          return it.hidden || it.kids == 0 ? sub_within(sub, sp.name) : sub == sp.name;
+        }) : 0;
+    const int right = mw + (sw ? sw + 1 + (mw ? 1 : 0) : 0);
+    p.text_clipped(tx, y, sp.leaf(), st, std::max(0, p.width() - tx - 1 - right));
     size_t n = 0;
     int64_t newest = 0;
     for (const auto& s : pr.sessions)
@@ -310,6 +475,31 @@ class ProjectList final : public Pane {
         return true;
       }
     }
+    // Folding: Space either way; ← folds (or goes up to what it is in) and
+    // → opens, but not in the compact layout, where ← goes back.
+    if (sel_ < add_row() && !k.ctrl && !k.alt) {
+      if (k.is(' ') && items_[size_t(sel_)].kids) { set_fold(sel_, !folded_row(sel_)); return true; }
+      if (!app_->compact() && k.key == Key::Right && items_[size_t(sel_)].kids && folded_row(sel_)) {
+        set_fold(sel_, false);
+        return true;
+      }
+      if (!app_->compact() && k.key == Key::Left) {
+        if (items_[size_t(sel_)].kids && !folded_row(sel_)) set_fold(sel_, true);
+        else if (items_[size_t(sel_)].sub >= 0) {
+          // Up to the row it is in.
+          const Item it = items_[size_t(sel_)];
+          const std::string up(app_->store().projects()[size_t(it.project)].subs[size_t(it.sub)].parent());
+          for (int r = sel_ - 1; r >= 0; r--) {
+            const Item& o = items_[size_t(r)];
+            if (o.project != it.project) break;
+            const bool is_up = up.empty() ? o.sub < 0
+                : o.sub >= 0 && app_->store().projects()[size_t(o.project)].subs[size_t(o.sub)].name == up;
+            if (is_up) { list_.list.sel = r; set_sel(r); break; }
+          }
+        }
+        return true;
+      }
+    }
     if (!list_.on_key(k)) return false;
     set_sel(list_.list.sel);
     // Compact: a folder chosen goes on to its chats.
@@ -318,11 +508,24 @@ class ProjectList final : public Pane {
   }
 
   bool on_mouse(const MouseEvent& m, Point at) override {
-    if (head_ && at.y < head_) {
+    if (head_ && at.y < head_ && !bar_held_) {
       if (m.kind == MouseKind::Press && m.button == MouseButton::Left) app_->set_all_folders(true);
       return true;
     }
     const Point local{at.x, at.y - head_};
+    if (list_scrollbar_mouse(list_, m, local, width_, bar_held_)) {
+      if (bar_held_) app_->capture_mouse(this);
+      return true;
+    }
+    // A press on a row's ▸/▾ folds or opens it, and selects nothing.
+    if (m.kind == MouseKind::Press && m.button == MouseButton::Left) {
+      const int row = list_.index_at(local.y);
+      if (row >= 0 && row < add_row() && items_[size_t(row)].kids &&
+          local.y % TallList::kItemH == 0 && std::abs(local.x - chevron_x(items_[size_t(row)], width_)) <= 1) {
+        set_fold(row, !folded_row(row));
+        return true;
+      }
+    }
     const int hit = list_.on_mouse(m, local);
     if (hit == add_row()) app_->pick_folder();
     else if (hit >= 0) {
@@ -432,6 +635,8 @@ class ProjectList final : public Pane {
   Item menu_target_{-1, -1};  // the row the last menu was opened on
   int sel_ = 0;
   int last_ext_ = -1;  // last app row we synced from
+  int width_ = 0;      // the list's, as last drawn
+  bool bar_held_ = false;  // the scrollbar is being dragged
 };
 
 }  // namespace
