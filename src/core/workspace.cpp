@@ -414,6 +414,7 @@ bool Workspace::reap(const std::function<void(LiveSession*)>& gone) {
 
 void Workspace::terminate_all() {
   for (auto& s : live_) s->pty().terminate();
+  side_threads_.stop_all();
 }
 
 void Workspace::file_under(LiveSession* s, const std::string& project, const std::string& sub) {
@@ -437,13 +438,7 @@ std::string Workspace::ask_side_question(LiveSession& parent, const std::string&
   if (!a || parent.exited()) return "no running agent";
   if (text.empty()) return "nothing to ask";
   if (text.find_first_of("\r\n") != std::string::npos) return "a side question must fit on one line";
-  if (a->native_side_questions()) {
-    if (parent.needs_input() || parent.answer_sending()) return "answer the agent's question first";
-    BtwPanel panel;
-    const bool shown = a->side_panel(parent.vt(), panel);
-    return parent.send_parts({MessagePart{false, "/btw " + text}}, shown ? "\x1b" : "")
-        ? std::string() : "still sending the previous message";
-  }
+  if (side_thread(parent)) return side_threads_.ask(*a, parent.session_id(), parent.cwd(), text);
   if (!a->can_fork()) return "this agent does not support a separate side conversation";
   if (parent.session_id().empty()) return "send the first chat message before asking a side question";
   LiveSession* child = nullptr;
@@ -459,6 +454,10 @@ std::string Workspace::ask_side_question(LiveSession& parent, const std::string&
   }
   child->enqueue({MessagePart{false, "Answer this side question using the conversation context. Do not edit files or continue the main task.\n\n" + text}});
   return {};
+}
+
+bool Workspace::side_thread(const LiveSession& parent) {
+  return parent.adapter() && !parent.adapter()->side_question_argv("-").empty();
 }
 
 std::string Workspace::title_of(const LiveSession& session) const {
@@ -637,6 +636,7 @@ unsigned Workspace::service(bool usage_wanted) {
   // An agent's "/" menu may be read from the agent; ask ahead of the first "/".
   for (const auto& s : live_) commands_.warm(s->agent(), s->cwd());
   if (commands_.pump()) changed |= kCatalog;
+  if (side_threads_.pump()) changed |= kSessions;
   // A search across chats advances in slices, so input stays responsive.
   if (!search_.complete()) {
     search_.step(12);
@@ -670,6 +670,7 @@ int Workspace::idle_timeout_ms(bool usage_wanted) const {
   if (!activity_.complete() || (usage_wanted && !usage_.complete())) ms = std::min(ms, 10);
   if (model_probe_.running() || commands_.probing()) ms = 30;
   if (git_.waiting()) ms = std::min(ms, 50);
+  if (side_threads_.running()) ms = std::min(ms, 250);
   for (const auto& s : live_) {
     if (const int t = s->timer_ms(); t >= 0) ms = std::min(ms, t);
     // The spinner's beat, which also catches a quiet agent turning idle.
@@ -680,6 +681,7 @@ int Workspace::idle_timeout_ms(bool usage_wanted) const {
 
 void Workspace::collect_fds(std::vector<int>& out) const {
   for (const auto& s : live_) out.push_back(s->pty().fd());
+  side_threads_.collect_fds(out);
 }
 
 bool Workspace::any_busy() const {

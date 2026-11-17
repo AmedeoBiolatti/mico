@@ -26,6 +26,15 @@ TOOL = 'toolu_01Question'
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json, os, select, sys, time, tty
+if '-p' in sys.argv:
+    # A side question, asked headless of a fork that is never saved.
+    asked = sys.stdin.read()
+    with open(os.path.join(os.environ['FIXTURE_ROOT'], 'side-asked'), 'w') as f:
+        f.write(json.dumps({'argv': sys.argv[1:], 'stdin': asked}))
+    for line in ({'type': 'stream_event', 'event': {'type': 'content_block_delta', 'delta': {'type': 'text_delta', 'text': 'A side'}}},
+                 {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'A side answer, while the main task continues.'}):
+        print(json.dumps(line), flush=True)
+    sys.exit(0)
 if '--resume' not in sys.argv:
     sys.exit(0)
 tty.setraw(0)
@@ -294,24 +303,28 @@ finally:
     daemon.wait()
     shutil.rmtree(root, ignore_errors=True)
 
-# ---- a native Btw side question, read from the agent screen
+# ---- a Btw side question, answered headless beside the chat
 root, ws, key, chat, daemon = run('btw')
 try:
     ws.send({'type': 'open', 'path': chat})
     ws.wait('side question support', lambda m: m.get('type') == 'work_state' and m.get('supports_btw'))
     check(ws.ask(type='btw', key=key, text='Why this approach?')['ok'], 'the Btw command is accepted')
-    work = ws.wait('the side answer', lambda m: m.get('type') == 'work_state' and
-                   any(i['kind'] == 'btw' for i in m['items']))
-    item = next(i for i in work['items'] if i['kind'] == 'btw')
-    ws.send({'type': 'work', 'path': chat, 'item': item['id'], 'open': True})
+    ws.wait('the side thread', lambda m: m.get('type') == 'work_state' and
+            any(i['id'] == 'btw:thread' and i['status'] == 'done' for i in m['items']))
+    ws.send({'type': 'work', 'path': chat, 'item': 'btw:thread', 'open': True})
     ws.wait('the selected side answer', lambda m: m.get('type') == 'work_state' and
             'A side answer' in m.get('output', ''))
-    check('Why this approach?' not in Path(chat).read_text(), 'native side questions stay outside the main transcript')
+    asked = json.loads(Path(root, 'side-asked').read_text())
+    check('--fork-session' in asked['argv'] and '--no-session-persistence' in asked['argv'] and
+          asked['argv'][asked['argv'].index('--resume') + 1] == SESSION and
+          asked['stdin'].rstrip().endswith('Why this approach?'),
+          'the side question goes to a throwaway fork of the chat')
+    check('Why this approach?' not in Path(chat).read_text(), 'side questions stay outside the main transcript')
+    check(not any('/btw' in line for line in keys_of(root)), 'nothing is typed into the parent for a side question')
     check(ws.ask(type='send', key=key, text='Continue the main task')['ok'], 'the main composer remains usable')
     end = time.monotonic() + 5
     while time.monotonic() < end and not any('Continue the main task' in line for line in keys_of(root)):
         ws.pump(0.2)
-    check(any(line == "b'\\x1b'" for line in keys_of(root)), 'a main message closes the native side dialog before typing')
     check(any('Continue the main task' in line for line in keys_of(root)), 'the main message reaches the parent')
 finally:
     daemon.kill()

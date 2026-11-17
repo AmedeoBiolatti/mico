@@ -12,6 +12,7 @@
 #include "adapters/screen.h"
 #include "base/text.h"
 #include "core/session.h"
+#include "core/side.h"
 #include "core/workspace.h"
 
 namespace mico {
@@ -43,6 +44,14 @@ std::string progress_text(const BackgroundTask& t) {
   return s;
 }
 
+// A command without the "cd <dir> && " an agent puts in front of it.
+std::string_view without_cd(std::string_view cmd) {
+  if (!cmd.starts_with("cd ")) return cmd;
+  const size_t amp = cmd.find(" && ");
+  if (amp == std::string_view::npos || cmd.substr(0, amp).find_first_of(";|\n") != std::string_view::npos) return cmd;
+  return cmd.substr(amp + 4);
+}
+
 std::string tail_file(const std::string& path) {
   const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
   if (fd < 0) return {};
@@ -67,11 +76,11 @@ const WorkItem* WorkSet::find(const std::string& id) const {
 void WorkSet::refresh(const Conversation& conv, const LiveSession* live, const Workspace& ws, bool force) {
   const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
-  if (path_ != conv.path()) { items_.clear(); child_.clear(); path_ = conv.path(); force = true; }
+  if (path_ != conv.path()) { items_.clear(); child_.clear(); described_.clear(); path_ = conv.path(); force = true; }
   if (!force && now - refreshed_ms_ < 500) return;
   refreshed_ms_ = now;
   supports_btw_ = false;
-  if (live && live->adapter()) supports_btw_ = live->adapter()->native_side_questions() ||
+  if (live && live->adapter()) supports_btw_ = Workspace::side_thread(*live) ||
       (live->adapter()->can_fork() && !live->session_id().empty());
 
   // Retain completed work and side answers for this view's lifetime.
@@ -83,6 +92,7 @@ void WorkSet::refresh(const Conversation& conv, const LiveSession* live, const W
       if (i.kind == "terminal") {
         if (i.output_file.empty()) i.output_file = old.output_file;
         if (i.text.empty()) i.text = old.text;
+        if (i.command.empty()) i.command = old.command;
       }
       old = std::move(i); return;
     }
@@ -108,7 +118,12 @@ void WorkSet::refresh(const Conversation& conv, const LiveSession* live, const W
     if (terminal_tool(arena.view(e.name))) {
       WorkItem i;
       i.id = tool_key(e.tool_id); i.kind = "terminal"; i.tool = e.tool_id; i.at = at;
-      i.title = text::oneline(arena.view(e.summary), 160);
+      i.command = std::string(arena.view(e.summary));
+      // What the agent said the command is for reads better than the command.
+      auto said = described_.find(e.tool_id);
+      if (said == described_.end() && conv.adapter())
+        said = described_.emplace(e.tool_id, text::oneline(conv.adapter()->tool_description(conv.file().line(e.src_line), e.tool_id), 160)).first;
+      i.title = said != described_.end() && !said->second.empty() ? said->second : text::oneline(without_cd(i.command), 160);
       if (i.title.empty()) i.title = std::string(arena.view(e.name));
       i.status = running ? "working" : result != results.end() && !result->second->ok ? "failed" : "done";
       put(std::move(i));
@@ -158,7 +173,7 @@ void WorkSet::refresh(const Conversation& conv, const LiveSession* live, const W
         if (resolved != items_.end()) old = resolved;
       }
       if (old == items_.end()) old = std::find_if(items_.begin(), items_.end(), [&](const WorkItem& a) {
-        return a.kind == i.kind && ((i.kind == "terminal" && a.at == t.offset && a.title == t.what) ||
+        return a.kind == i.kind && ((i.kind == "terminal" && a.at == t.offset && (a.title == t.what || a.command == t.what)) ||
                (i.kind == "agent" && (a.path.find(t.id) != std::string::npos || a.title == t.id || a.title == t.what)));
       });
       if (old == items_.end() && i.kind == "terminal" &&
@@ -166,18 +181,26 @@ void WorkSet::refresh(const Conversation& conv, const LiveSession* live, const W
         old = std::find_if(items_.begin(), items_.end(), [&](const WorkItem& a) { return a.kind == i.kind && a.at == t.offset; });
       if (old != items_.end()) {
         i.id = old->id; i.path = old->path; i.tool = old->tool;
+        // The call's own words name it better than the task list does.
+        if (i.kind == "terminal" && !old->command.empty()) { i.title = old->title; i.command = old->command; }
       }
       const bool resolved_agent = i.kind == "agent" && !i.path.empty();
       put(std::move(i));
       if (resolved_agent) std::erase_if(items_, [&](const WorkItem& a) { return a.id == "background:" + t.id && a.path.empty(); });
     }
-    BtwPanel btw;
-    if (live->driver().side_panel(live->vt(), btw) && btw.current >= 0 && btw.current < int(btw.questions.size())) {
+  }
+  // The side thread is one item: the whole conversation, under its latest question.
+  std::erase_if(items_, [](const WorkItem& i) { return i.id == kThread; });
+  if (live && Workspace::side_thread(*live) && !live->session_id().empty()) {
+    const auto& turns = ws.side_threads().thread(live->agent(), live->session_id());
+    if (!turns.empty()) {
       WorkItem i;
-      i.id = "btw:" + btw.questions[size_t(btw.current)]; i.kind = "btw";
-      i.title = btw.questions[size_t(btw.current)]; i.text = btw.answer;
-      i.status = btw.answering ? "working" : "done";
-      put(std::move(i));
+      i.id = kThread; i.kind = "btw"; i.title = text::oneline(turns.back().question, 160);
+      const auto& last = turns.back();
+      i.status = !last.over() ? "working" : last.state == SideTurn::State::Failed ? "failed" : "done";
+      i.info = std::to_string(turns.size()) + (turns.size() == 1 ? " question" : " questions");
+      i.text = thread_text(turns);
+      items_.push_back(std::move(i));
     }
   }
   std::stable_sort(items_.begin(), items_.end(), [](const WorkItem& a, const WorkItem& b) {
@@ -185,6 +208,17 @@ void WorkSet::refresh(const Conversation& conv, const LiveSession* live, const W
     return rank(a) != rank(b) ? rank(a) < rank(b) : a.at > b.at;
   });
   if (items_.size() > kMaxItems) items_.resize(kMaxItems);
+}
+
+std::string WorkSet::thread_text(const std::vector<SideTurn>& turns) {
+  std::string text;
+  for (const auto& t : turns) {
+    text += "**› " + text::oneline(t.question, 2000) + "**\n\n";
+    if (t.state == SideTurn::State::Failed) text += "*Could not answer: " + text::oneline(t.error, 300) + "*\n\n";
+    else if (!t.answer.empty()) text += t.answer + "\n\n";
+    else text += t.state == SideTurn::State::Queued ? "*Waiting for the question before it…*\n\n" : "*Answering…*\n\n";
+  }
+  return text;
 }
 
 std::string WorkSet::detail(const WorkItem& item, const Conversation& conv) {

@@ -1252,8 +1252,9 @@ int run_regression_tests() {
         session.pty().terminate();
       }
 
-      // Claude's /btw panel: shown in Work, its keys passed
-      // through, and closed before a message is typed.
+      // Claude's own /btw panel, opened in its terminal: its keys pass
+      // through, and it is closed before a message is typed. (mico's side
+      // questions go to their own thread, never to this panel.)
       {
         const std::string hist = base + "/.claude/projects/fixture/btw-fixture.jsonl";
         put(hist, R"({"type":"user","message":{"role":"user","content":"say PINEAPPLE"}})" "\n");
@@ -1278,17 +1279,12 @@ int run_regression_tests() {
         Surface psf;
         psf.resize(80, 30);
         Painter pp(psf, Rect{0, 0, 80, 30});
+        // The panel is on claude's screen, not in the chat: let it arrive.
         for (int i = 0; i < 200; i++) {
           session.pump();
           pane->render(pp, true);
-          if (screen(psf).find("SIDEANSWER") != std::string::npos) break;
           usleep(2000);
         }
-        std::string sc = screen(psf);
-        check(sc.find("Work") != std::string::npos && sc.find("what fruit") != std::string::npos &&
-                  sc.find("It was a SIDEANSWER pineapple.") != std::string::npos,
-              "btw: the side answer shows in the Work panel");
-        check(sc.find("not saved in the chat") != std::string::npos, "btw: its keys, and that it is not kept");
         const auto keys = [&]() {
           std::string bytes;
           if (FILE* f = fopen(got.c_str(), "rb")) {
@@ -1313,9 +1309,6 @@ int run_regression_tests() {
         settle(3);
         check(keys() == "\x1b[B", "btw: ↓ scrolls claude's panel");
         // A message while the panel is up closes it first, then goes.
-        KeyEvent close_work;
-        close_work.key = Key::F11;
-        pane->on_key(close_work);
         pane->on_paste("next question");
         KeyEvent enter;
         enter.key = Key::Enter;

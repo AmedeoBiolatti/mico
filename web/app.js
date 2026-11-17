@@ -1194,6 +1194,7 @@ function applyWork(m) {
   w.supports_btw = !!m.supports_btw;
   if (m.selected === w.selected && m.output !== undefined) w.output = m.output;
   if (w.awaitingBtw) {
+    // The side thread is one item, titled by its latest question.
     const reply = w.items.find(i => i.kind === "btw" && i.title === w.awaitingBtw);
     if (reply) { w.awaitingBtw = ""; w.selected = reply.id; w.output = ""; requestWork(); }
   }
@@ -1220,7 +1221,7 @@ function renderWork() {
   }
   $("work-content").setAttribute("aria-labelledby", `work-tab-${w.tab}`);
   $("btw-form").hidden = w.tab !== "btw" || !w.supports_btw || !liveAgent();
-  $("btw-history").hidden = $("btw-form").hidden || !items.some(i => i.id.startsWith("btw:"));
+  $("btw-history").hidden = $("btw-form").hidden || !items.some(i => i.id === "btw:thread");
   const sig = JSON.stringify([w.tab, w.selected, items, w.supports_btw]);
   if (sig !== workListSig) {
     workListSig = sig;
@@ -1257,8 +1258,10 @@ function renderWork() {
       if (w.tab === "terminal") output.append(el("pre", "block", w.output.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")));
       else output.append(markdown(w.output));
     } else if (selected) output.append(el("p", "dim-note", selected.status === "working" ? "Waiting for output…" : "Loading…"));
-    if (!same) output.scrollTop = w.tab === "terminal" ? output.scrollHeight : 0;
-    else if (bottom && w.tab === "terminal") output.scrollTop = output.scrollHeight;
+    // Terminal output and the side thread are read from their newest end.
+    const fromEnd = w.tab === "terminal" || w.selected === "btw:thread";
+    if (!same) output.scrollTop = fromEnd ? output.scrollHeight : 0;
+    else if (bottom && fromEnd) output.scrollTop = output.scrollHeight;
   }
 }
 
@@ -1288,9 +1291,9 @@ $("btw-form").onsubmit = (e) => {
   if (!a || !text) return;
   command({ type: "btw", key: a.key, text }, () => { st.work.awaitingBtw = text; input.value = ""; });
 };
-for (const action of ["previous", "next"]) $("btw-" + action).onclick = () => {
+$("btw-clear").onclick = () => {
   const a = liveAgent();
-  if (a) command({ type: "btw", key: a.key, action });
+  if (a) command({ type: "btw", key: a.key, action: "clear" }, () => { st.work.selected = ""; st.work.output = ""; requestWork(); });
 };
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && st.work.open) { e.preventDefault(); e.stopImmediatePropagation(); closeWork(); }

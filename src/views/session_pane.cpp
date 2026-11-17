@@ -117,7 +117,8 @@ class SessionPane final : public Pane {
   void render(Painter& p, bool focused) override {
     work_rect_ = Rect{};
     if (work_open_ && !showing_raw() && p.width() >= 100) {
-      const int w = std::clamp(p.width() / 3, 36, 64);
+      // Wide enough to read output and an agent's report beside the chat.
+      const int w = std::clamp(p.width() * 2 / 5, 40, 96);
       work_rect_ = Rect{p.width() - w, 0, w, p.height()};
       Painter main = p.sub(Rect{0, 0, p.width() - w, p.height()});
       render_main(main, focused && !work_focus_);
@@ -413,13 +414,6 @@ class SessionPane final : public Pane {
       if (chat_.aside_shown()) chat_.set_aside({}, {}, {});
       return;
     }
-    const std::string current = btw_.questions[size_t(btw_.current)];
-    if (current != work_last_btw_) {
-      work_last_btw_ = current;
-      if (prompt_.empty() || work_open_) {
-        work_open_ = true; work_tab_ = 2; work_selected_ = "btw:" + current;
-      }
-    }
     if (chat_.aside_shown()) chat_.set_aside({}, {}, {});
   }
 
@@ -691,6 +685,14 @@ class SessionPane final : public Pane {
   // Sends the prompt now. While the agent works that is steering: claude
   // takes it at its next tool call, codex at once.
   bool send_prompt() {
+    // "/btw …" goes to the chat's side thread, the same one as the Work
+    // panel's: answered beside the chat, never in it.
+    if (Workspace::side_thread(*s_) && prompt_.text().starts_with("/btw ") && prompt_.parts().size() == 1) {
+      const std::string error = app_->workspace().ask_side_question(*s_, text::oneline(prompt_.text().substr(5), 2000));
+      if (!error.empty()) { app_->set_status(error); return false; }
+      work_open_ = true; work_tab_ = 2; work_scroll_ = 0;
+      return true;
+    }
     // An open side-question panel would take the typing as its own keys
     // (c copies, f forks, x clears): it is closed first.
     if (!s_->send_parts(prompt_.parts(), btw_live_ ? "\x1b" : "")) {
@@ -1355,10 +1357,11 @@ class SessionPane final : public Pane {
   ChatRenderer work_chat_;
   bool work_open_ = false, work_focus_ = false;
   int work_tab_ = 0, work_scroll_ = 0, work_width_ = 0;
-  std::string work_selected_, work_last_btw_, work_text_, work_laid_out_;
+  std::string work_selected_, work_text_, work_laid_out_;
   PromptEditor work_prompt_;
   Rect work_rect_{}, work_body_{};
   std::vector<std::pair<int, std::string>> work_hits_;
+  std::vector<std::pair<int, int>> work_tabs_;  // each tab's columns, for clicks
   int64_t work_detail_ms_ = 0;
   Arena work_arena_;
   std::vector<md::Seg> work_segs_, work_inline_;
@@ -1372,56 +1375,192 @@ class SessionPane final : public Pane {
     for (const auto& i : work_.items()) if (i.kind == work_kind()) out.push_back(&i);
     return out;
   }
+  // The Btw tab as one conversation: this chat's side thread.
+  bool work_thread() const { return work_tab_ == 2 && Workspace::side_thread(*s_); }
   void select_work(const std::string& id) {
     if (id == work_selected_) return;
     work_selected_ = id; work_scroll_ = 0; work_detail_ms_ = 0; work_text_.clear();
     work_laid_out_.clear();
   }
+  static const char* work_glyph(const std::string& status) {
+    return status == "failed" ? "✗" : status == "waiting" ? "!" : status == "working" ? "●" : "✓";
+  }
+  Color work_color(const std::string& status, const Theme& th) const {
+    return status == "failed" ? th.err : status == "waiting" ? th.attention : status == "working" ? th.working : th.dim;
+  }
+
+  // Lays `text` out as markdown (or, for a terminal, as its output) into the
+  // work rows, when it or the width changed.
+  void work_layout(const std::string& text, bool output) {
+    if (text == work_laid_out_ && work_body_.w == work_width_) return;
+    work_laid_out_ = text; work_width_ = work_body_.w;
+    work_rows_.clear(); work_segs_.clear(); work_arena_.clear();
+    const Str str = work_arena_.add(text);
+    md::Out out{4000, &work_arena_, &work_segs_, &work_rows_, &work_spans_, &work_inline_, &work_layout_};
+    if (output) md::render_output(text, str.off, true, work_width_, out, nullptr);
+    else md::render(text, str.off, true, work_width_, out);
+  }
+  // Draws the laid-out rows in the body; `from_end` keeps the newest in view,
+  // work_scroll_ counting back from it.
+  void work_draw_rows(Painter& p, const Theme& th, bool from_end) {
+    const int max_scroll = std::max(0, int(work_rows_.size()) - work_body_.h);
+    work_scroll_ = std::clamp(work_scroll_, 0, max_scroll);
+    const int first = from_end ? max_scroll - work_scroll_ : work_scroll_;
+    for (int row = 0; row < work_body_.h && first + row < int(work_rows_.size()); row++) {
+      const md::Line& line = work_rows_[size_t(first + row)];
+      int x = work_body_.x + line.indent;
+      for (uint16_t n = 0; n < line.seg_count; n++) {
+        const md::Seg& seg = work_segs_[line.seg_first + n];
+        if (seg.ink == md::Ink::MathImage) continue;
+        x += p.text(x, work_body_.y + row, work_arena_.view(Str{seg.off & ~md::kScratchBit, seg.len}),
+                    ink_style(Style{th.text, th.panel}, seg.ink, th));
+      }
+    }
+    // Where the view is in a long detail, against the panel's right edge.
+    if (max_scroll > 0) {
+      const int track = work_body_.h;
+      const int thumb = std::max(1, track * work_body_.h / int(work_rows_.size()));
+      const int at = (track - thumb) * first / std::max(1, max_scroll);
+      for (int y = 0; y < track; y++)
+        p.put(p.width() - 1, work_body_.y + y, y >= at && y < at + thumb ? U'┃' : U' ',
+              Style{y >= at && y < at + thumb ? th.border_focus : th.border, th.panel});
+    }
+  }
 
   void render_work(Painter p, bool focused) {
     const Theme& th = app_->theme();
-    p.clear(Style{th.text, th.panel});
+    const Style base{th.text, th.panel};
+    p.clear(base);
     p.vline(0, 0, p.height(), U'│', Style{focused ? th.border_focus : th.border, th.panel});
-    p.text_clipped(2, 0, "Work", Style{th.accent, th.panel, attr::kBold}, p.width() - 4);
-    if (p.width() > 25) p.text(p.width() - 13, 0, "F11 close", Style{th.dim, th.panel});
-    for (int n = 0; n < 3; n++) {
-      const int x = 2 + n * std::max(1, (p.width() - 3) / 3);
-      p.text_clipped(x, 2, n == 0 ? "Agents" : n == 1 ? "Terminals" : "Btw",
-                     Style{n == work_tab_ ? th.accent : th.dim, th.panel, n == work_tab_ ? attr::kBold : attr::kNone},
-                     std::max(1, (p.width() - 3) / 3 - 1));
-    }
     work_.refresh(chat_.conversation(), s_, app_->workspace());
-    const auto items = work_items();
-    if (std::none_of(items.begin(), items.end(), [&](const WorkItem* i) { return i->id == work_selected_; }))
-      select_work(items.empty() ? std::string() : items.front()->id);
+    const bool thread = work_thread();
+
+    // Tabs, with how many each holds, on the first row; the active one lit.
+    work_tabs_.clear();
+    {
+      int counts[3] = {0, 0, 0};
+      for (const auto& i : work_.items()) counts[i.kind == "agent" ? 0 : i.kind == "terminal" ? 1 : 2]++;
+      if (thread) counts[2] = int(app_->workspace().side_threads().thread(s_->agent(), s_->session_id()).size());
+      const char* names[3] = {"Agents", "Terminals", "Btw"};
+      std::string labels[3];
+      int need = 0;
+      for (int n = 0; n < 3; n++) {
+        labels[n] = std::string(" ") + names[n] + (counts[n] ? " " + std::to_string(counts[n]) : "") + " ";
+        need += text::str_width(labels[n]) + 1;
+      }
+      if (need + 8 > p.width()) for (auto& l : labels) if (const size_t sp = l.find(' ', 1); sp + 1 < l.size()) l = l.substr(0, sp + 1);
+      int x = 2;
+      for (int n = 0; n < 3; n++) {
+        const bool on = n == work_tab_;
+        const Style st = on ? Style{th.accent, th.panel_alt, attr::kBold} : Style{th.dim, th.panel};
+        const int w = p.text_clipped(x, 0, labels[n], st, std::max(0, p.width() - x - 1));
+        work_tabs_.push_back({x, x + w});
+        x += w + 1;
+      }
+      if (p.width() - x > 6) p.text(p.width() - 5, 0, "F11", Style{th.dim, th.panel});
+    }
+    p.hline(1, 1, p.width() - 1, U'─', Style{th.border, th.panel});
+
+    const bool asking = work_tab_ == 2 && work_.supports_btw();
+    const int footer = asking ? 3 : 1;  // the hint, and on Btw a rule and the question box
+    int y = 2;
     work_hits_.clear();
-    int y = 4;
-    const int list_end = std::min(p.height() / 2, 14);
-    // Keep the selected item in the visible part of a long list.
-    size_t start = 0;
-    for (size_t n = 0; n < items.size(); n++) if (items[n]->id == work_selected_) {
-      const size_t visible = size_t(std::max(1, (list_end - 4) / 2));
-      if (n >= visible) start = n - visible + 1;
+    const auto items = work_items();
+    if (thread) {
+      select_work(WorkSet::kThread);
+    } else {
+      if (std::none_of(items.begin(), items.end(), [&](const WorkItem* i) { return i->id == work_selected_; }))
+        select_work(items.empty() ? std::string() : items.front()->id);
+      // One row per item: its state, what it is, and its progress or kind,
+      // which goes under it when the two do not fit side by side.
+      const int avail = p.width() - 7;
+      const auto info_of = [](const WorkItem& i) {
+        return i.info.empty() ? std::string(i.status == "waiting" ? "needs you" : i.status == "failed" ? "failed" : "") : i.info;
+      };
+      const auto rows_of = [&](const WorkItem& i) {
+        const std::string info = info_of(i);
+        return info.empty() || text::str_width(i.title) + 2 + text::str_width(info) <= avail ? 1 : 2;
+      };
+      const int room = std::max(3, (p.height() - footer - 6) / 3);
+      // The first item shown keeps the selected one in view.
+      size_t start = 0, sel = 0;
+      for (size_t n = 0; n < items.size(); n++) if (items[n]->id == work_selected_) sel = n;
+      const auto rows_to_sel = [&](size_t from) {
+        int r = 0;
+        for (size_t n = from; n <= sel && n < items.size(); n++) r += rows_of(*items[n]);
+        return r;
+      };
+      while (start < sel && rows_to_sel(start) > room) start++;
+      int shown = 0;
+      for (size_t n = start; n < items.size(); n++, shown++) {
+        const WorkItem& i = *items[n];
+        const int h = rows_of(i);
+        if (y - 2 + h > room) break;
+        const bool on = i.id == work_selected_;
+        const Color bg = on ? th.panel_alt : th.panel;
+        if (on) p.fill(Rect{1, y, p.width() - 1, h}, Style{th.text, bg});
+        p.text(2, y, work_glyph(i.status), Style{work_color(i.status, th), bg, attr::kBold});
+        const std::string info = info_of(i);
+        const Style info_st{work_color(i.status, th), bg};
+        if (h == 1) {
+          const int info_w = info.empty() ? 0 : text::str_width(info);
+          p.text_clipped(4, y, i.title, Style{on ? th.accent : th.text, bg, on ? attr::kBold : attr::kNone}, avail - (info_w ? info_w + 2 : 0) + 1);
+          if (info_w) p.text_clipped(p.width() - 2 - info_w, y, info, info_st, info_w);
+        } else {
+          p.text_clipped(4, y, i.title, Style{on ? th.accent : th.text, bg, on ? attr::kBold : attr::kNone}, avail + 1);
+          p.text_clipped(6, y + 1, info, info_st, avail - 1);
+        }
+        work_hits_.push_back({y, i.id});
+        if (h == 2) work_hits_.push_back({y + 1, i.id});
+        y += h;
+      }
+      if (int(items.size()) > shown)
+        p.text_clipped(4, y++, std::to_string(items.size() - size_t(shown)) + " more · ↑↓", Style{th.dim, th.panel}, p.width() - 6);
+      if (items.empty()) {
+        p.text_clipped(2, y++, work_tab_ == 2 ? (work_.supports_btw() ? "Ask a side question below." : "This agent cannot answer side questions.")
+                               : work_tab_ == 0 ? "No subagents in this chat yet." : "No commands in this chat yet.",
+                       Style{th.dim, th.panel}, p.width() - 4);
+      }
+      p.hline(1, y++, p.width() - 1, U'─', Style{th.border, th.panel});
     }
-    for (size_t n = start; n < items.size() && y + 1 < list_end; n++) {
-      const WorkItem& i = *items[n];
-      const bool on = i.id == work_selected_;
-      if (on) p.fill(Rect{1, y, p.width() - 1, 2}, Style{th.text, th.panel_alt});
-      const Color fg = i.status == "failed" ? th.err : i.status == "waiting" ? th.attention : i.status == "working" ? th.working : th.dim;
-      p.text_clipped(2, y, (on ? "› " : "  ") + i.title, Style{on ? th.accent : th.text, on ? th.panel_alt : th.panel}, p.width() - 4);
-      p.text_clipped(4, y + 1, i.info.empty() ? (i.status == "waiting" ? "needs you" : i.status) : i.info,
-                     Style{fg, on ? th.panel_alt : th.panel}, p.width() - 6);
-      work_hits_.push_back({y, i.id}); y += 2;
-    }
-    if (items.empty()) {
-      p.text_clipped(2, y++, work_tab_ == 2 ? (work_.supports_btw() ? "Ask a side question below." : "This agent has no /btw command.") : "No work here yet.", Style{th.dim, th.panel}, p.width() - 4);
-    }
-    p.hline(1, y, p.width() - 1, U'─', Style{th.border, th.panel});
-    const bool native_btw = work_tab_ == 2 && s_->adapter() && s_->adapter()->native_side_questions();
-    const int footer = work_tab_ == 2 && work_.supports_btw() ? native_btw ? 3 : 2 : 1;
-    work_body_ = Rect{2, y + 1, std::max(1, p.width() - 4), std::max(1, p.height() - y - footer - 2)};
+
     const WorkItem* item = work_.find(work_selected_);
-    if (item && item->kind == "agent" && !item->path.empty()) {
+    // A heading for what the detail shows: a terminal's whole command line.
+    if (item && item->kind == "terminal" && !item->command.empty()) {
+      std::vector<text::Span> spans;
+      const std::string cmd = "$ " + text::oneline(item->command, 4000);
+      text::wrap_spans(cmd, std::max(8, p.width() - 4), spans, 3);
+      for (const auto& sp : spans) p.text_clipped(2, y++, std::string_view(cmd).substr(sp.off, sp.len), Style{th.code, th.panel}, p.width() - 4);
+      const std::string state = item->status == "working" ? "running" : item->status == "failed" ? "failed" : "finished";
+      p.text_clipped(2, y++, state + (item->info.empty() ? "" : " · " + item->info), Style{work_color(item->status, th), th.panel}, p.width() - 4);
+      y++;
+    } else if (item && item->kind == "agent") {
+      p.text_clipped(2, y, item->title, Style{th.text, th.panel, attr::kBold}, p.width() - 4);
+      if (!item->info.empty()) p.text_clipped(std::min(p.width() - 2, 3 + text::str_width(item->title)), y, "· " + item->info, Style{th.dim, th.panel}, p.width() / 3);
+      y += 2;
+    }
+    work_body_ = Rect{2, y, std::max(1, p.width() - 4), std::max(1, p.height() - y - footer)};
+
+    if (thread) {
+      const auto& turns = app_->workspace().side_threads().thread(s_->agent(), s_->session_id());
+      work_text_ = turns.empty() ? std::string() : WorkSet::thread_text(turns);
+      if (turns.empty()) {
+        static constexpr const char* kIntro[] = {
+            "Ask a quick question about this chat while it carries on.",
+            "",
+            "The agent answers from a private copy of the conversation as it is now: nothing is added to the chat, no new chat appears, and nothing is edited.",
+            "",
+            "Follow-ups remember the earlier side questions."};
+        std::string intro;
+        for (const char* l : kIntro) intro += std::string(l) + "\n";
+        work_layout(intro, false);
+        for (auto& seg : work_segs_) seg.ink = md::Ink::Quote;
+      } else {
+        work_layout(work_text_, false);
+      }
+      Painter body = p;
+      work_draw_rows(body, th, true);
+    } else if (item && item->kind == "agent" && !item->path.empty()) {
       work_chat_.open(item->path, s_->adapter());
       work_chat_.set_base_dir(s_->cwd()); work_chat_.poll_growth();
       Painter body = p.sub(work_body_);
@@ -1432,34 +1571,37 @@ class SessionPane final : public Pane {
         work_detail_ms_ = now;
         work_text_ = work_.detail(*item, chat_.conversation());
       }
-      if (work_text_ != work_laid_out_ || work_body_.w != work_width_) {
-        work_laid_out_ = work_text_; work_width_ = work_body_.w;
-        work_rows_.clear(); work_segs_.clear(); work_arena_.clear();
-        const Str text = work_arena_.add(work_text_);
-        md::Out out{2000, &work_arena_, &work_segs_, &work_rows_, &work_spans_, &work_inline_, &work_layout_};
-        if (item->kind == "terminal") md::render_output(work_text_, text.off, true, work_width_, out, nullptr);
-        else md::render(work_text_, text.off, true, work_width_, out);
-      }
-      const int max_scroll = std::max(0, int(work_rows_.size()) - work_body_.h);
-      work_scroll_ = std::clamp(work_scroll_, 0, max_scroll);
-      const int first = item->kind == "terminal" ? max_scroll - work_scroll_ : work_scroll_;
-      for (int row = 0; row < work_body_.h && first + row < int(work_rows_.size()); row++) {
-        const md::Line& line = work_rows_[size_t(first + row)];
-        int x = work_body_.x + line.indent;
-        for (uint16_t n = 0; n < line.seg_count; n++) {
-          const md::Seg& seg = work_segs_[line.seg_first + n];
-          if (seg.ink == md::Ink::MathImage) continue;
-          x += p.text(x, work_body_.y + row, work_arena_.view(Str{seg.off & ~md::kScratchBit, seg.len}),
-                      ink_style(Style{th.text, th.panel}, seg.ink, th));
-        }
-      }
+      work_layout(work_text_, item->kind == "terminal");
+      work_draw_rows(p, th, item->kind == "terminal");
     }
-    p.text_clipped(2, p.height() - 1, "Tab tabs · ↑↓ select · PgUp/Dn scroll · Esc close", Style{th.dim, th.panel}, p.width() - 4);
-    if (work_tab_ == 2 && work_.supports_btw()) {
-      const std::string prompt = "btw › " + work_prompt_.text();
-      p.text_clipped(2, p.height() - 2, prompt, Style{focused ? th.accent : th.text, th.panel}, p.width() - 4);
-      if (native_btw) p.text_clipped(2, p.height() - 3, "not saved in the chat", Style{th.dim, th.panel}, p.width() - 4);
+
+    // The question box on Btw, then what the keys do here.
+    if (asking) {
+      const int ry = p.height() - 3;
+      p.hline(1, ry, p.width() - 1, U'─', Style{th.border, th.panel});
+      if (thread) {
+        const auto& turns = app_->workspace().side_threads().thread(s_->agent(), s_->session_id());
+        if (!turns.empty() && !turns.back().over())
+          p.text_clipped(std::max(2, p.width() - 13), ry, " answering… ", Style{th.working, th.panel}, 12);
+      }
+      const std::string box = "btw › " + work_prompt_.text();
+      const int box_w = p.width() - 4;
+      // Keep the end of a long question, where the typing is, in view.
+      const int over = text::str_width(box) - box_w + 1;
+      std::string shown = box;
+      if (over > 0) {
+        size_t at = 0;
+        for (int cut = 0; at < shown.size() && cut < over + 1;) { int w = 0; at = text::glyph_end(shown, at, &w); cut += w; }
+        shown = "…" + shown.substr(at);
+      }
+      const int end = p.text_clipped(2, ry + 1, shown, Style{focused ? th.accent : th.text, th.panel}, box_w);
+      if (focused && 2 + end < p.width() - 1) p.put(2 + end, ry + 1, U' ', Style{th.panel, th.accent});
     }
+    std::string hint = work_tab_ == 2 && thread ? "Enter ask · PgUp/Dn scroll · ^N new thread · Tab · Esc"
+                     : work_tab_ == 2 ? "Enter ask · ↑↓ pick · PgUp/Dn scroll · Tab · Esc"
+                     : work_tab_ == 1 ? "↑↓ pick · PgUp/Dn scroll · s show in chat · Tab · Esc"
+                                      : "↑↓ pick · PgUp/Dn scroll · Tab · Esc";
+    p.text_clipped(2, p.height() - 1, hint, Style{th.dim, th.panel}, p.width() - 4);
   }
 
   bool work_key(const KeyEvent& k) {
@@ -1467,25 +1609,22 @@ class SessionPane final : public Pane {
     if (k.key == Key::Tab || k.key == Key::BackTab) {
       work_tab_ = (work_tab_ + (k.key == Key::Tab ? 1 : 2)) % 3; select_work({}); return true;
     }
-    if (work_tab_ == 2 && btw_live_ && k.ctrl && (k.key == Key::Left || k.key == Key::Right)) {
-      s_->pty().write(k.key == Key::Left ? "\x1b[1;2D" : "\x1b[1;2C"); return true;
-    }
-    if (work_tab_ == 2 && btw_live_ && work_prompt_.empty() && !k.ctrl && !k.alt) {
-      if (k.key == Key::Up || k.key == Key::Down) {
-        s_->pty().write(k.key == Key::Up ? "\x1b[A" : "\x1b[B"); return true;
-      }
-      if (k.shift && (k.key == Key::Left || k.key == Key::Right)) {
-        s_->pty().write(k.key == Key::Left ? "\x1b[1;2D" : "\x1b[1;2C"); return true;
-      }
+    const bool thread = work_thread();
+    if (thread && k.is_ctrl('n')) {
+      app_->workspace().side_threads().clear(s_->agent(), s_->session_id());
+      work_laid_out_.clear(); work_scroll_ = 0;
+      app_->set_status("started a new side thread");
+      return true;
     }
     if (work_tab_ == 2 && work_.supports_btw() &&
-        (k.key == Key::Char || k.key == Key::Backspace || k.key == Key::Delete || k.key == Key::Left || k.key == Key::Right)) {
+        (k.key == Key::Char || k.key == Key::Backspace || k.key == Key::Delete || k.key == Key::Left || k.key == Key::Right) &&
+        !(k.ctrl && k.key == Key::Char)) {
       work_prompt_.edit_key(k); return true;
     }
     if (k.key == Key::Enter && work_tab_ == 2 && !work_prompt_.empty()) {
       const std::string text = text::oneline(work_prompt_.text(), 2000);
       const std::string error = app_->workspace().ask_side_question(*s_, text);
-      if (error.empty()) work_prompt_.reset();
+      if (error.empty()) { work_prompt_.reset(); work_scroll_ = 0; }
       else app_->set_status(error);
       return true;
     }
@@ -1493,21 +1632,24 @@ class SessionPane final : public Pane {
       app_->open_at(i->path, 0, {}); return true;
     }
     const auto items = work_items();
-    if ((k.key == Key::Up || k.key == Key::Down) && !items.empty()) {
+    if ((k.key == Key::Up || k.key == Key::Down) && !items.empty() && !thread) {
       int at = 0;
       for (size_t n = 0; n < items.size(); n++) if (items[n]->id == work_selected_) at = int(n);
       at = std::clamp(at + (k.key == Key::Up ? -1 : 1), 0, int(items.size()) - 1);
       select_work(items[size_t(at)]->id); return true;
     }
-    if (k.key == Key::PageUp || k.key == Key::PageDown || k.key == Key::Home || k.key == Key::End) {
+    if (k.key == Key::PageUp || k.key == Key::PageDown || k.key == Key::Home || k.key == Key::End ||
+        (thread && (k.key == Key::Up || k.key == Key::Down))) {
       const WorkItem* item = work_.find(work_selected_);
-      if (item && item->kind == "agent" && !item->path.empty()) work_chat_.on_key(k);
+      if (!thread && item && item->kind == "agent" && !item->path.empty()) work_chat_.on_key(k);
       else {
-        const int step = std::max(1, work_body_.h - 2);
-        const bool terminal = work_tab_ == 1;
-        if (k.key == Key::Home) work_scroll_ = terminal ? 100000 : 0;
-        else if (k.key == Key::End) work_scroll_ = terminal ? 0 : 100000;
-        else work_scroll_ = std::max(0, work_scroll_ + ((k.key == Key::PageUp) == terminal ? step : -step));
+        // Terminal output and the side thread are read from their end.
+        const bool from_end = thread || work_tab_ == 1;
+        const int step = k.key == Key::Up || k.key == Key::Down ? 1 : std::max(1, work_body_.h - 2);
+        const bool back = k.key == Key::PageUp || k.key == Key::Up;
+        if (k.key == Key::Home) work_scroll_ = from_end ? 100000 : 0;
+        else if (k.key == Key::End) work_scroll_ = from_end ? 0 : 100000;
+        else work_scroll_ = std::max(0, work_scroll_ + (back == from_end ? step : -step));
       }
       return true;
     }
@@ -1518,21 +1660,21 @@ class SessionPane final : public Pane {
   }
 
   bool work_mouse(const MouseEvent& m, Point local) {
-    if (m.kind == MouseKind::Press && local.y == 0 && local.x >= work_rect_.w - 13) {
-      work_open_ = false; work_focus_ = false; return true;
-    }
-    if (m.kind == MouseKind::Press && local.y == 2) {
-      work_tab_ = std::clamp((local.x - 2) / std::max(1, (work_rect_.w - 3) / 3), 0, 2);
-      select_work({}); return true;
+    if (m.kind == MouseKind::Press && local.y == 0) {
+      if (local.x >= work_rect_.w - 6) { work_open_ = false; work_focus_ = false; return true; }
+      for (size_t n = 0; n < work_tabs_.size(); n++)
+        if (local.x >= work_tabs_[n].first && local.x < work_tabs_[n].second) { work_tab_ = int(n); select_work({}); return true; }
+      return true;
     }
     if (m.kind == MouseKind::Press) for (const auto& hit : work_hits_)
-      if (local.y == hit.first || local.y == hit.first + 1) { select_work(hit.second); return true; }
+      if (local.y == hit.first) { select_work(hit.second); return true; }
     if (work_body_.contains(local)) {
       const WorkItem* i = work_.find(work_selected_);
-      if (i && i->kind == "agent" && !i->path.empty()) return work_chat_.on_mouse(m, Point{local.x - work_body_.x, local.y - work_body_.y});
+      if (!work_thread() && i && i->kind == "agent" && !i->path.empty())
+        return work_chat_.on_mouse(m, Point{local.x - work_body_.x, local.y - work_body_.y});
       if (m.kind == MouseKind::WheelUp || m.kind == MouseKind::WheelDown) {
         const bool up = m.kind == MouseKind::WheelUp;
-        work_scroll_ = std::max(0, work_scroll_ + (up == (work_tab_ == 1) ? 3 : -3));
+        work_scroll_ = std::max(0, work_scroll_ + (up == (work_tab_ != 0) ? 3 : -3));
       }
     }
     return true;
