@@ -16,16 +16,60 @@ std::string unescape_str(const js::Value& v) {
   return s;
 }
 
+// omp's answer to a form: "User answers:" and a JSON object (then any notes,
+// or that it timed out), keyed by the fields' names, each value an option's
+// value, a multiple choice's an array of them. Read back into the options'
+// labels, as omp itself shows the answer; a value no option has is what the
+// user typed for "Other".
+bool form_answers(const QuestionCard& card, std::string_view text, std::vector<std::string>& out) {
+  const size_t at = text.find("User answers:");
+  const size_t open = at == std::string_view::npos ? at : text.find('{', at);
+  if (open == std::string_view::npos) return false;
+  std::vector<std::pair<std::string_view, js::Value>> given;
+  if (!js::scan_object(text.substr(open), [&](std::string_view k, const js::Value& v) {
+        given.emplace_back(k, v);
+        return true;
+      }))
+    return false;
+  for (const QuestionSpec& q : card.questions) {
+    const auto label = [&](const js::Value& v) {
+      const std::string value = v.is_string() ? unescape_str(v) : std::string(v.raw);
+      for (const QuestionOption& o : q.options)
+        if (o.value == value) return o.label;
+      return q.control == "text" ? value : "Other: " + value;
+    };
+    std::string answer;
+    for (const auto& [name, v] : given) {
+      if (name != q.name) continue;
+      if (v.is_array())
+        js::scan_array(v.raw, [&](const js::Value& one) {
+          if (!answer.empty()) answer += ", ";
+          answer += label(one);
+          return true;
+        });
+      else
+        answer = label(v);
+    }
+    out.push_back(answer.empty() ? "(no answer)" : answer);
+  }
+  return true;
+}
+
 }  // namespace
 
 // Parses a Question event's `questions` array into a card. Options without a
 // label are dropped; the array is capped so a pathological payload cannot cost
 // a second of layout.
 void parse_question_card(std::string_view json, QuestionCard& card) {
+  bool more = false;
   js::scan_array(json, [&](const js::Value& qv) {
     if (!qv.is_object()) return true;
+    if (card.questions.size() >= 8) {
+      more = true;
+      return false;
+    }
     QuestionSpec q;
-    js::Value options{};
+    js::Value options{}, form{}, checked{};
     js::scan_object(qv.raw, [&](std::string_view k, const js::Value& v) {
       if (k == "question" || k == "title") q.text = unescape_str(v);
       else if (k == "header") q.header = unescape_str(v);
@@ -34,6 +78,13 @@ void parse_question_card(std::string_view json, QuestionCard& card) {
       else if (k == "recommended" && v.type == js::Type::Number)
         q.recommended = std::atoi(std::string(v.raw).c_str());
       else if (k == "options") options = v;
+      else if (k == "form" && v.is_object()) form = v;
+      return true;
+    });
+    js::scan_object(form.raw, [&](std::string_view k, const js::Value& v) {
+      if (k == "control") q.control = unescape_str(v);
+      else if (k == "name") q.name = unescape_str(v);
+      else if (k == "checked") checked = v;
       return true;
     });
     js::scan_array(options.raw, [&](const js::Value& ov) {
@@ -48,14 +99,27 @@ void parse_question_card(std::string_view json, QuestionCard& card) {
       js::scan_object(ov.raw, [&](std::string_view k, const js::Value& v) {
         if (k == "label") o.label = unescape_str(v);
         else if (k == "description") o.description = unescape_str(v);
+        else if (k == "value") o.value = unescape_str(v);
         return true;
       });
       if (!o.label.empty()) q.options.push_back(std::move(o));
       return true;
     });
+    if (!q.control.empty()) {
+      card.form = true;
+      card.terminal |= q.control == "text";
+      q.checked.assign(q.options.size(), 0);
+      js::scan_array(checked.raw, [&](const js::Value& n) {
+        const int at = n.type == js::Type::Number ? std::atoi(std::string(n.raw).c_str()) : -1;
+        if (at >= 0 && size_t(at) < q.checked.size()) q.checked[size_t(at)] = 1;
+        return true;
+      });
+    }
     if (!q.text.empty() || !q.options.empty()) card.questions.push_back(std::move(q));
-    return card.questions.size() < 8;
+    return true;
   });
+  // A form walked field by field cannot skip the ones the card leaves out.
+  if (card.form && more) card.terminal = true;
 }
 
 bool Conversation::open(const std::string& path, const Adapter* adapter) {
@@ -386,6 +450,8 @@ bool Conversation::question_answers(uint64_t id, std::vector<std::string>& out) 
   QuestionCard card;
   parse_question_card(arena_.view(ask->detail), card);
   if (card.questions.empty()) return false;
+
+  if (card.form) return form_answers(card, arena_.view(result->text), out);
 
   // claude writes each one as "<question>"="<answer>", a multi-select's labels
   // joined by ", ", and follows the closing quote with punctuation or with

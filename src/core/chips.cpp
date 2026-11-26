@@ -242,7 +242,7 @@ ChipApplied apply_chip_choice(LiveSession& s, std::string_view action, std::stri
     // settled: both in one PTY read are taken for pasted text and go to the
     // model as a message.
     const std::string line(action.substr(8));
-    if (!s.send_answer({line, "\r"})) return ChipApplied::Busy;
+    if (!s.send_answer({line, "\r"}, true)) return ChipApplied::Busy;
     const size_t sp = line.find(' ');
     if (sp != std::string::npos) {
       const std::string cmd = line.substr(0, sp);
@@ -269,7 +269,7 @@ ChipApplied apply_chip_choice(LiveSession& s, std::string_view action, std::stri
       keys.push_back(body.substr(at, end - at));
       at = end + 1;
     }
-    if (!s.send_answer(std::move(keys))) {
+    if (!s.send_answer(std::move(keys), true)) {
       key->clear();
       value->clear();
       return ChipApplied::Busy;

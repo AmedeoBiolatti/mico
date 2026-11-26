@@ -26,9 +26,16 @@ import tty
 START, END = b'\x1b[200~', b'\x1b[201~'
 
 
+def box():
+    """Claude's input box: its ❯ prompt framed by rules, as it draws it. mico
+    sends a new chat nothing until this is on screen."""
+    rule = '─'.encode() * 40 + b'\r\n'
+    return rule + '❯ '.encode() + b'\r\n' + rule
+
+
 def fixture(root):
     tty.setraw(0)
-    os.write(1, b'\x1b[?2004h' + b'PASTE READY\r\n')
+    os.write(1, b'\x1b[?2004h' + b'PASTE READY\r\n' + box())
     (root / 'ready').touch()
     received = b''
     attaching_until = 0.0

@@ -57,6 +57,7 @@ class CodexAdapter final : public Adapter {
   // Its "Trust this folder?" dialog, answered for a tracked folder as
   // claude's is.
   bool startup_prompt(const Vt& vt) const override;
+  bool input_ready(const Vt& vt) const override;
   std::string startup_answer(const Vt& vt, bool* confirms) const override;
   bool permission_prompt(const Vt& vt, PermissionPrompt& out) const override;
 

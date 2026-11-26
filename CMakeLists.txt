@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(mico VERSION 0.1.26 LANGUAGES CXX)
+project(mico VERSION 0.1.27 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -100,6 +100,7 @@ add_library(mico_adapters STATIC
   src/adapters/codex/commands.cpp
   src/adapters/codex/background.cpp
   src/adapters/pi/transcript.cpp
+  src/adapters/pi/form.cpp
   src/adapters/pi/session.cpp
   src/adapters/pi/list.cpp
   src/adapters/pi/changes.cpp

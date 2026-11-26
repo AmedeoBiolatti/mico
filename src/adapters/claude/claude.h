@@ -52,6 +52,7 @@ class ClaudeAdapter final : public Adapter {
   bool awaits_input(const Vt& vt) const override;
   std::string startup_answer(const Vt& vt, bool* confirms) const override;
   bool startup_prompt(const Vt& vt) const override;
+  bool input_ready(const Vt& vt) const override;
 
   // screen.cpp
   bool permission_prompt(const Vt& vt, PermissionPrompt& out) const override;

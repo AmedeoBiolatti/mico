@@ -319,6 +319,7 @@ void LiveSession::handoff(Handoff& h) {
            bg_poll_ms_, bg_progress_ms_, bg_tasks_dir_);
   if (h.reading()) {
     fresh_chat_ = false;
+    first_input_ = false;
     adapter_ = adapter_for(agent_);
     if (!transcript_.empty()) claimed_transcripts()[transcript_] = this;
   }
@@ -337,6 +338,9 @@ bool LiveSession::set_geometry(int w, int h) {
   }
   spawned_ = true;
   starting_until_ms_ = now_ms() + 60000;
+  spawned_ms_ = now_ms();
+  box_since_ms_ = 0;
+  first_input_ = adapter_ != nullptr;
   last_w_ = w;
   last_h_ = h;
   vt_.resize(w, h);
@@ -644,28 +648,48 @@ bool LiveSession::read_background_progress() {
 
 bool LiveSession::starting() const { return spawned_ && now_ms() < starting_until_ms_; }
 
+namespace {
+// A message step that is text to paste, encoded when it is written.
+constexpr std::string_view kPasteStep = "\x01paste:";
+}  // namespace
+
+void LiveSession::delivering() {
+  // Its box never seen: a release that draws it differently, which leaves
+  // every new chat's first message waiting out kFirstInputMaxMs.
+  if (first_input_ && !box_since_ms_)
+    MLOG("first input: %s's input box not seen %lld ms after it started; sent anyway", agent_.c_str(),
+         (long long)(now_ms() - spawned_ms_));
+  starting_until_ms_ = 0;
+  first_input_ = false;
+}
+
+bool LiveSession::takes_input() const {
+  if (!spawned_ || pty_.exited()) return false;
+  if (!first_input_) return true;
+  if (driver().startup_prompt(vt_)) return false;
+  const int64_t now = now_ms();
+  if (box_since_ms_ && now - box_since_ms_ >= kBoxSettleMs) return true;
+  return now - spawned_ms_ >= kFirstInputMaxMs;
+}
+
 bool LiveSession::send_parts(const std::vector<MessagePart>& parts, std::string_view first) {
   if (!spawned_ || pty_.exited() || message_sending()) return false;
-  starting_until_ms_ = 0;
   used_at_ = int64_t(time(nullptr));
-  const bool bracketed = vt_.bracketed_paste();
   bool has_image = false;
   for (const auto& p : parts) has_image |= p.image;
-  if (!first.empty()) {
-    std::vector<Step> steps{{std::string(first), 300}};
-    for (const auto& p : parts) steps.push_back({encode_paste(p.text, bracketed), p.image ? 400 : 120});
-    steps.push_back({"\r", 0});
-    return send_message(std::move(steps));
-  }
-  if (!has_image) {
+  if (first.empty() && !has_image && !answer_sending() && takes_input()) {
     std::string all;
     for (const auto& p : parts) all += p.text;
-    pty_.write(encode_paste(all, bracketed));
+    delivering();
+    pty_.write(encode_paste(all, vt_.bracketed_paste()));
     pty_.write("\r");
     return true;
   }
+  // Pasted as the agent's terminal is when the step goes: an agent still
+  // loading has not yet turned bracketed paste on.
   std::vector<Step> steps;
-  for (const auto& p : parts) steps.push_back({encode_paste(p.text, bracketed), p.image ? 400 : 120});
+  if (!first.empty()) steps.push_back({std::string(first), 300});
+  for (const auto& p : parts) steps.push_back({std::string(kPasteStep) + p.text, p.image ? 400 : 120});
   steps.push_back({"\r", 0});
   return send_message(std::move(steps));
 }
@@ -681,8 +705,8 @@ std::vector<MessagePart> LiveSession::take_last_queued() {
 void LiveSession::flush_queue() {
   if (queue_.empty() || !spawned_ || pty_.exited()) return;
   // A newly forked agent must mount its input before the first queued side
-  // question arrives. Before its first output the PTY is still canonical.
-  if (adapter_ && starting() && (!last_output_ms_ || now_ms() - last_output_ms_ < 120)) return;
+  // question arrives.
+  if (!takes_input()) return;
   if (message_sending() || answer_sending() || busy() || needs_input()) return;
   // One per turn. The last one sent has to have started a turn (the work
   // generation moves) before the next goes; a message that starts none, like
@@ -697,7 +721,6 @@ void LiveSession::flush_queue() {
 
 bool LiveSession::send_message(std::vector<Step> steps) {
   if (!spawned_ || pty_.exited() || message_sending() || steps.empty()) return false;
-  starting_until_ms_ = 0;
   msg_steps_ = std::move(steps);
   msg_step_ = 0;
   msg_key_ms_ = 0;  // the first step goes at once
@@ -705,10 +728,10 @@ bool LiveSession::send_message(std::vector<Step> steps) {
   return true;
 }
 
-bool LiveSession::send_answer(std::vector<std::string> steps) {
+bool LiveSession::send_answer(std::vector<std::string> steps, bool when_ready) {
   if (!spawned_ || pty_.exited() || answer_sending() || steps.empty()) return false;
-  starting_until_ms_ = 0;
   answer_steps_ = std::move(steps);
+  answer_when_ready_ = when_ready;
   answer_step_ = 0;
   answer_key_ms_ = now_ms();
   answer_feedback_ = false;
@@ -760,6 +783,12 @@ bool LiveSession::pump() {
     if (msg_step_ > 0) msg_feedback_ = true;
   }
 
+  // Until its first input, how long the agent's input box has been there.
+  if (first_input_) {
+    if (!driver().input_ready(vt_) || driver().startup_prompt(vt_)) box_since_ms_ = 0;
+    else if (!box_since_ms_) box_since_ms_ = now_ms();
+  }
+
   bool answer_changed = false;
   if (message_sending()) {
     const int64_t now = now_ms();
@@ -770,11 +799,19 @@ bool LiveSession::pump() {
       const int64_t since = now - msg_key_ms_;
       // After the agent has visibly taken the last step and gone quiet, or
       // after a second and a half regardless: a step that changed nothing on
-      // screen must not strand the rest of the message.
-      const bool ready = !prev || (since >= prev->settle_ms &&
-                                   ((msg_feedback_ && now - last_output_ms_ >= 40) || since >= 1500));
+      // screen must not strand the rest of the message. The first waits for
+      // an agent just started to take input, and for a command typed into
+      // its box (a chip's) to be done: the two would run into one line.
+      const bool ready = !prev ? !answer_sending() && takes_input()
+                               : (since >= prev->settle_ms &&
+                                  ((msg_feedback_ && now - last_output_ms_ >= 40) || since >= 1500));
       if (ready) {
-        pty_.write(msg_steps_[msg_step_++].bytes);
+        if (!prev) delivering();
+        const std::string& bytes = msg_steps_[msg_step_++].bytes;
+        if (bytes.starts_with(kPasteStep))
+          pty_.write(encode_paste(bytes.substr(kPasteStep.size()), vt_.bracketed_paste()));
+        else
+          pty_.write(bytes);
         msg_key_ms_ = now;
         msg_feedback_ = false;
         if (msg_step_ == msg_steps_.size()) {
@@ -789,7 +826,9 @@ bool LiveSession::pump() {
     const int64_t now = now_ms();
     // Wait for a terminal update and a quiet frame before each subsequent
     // key. In particular, the review screen must mount before its Enter.
-    if (pty_.exited() || now - answer_key_ms_ > 3000) {
+    if (answer_step_ == 0 && !pty_.exited() && (msg_step_ > 0 || (answer_when_ready_ && !takes_input()))) {
+      answer_key_ms_ = now;  // held, not failing
+    } else if (pty_.exited() || now - answer_key_ms_ > 3000) {
       cancel_answer();
       answer_failed_ = true;
       answer_changed = true;
@@ -810,6 +849,7 @@ bool LiveSession::pump() {
           cancel_answer();
           answer_failed_ = true;
         } else {
+          if (answer_step_ == 0) delivering();
           if (!again) answer_step_++;
           pty_.write(key);
           answer_key_ms_ = now;
@@ -821,10 +861,12 @@ bool LiveSession::pump() {
   }
 
   // A dialog the agent opens at startup, answered for the user: the folder is
-  // on their tracked list, which is trust enough. Only while it is starting:
-  // a resumed chat is asked too, its transcript there all along. One key at a
-  // time, each once the screen has been still for a moment.
-  if (starting() && !answer_sending() && trust_tries_ < 20 &&
+  // on their tracked list, which is trust enough; codex's offer to update
+  // itself is skipped. Only while it is starting, before anything else is
+  // typed (a message waits for it, takes_input()): a resumed chat is asked
+  // too, its transcript there all along. One key at a time, each once the
+  // screen has been still for a moment.
+  if (starting() && answer_step_ == 0 && msg_step_ == 0 && trust_tries_ < 20 &&
       now_ms() >= trust_next_ms_ && now_ms() - last_output_ms_ >= 250) {
     bool confirms = false;
     const std::string key = driver().startup_answer(vt_, &confirms);
@@ -832,7 +874,7 @@ bool LiveSession::pump() {
       pty_.write(key);
       trust_tries_++;
       trust_next_ms_ = now_ms() + (confirms ? 3000 : 300);
-      if (confirms) MLOG("accepted the startup prompt for %s", cwd_.c_str());
+      if (confirms) MLOG("answered %s's startup prompt in %s", agent_.c_str(), cwd_.c_str());
     }
   }
 

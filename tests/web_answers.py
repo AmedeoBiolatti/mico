@@ -72,7 +72,12 @@ def question():
     draw()
     return draw, len(options)
 
-draw, n = permission() if mode == 'permission' else question() if mode == 'question' else (lambda: os.write(1, b'> '), 0)
+# Claude's idle input box: its ❯ prompt framed by rules. mico sends an agent
+# it has just started nothing until this is on screen.
+BOX = ('\u2500' * 40 + '\r\n\u276f \r\n' + '\u2500' * 40 + '\r\n').encode()
+draw, n = permission() if mode == 'permission' else question() if mode == 'question' else (lambda: os.write(1, BOX), 0)
+if not n:
+    draw()
 open(os.path.join(root, 'ready'), 'w').close()
 buffer = b''
 while True:
@@ -83,7 +88,7 @@ while True:
         continue
     if mode == 'btw':
         if key == b'\x1b':
-            os.write(1, b'\x1b[2J\x1b[H> ')
+            os.write(1, b'\x1b[2J\x1b[H' + BOX)
             buffer = b''
             continue
         buffer += key

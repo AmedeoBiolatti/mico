@@ -18,6 +18,12 @@ bool Adapter::busy(const Liveness& l) const {
 
 bool Adapter::awaits_input(const Vt& vt) const { return screen_awaits_input(vt); }
 
+bool Adapter::input_ready(const Vt& vt) const {
+  for (int y = std::max(0, vt.total_rows() - vt.height()); y < vt.total_rows(); y++)
+    if (!row_is_blank(vt.row(y))) return true;
+  return false;
+}
+
 ChipControl Adapter::chip_control(std::string_view key) const {
   // The agents' own pickers, by the names most of them use.
   ChipControl c;

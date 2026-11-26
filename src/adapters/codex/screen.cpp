@@ -144,13 +144,33 @@ bool codex_trust_dialog(const Vt& vt) {
   return false;
 }
 
-// How far the cursor is from the "trust" choice, in rows; kNoMove when either
-// is not on screen.
+// Codex's update dialog, which it opens over its input box at startup when a
+// newer release is out:
+//   Update available · 0.172.0 → 0.173.0 / Release notes: … /
+//   › 1. Update now (runs `npm install -g @openai/codex`) / 2. Skip /
+//   3. Skip until next version / enter continue · esc skip
+// The cursor starts on "Update now": an Enter meant for a message ran npm,
+// which fails without root, and codex exited with it.
+bool codex_update_dialog(const Vt& vt) {
+  int bottom = vt.total_rows() - 1;
+  while (bottom >= 0 && row_is_blank(vt.row(bottom))) bottom--;
+  if (bottom < 0) return false;
+  const std::string last = row_text(vt.row(bottom));
+  if (last.find("enter continue") == std::string::npos && last.find("Press enter") == std::string::npos)
+    return false;
+  for (int y = bottom; y >= std::max(0, bottom - 16); y--)
+    if (row_text(vt.row(y)).find("Update available") != std::string::npos) return true;
+  return false;
+}
+
+// How far the cursor is from the choice `wanted` picks, in rows; kNoMove when
+// either is not on screen.
 constexpr int kNoMove = -1000;
-int codex_trust_moves(const Vt& vt) {
+template <class Wanted>
+int codex_moves_to(const Vt& vt, Wanted wanted) {
   // The dialog fills the screen from its top: every visible row.
   const int bottom = vt.total_rows() - 1;
-  int cursor = -1, yes = -1, choice = 0;
+  int cursor = -1, target = -1, choice = 0;
   for (int y = std::max(0, bottom - vt.height() + 1); y <= bottom; y++) {
     const std::string t = row_text(vt.row(y));
     std::string_view v = trim_left(t);
@@ -158,26 +178,47 @@ int codex_trust_moves(const Vt& vt) {
     if (focused) v = trim_left(v.substr(3));
     if (!is_numbered_choice(v)) continue;
     if (focused) cursor = choice;
-    for (std::string_view y_label : kTrustYes)
-      if (v.find(y_label) != std::string_view::npos) yes = choice;
+    if (target < 0 && wanted(trim_left(v.substr(v.find('.') + 1)))) target = choice;
     choice++;
   }
-  if (cursor < 0 || yes < 0) return kNoMove;
-  return yes - cursor;
+  if (cursor < 0 || target < 0) return kNoMove;
+  return target - cursor;
+}
+
+int codex_trust_moves(const Vt& vt) {
+  return codex_moves_to(vt, [](std::string_view label) {
+    for (std::string_view y_label : kTrustYes)
+      if (label.find(y_label) != std::string_view::npos) return true;
+    return false;
+  });
+}
+
+// "Skip": this once. "Skip until next version" would write to codex's files.
+int codex_skip_moves(const Vt& vt) {
+  return codex_moves_to(vt, [](std::string_view label) { return label == "Skip"; });
 }
 
 }  // namespace
 
-bool CodexAdapter::startup_prompt(const Vt& vt) const { return codex_trust_dialog(vt); }
+bool CodexAdapter::startup_prompt(const Vt& vt) const { return codex_trust_dialog(vt) || codex_update_dialog(vt); }
 
 // One step at a time, each judged from the screen, as claude's: an arrow
-// while the cursor is elsewhere, Enter once it is on the trusting choice.
+// while the cursor is elsewhere, Enter once it is on the choice wanted.
 std::string CodexAdapter::startup_answer(const Vt& vt, bool* confirms) const {
-  if (!codex_trust_dialog(vt)) return {};
-  const int moves = codex_trust_moves(vt);
+  const int moves = codex_trust_dialog(vt)    ? codex_trust_moves(vt)
+                    : codex_update_dialog(vt) ? codex_skip_moves(vt)
+                                              : kNoMove;
   if (moves == kNoMove) return {};
   *confirms = moves == 0;
   return moves > 0 ? "\x1b[B" : moves < 0 ? "\x1b[A" : "\r";
+}
+
+// Its input box: the lowest "›" row, when that is not a dialog's choice.
+// Codex draws it before it opens its update dialog over it, so being on
+// screen is not enough by itself (LiveSession::takes_input waits a moment).
+bool CodexAdapter::input_ready(const Vt& vt) const {
+  std::string rest;
+  return codex_cursor_row(vt, rest) >= 0 && !is_numbered_choice(rest) && !startup_prompt(vt);
 }
 
 std::string CodexAdapter::screen_reply(const Vt& vt) const {

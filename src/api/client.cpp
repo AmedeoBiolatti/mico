@@ -678,6 +678,7 @@ void Client::answer_question(std::string_view rid, uint64_t key, const std::stri
     }
   if (!found || card.questions.empty()) return result(rid, false, "no such question");
   if (card.async) return result(rid, false, "that one is answered with a message");
+  if (card.terminal) return result(rid, false, "that one is answered in the agent's terminal");
   if (s->answer_sending()) return result(rid, false, "still answering the last one");
 
   // Per question, the options picked: a flag for each.
@@ -699,15 +700,19 @@ void Client::answer_question(std::string_view rid, uint64_t key, const std::stri
   for (size_t i = 0; i < card.questions.size(); i++) {
     const auto& q = card.questions[i];
     const size_t n = std::count(picked[i].begin(), picked[i].end(), uint8_t(1));
-    if (n == 0 || (!q.multi && n > 1)) return result(rid, false, "choose an option for each question");
+    // A form's checkboxes may all be left empty, as in omp's own dialog.
+    if ((n == 0 && !(card.form && q.multi)) || (!q.multi && n > 1))
+      return result(rid, false, "choose an option for each question");
     multi.push_back(q.multi);
     recommended.push_back(q.recommended);
     options.push_back(int(q.options.size()));
   }
-  const auto steps = question_answer_steps(s->driver(), multi, recommended, options, picked);
+  const auto steps = card.form ? form_answer_steps(card, picked)
+                               : question_answer_steps(s->driver(), multi, recommended, options, picked);
   if (s->driver().menu_keys().paced) {
     if (!s->send_answer(steps)) return result(rid, false, "could not send the answer");
   } else {
+    s->note_user_input();
     for (const auto& step : steps) s->pty().write(step);
   }
   result(rid, true, {}, key);

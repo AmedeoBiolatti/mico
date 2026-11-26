@@ -761,7 +761,17 @@ its prompt cannot be answered through a question card.
 Codex asks too, in a git repository it has not seen ("Trust this folder?").
 mico writes nothing into codex's config for it: it answers the dialog when a
 session starts, one key at a time, Enter only once the cursor is on "Trust
-and continue", and codex saves the decision itself.
+and continue", and codex saves the decision itself. When a newer codex is out,
+it opens "Update available" at startup with the cursor on "Update now";
+mico picks "Skip" (this time only), so a message never lands there and runs
+the install. Update codex yourself, the way you installed it.
+
+What you send a chat that is still starting waits for the agent: mico types
+nothing until the agent's input box is on screen and has stayed there, with
+no dialog over it, for a second. That covers a message, a chip's change and
+anything queued. Claude keeps text typed while it loads but loses the Enter,
+so the text would sit in its box and the next message would be added to it.
+An agent whose box mico can't recognise is sent to after ten seconds.
 
 ## While you are away
 
@@ -1765,6 +1775,16 @@ header chip, the question, and each option with its description. Nothing is
 guessed from the screen; the card is parsed from the tool call in the
 transcript. A stored transcript shows the card with the recorded answer beneath
 it.
+
+omp 18 asks with one HTML form instead (`{"html": "<form>…</form>"}`). mico
+reads it the way omp does. Each radio group, checkbox group or `<select>` is
+a question, and what it asks is the field's label, else the text just before
+the field, else its fieldset's legend. Options omp shows disabled are left
+out, and checkboxes start ticked the way the form has them. An answer fills
+in omp's own form dialog: the cursor goes to each choice, Space ticks or
+unticks checkboxes, `←`/`→` change a `<select>`, and Enter on Submit sends
+the form. A form with something to type (a text box, a textarea), or more
+than eight fields, is shown as a card but answered in omp's terminal (`F2`).
 
 Claude (2.1.x) does **not** write a pending `AskUserQuestion` call to its
 transcript: the call stays in memory while its dialog is up and is written
