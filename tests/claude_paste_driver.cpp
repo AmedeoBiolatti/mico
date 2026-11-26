@@ -31,9 +31,10 @@ int main(int argc, char** argv) {
     }
     return out;
   };
-  for (int i = 0; i < 600; ++i) {
+  // Until the agent is up: its box drawn and settled, as mico waits for.
+  for (int i = 0; i < 800; ++i) {
     frame();
-    if (std::filesystem::exists(root + "/ready") && !session.transcript().empty()) break;
+    if (std::filesystem::exists(root + "/ready") && !session.transcript().empty() && session.takes_input()) break;
     usleep(5000);
   }
   bool ok = true;

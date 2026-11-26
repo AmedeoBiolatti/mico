@@ -1,6 +1,9 @@
 #include "adapters/claude/claude.h"
 
+#include <algorithm>
+
 #include "adapters/cmdline.h"
+#include "adapters/screen.h"
 #include "base/fs.h"
 #include "base/json.h"
 #include "base/uuid.h"
@@ -167,6 +170,19 @@ bool ClaudeAdapter::busy(const Liveness& l) const {
 // screen: an arrow while the cursor is elsewhere, and Enter only once the
 // screen shows it on "Yes".
 bool ClaudeAdapter::startup_prompt(const Vt& vt) const { return screen_is_trust_prompt(vt); }
+
+// Its input box: a ❯ row directly under a rule, in the screen's last rows,
+// whichever renderer drew it. What is typed while claude loads lands in the
+// box once it shows, but an Enter typed then is lost: the message stays in
+// the box, and the next one is written after it.
+bool ClaudeAdapter::input_ready(const Vt& vt) const {
+  const int top = std::max(0, vt.total_rows() - vt.height());
+  int bottom = vt.total_rows() - 1;
+  while (bottom > top && row_is_blank(vt.row(bottom))) bottom--;
+  for (int y = bottom; y > std::max(top, bottom - 12); y--)
+    if (row_lead(vt.row(y)) == 0x276F && row_is_chrome(vt.row(y - 1))) return !screen_is_trust_prompt(vt);
+  return false;
+}
 
 std::string ClaudeAdapter::startup_answer(const Vt& vt, bool* confirms) const {
   if (!screen_is_trust_prompt(vt)) return {};

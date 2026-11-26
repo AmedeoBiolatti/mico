@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <functional>
 
+#include "adapters/pi/form.h"
 #include "adapters/pi/pi.h"
 #include "adapters/user_text.h"
 #include "adapters/translation.h"
@@ -155,6 +156,25 @@ bool plot_args(std::string_view name, const js::Value& args, std::string& out) {
   });
   if (path != "xd://mico_plot" || !content.is_string()) return false;
   js::unescape_append(content.body(), out);
+  return true;
+}
+
+// omp's ask since 18.x: one HTML form ({"html": "<form>…"}) rather than a
+// questions array, read into the questions a card shows (omp_form_questions).
+bool form_question(Event& e, Arena& arena, const js::Value& args) {
+  if (arena.view(e.name) != "ask" || !args.is_object()) return false;
+  js::Value html{};
+  js::scan_object(args.raw, [&](std::string_view k, const js::Value& v) {
+    if (k == "html") html = v;
+    return true;
+  });
+  if (!html.is_string()) return false;
+  std::string form, questions, first;
+  js::unescape_append(html.body(), form);
+  if (!omp_form_questions(form, questions, first)) return false;
+  e.kind = EventKind::Question;
+  e.text = arena.add(first);
+  e.detail = arena.add(questions);
   return true;
 }
 
@@ -599,6 +619,7 @@ void PiFamilyAdapter::parse(std::string_view raw, Arena& arena, std::vector<Even
       e.tool_id = hash_id(id.body());
       if (std::string chart; plot_args(arena.view(e.name), args, chart)) {
         make_chart_event(e, arena, chart);
+      } else if (form_question(e, arena, args)) {
       } else if (!(is_question_tool(arena.view(e.name)) && build_question(e, arena, args))) {
         e.summary = agent_write_summary(arena, arena.view(e.name), args);
         if (e.summary.empty()) {

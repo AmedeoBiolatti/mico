@@ -83,7 +83,20 @@ class LiveSession {
            queue_.empty() && after_answer_.empty() && !message_sending() && !answer_sending();
   }
   // Input forwarded directly to the agent's raw terminal is use too.
-  void note_user_input() { starting_until_ms_ = 0; fresh_chat_ = false; }
+  void note_user_input() {
+    starting_until_ms_ = 0;
+    fresh_chat_ = false;
+    first_input_ = false;
+  }
+  // Whether keys written now reach the agent's input box. An agent just
+  // started is sent nothing until it has drawn that box and kept it, with no
+  // dialog over it, for a moment: claude keeps what is typed while it loads
+  // but drops the Enter, so a message sat in its box and the next was written
+  // after it ("/model opusWhat is…"); codex draws its box, then opens its
+  // update dialog over it, where an Enter runs npm. Messages, chips' commands
+  // and the queue wait for it. An agent whose box mico cannot see is sent to
+  // after kFirstInputMaxMs, unless a startup dialog is up.
+  bool takes_input() const;
   // The command start() settled on, including anything mico added to it.
   const std::vector<std::string>& argv() const { return argv_; }
 
@@ -94,7 +107,9 @@ class LiveSession {
 
   // Deliver form navigation one key at a time, after the preceding terminal
   // update settles. Owned by the session so changing chats cannot reroute it.
-  bool send_answer(std::vector<std::string> steps);
+  // `when_ready`: not an answer to something on screen but a command typed
+  // into the agent's box (a chip's "/model …"), which waits for takes_input().
+  bool send_answer(std::vector<std::string> steps, bool when_ready = false);
   bool answer_sending() const { return !answer_steps_.empty(); }
   // How soon pump() has work that only the passage of time advances, or -1.
   // Output from the agent wakes the loop by itself; these do not, so the loop
@@ -271,12 +286,22 @@ class LiveSession {
   bool spawned_ = false;
   std::vector<std::string> answer_steps_;
   size_t answer_step_ = 0;
+  bool answer_when_ready_ = false;
   int64_t answer_key_ms_ = 0;
   bool answer_feedback_ = false;
   bool answer_failed_ = false;
   std::string after_answer_;
   int64_t after_answer_ms_ = 0;  // not before this
   void flush_queue();
+  // Called with the first key that reaches the agent.
+  void delivering();
+  // Until the first input is delivered: when it was spawned, and since when
+  // its input box has been on screen with no dialog over it (0: not now).
+  bool first_input_ = false;
+  int64_t spawned_ms_ = 0;
+  int64_t box_since_ms_ = 0;
+  static constexpr int64_t kBoxSettleMs = 1000;
+  static constexpr int64_t kFirstInputMaxMs = 10000;
   std::vector<std::vector<MessagePart>> queue_;
   bool queue_waiting_ = false;  // the last one sent has not visibly started a turn yet
   uint64_t queue_gen_ = 0;

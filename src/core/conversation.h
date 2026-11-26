@@ -16,12 +16,19 @@ namespace mico {
 // event's `questions` JSON.
 struct QuestionOption {
   std::string label, description;
+  std::string value;  // an omp form's: what its answer names
 };
 struct QuestionSpec {
   std::string header, text;
   bool multi = false;
   int recommended = 0;
   std::vector<QuestionOption> options;
+  // A field of omp's HTML form (omp_form_questions): its control ("radio",
+  // "checkbox", "select", "multiselect"; "text" for one only its terminal
+  // answers), its name, and which options it had checked at first.
+  std::string control;
+  std::string name;
+  std::vector<uint8_t> checked;
 };
 struct QuestionCard {
   uint64_t tool_id = 0;
@@ -31,6 +38,11 @@ struct QuestionCard {
   // not through the agent's menu, and offers a reply in the user's own words.
   bool async = false;
   std::string call_id;  // an optional question's, which its answer names
+  // omp's HTML form, answered by walking its dialog (form_answer_steps).
+  bool form = false;
+  // It asks for something a card cannot choose (text): shown, and answered
+  // in the agent's terminal.
+  bool terminal = false;
 };
 void parse_question_card(std::string_view json, QuestionCard& card);
 

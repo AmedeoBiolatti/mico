@@ -275,6 +275,11 @@ class Adapter {
   virtual std::string startup_answer(const Vt& vt, bool* confirms) const { return {}; }
   // True while the screen shows such a dialog, answerable or not yet.
   virtual bool startup_prompt(const Vt& vt) const { return false; }
+  // True while the agent's own input box is on screen, taking what is typed,
+  // with no dialog in its place. A chat just started is sent nothing before
+  // that (LiveSession::takes_input): claude keeps text typed while it loads
+  // but drops the Enter. By default, once the agent has drawn anything.
+  virtual bool input_ready(const Vt& vt) const;
 
   // --- Reading a running session's screen ----------------------------------
 

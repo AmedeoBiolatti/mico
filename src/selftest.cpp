@@ -19,7 +19,10 @@
 #include "base/fs.h"
 #include "adapters/claude/claude.h"
 #include "adapters/codex/codex.h"
+#include "adapters/pi/form.h"
+#include "base/json_write.h"
 #include "adapters/pi/pi.h"
+#include "core/answers.h"
 #include "adapters/screen.h"
 #include "base/json.h"
 #include "adapters/adapter.h"
@@ -2078,6 +2081,47 @@ int run_selftest() {
     quoted.resize(80, 8);
     quoted.write("\xE2\x80\xA2 It asked: Trust this folder?\r\n\r\n\xE2\x80\xBA Ask Codex to do anything");
     check(!codex_adapter().startup_prompt(quoted), "codex: a reply quoting the dialog is not it");
+    check(codex_adapter().input_ready(quoted), "codex: its input box takes typing");
+    check(!codex_adapter().input_ready(vt), "codex: not while its trust dialog is up");
+
+    // Its update dialog, opened over the input box at startup with the cursor
+    // on "Update now": skipped, this once.
+    Vt update;
+    update.resize(80, 12);
+    update.write("  Update available \xC2\xB7 0.172.0 \xE2\x86\x92 0.173.0\r\n"
+                 "  Release notes: https://github.com/openai/codex/releases/latest\r\n\r\n"
+                 "\xE2\x80\xBA 1. Update now (runs `npm install -g @openai/codex`)\r\n  2. Skip\r\n"
+                 "  3. Skip until next version\r\n\r\n  enter continue \xC2\xB7 esc skip");
+    check(codex_adapter().startup_prompt(update), "codex: its update dialog is a startup prompt");
+    check(!codex_adapter().input_ready(update), "codex: no typing while it is up");
+    check(codex_adapter().startup_answer(update, &confirms) == "\x1b[B" && !confirms,
+          "codex: the cursor is moved off Update now");
+    Vt skip;
+    skip.resize(80, 12);
+    skip.write("  Update available \xC2\xB7 0.172.0 \xE2\x86\x92 0.173.0\r\n\r\n  1. Update now\r\n"
+               "\xE2\x80\xBA 2. Skip\r\n  3. Skip until next version\r\n\r\n  enter continue \xC2\xB7 esc skip");
+    check(codex_adapter().startup_answer(skip, &confirms) == "\r" && confirms,
+          "codex: Enter on Skip, not Skip until next version");
+
+    // Claude's input box: a ❯ row under a rule. What it shows while loading,
+    // and its dialogs, are not it.
+    std::string line;
+    for (int i = 0; i < 40; i++) line += "\xE2\x94\x80";
+    Vt claude_box;
+    claude_box.resize(60, 12);
+    claude_box.write(" \xE2\x96\x90\xE2\x96\x9B Claude Code\r\n\r\n" + line + "\r\n\xE2\x9D\xAF Try \"fix lint\"\r\n" +
+                     line + "\r\n  \xE2\x8F\xB5\xE2\x8F\xB5 auto mode on");
+    check(claude_adapter().input_ready(claude_box), "claude: its input box takes typing");
+    Vt loading;
+    loading.resize(60, 12);
+    check(!claude_adapter().input_ready(loading), "claude: nothing drawn yet is not ready");
+    loading.write(" \xE2\x96\x90\xE2\x96\x9B Claude Code v2\r\n");
+    check(!claude_adapter().input_ready(loading), "claude: its banner alone is not ready");
+    Vt trust;
+    trust.resize(60, 12);
+    trust.write(line + "\r\n Quick safety check: do you trust this folder?\r\n\r\n"
+                "\xE2\x9D\xAF 1. Yes, I trust this folder\r\n   2. No, exit\r\n\r\n Enter to confirm \xC2\xB7 Esc to cancel");
+    check(!claude_adapter().input_ready(trust), "claude: not while its trust dialog is up");
 
     Vt menu;
     menu.resize(100, 12);
@@ -2334,6 +2378,153 @@ int run_selftest() {
           printf("        asked %.2f, landed %.3f, %d rows\n", want, got, rows_with_text());
       }
     }
+  }
+
+  // omp's ask since 18.x takes one HTML form: its fields are a card's
+  // questions, answered by walking omp's own form dialog, and its answer
+  // folds the card down to the options chosen. The keys below are the ones
+  // omp 18.20.2's dialog took, choice for choice.
+  {
+    const std::string form =
+        "<form>\n  <fieldset>\n    <legend>Which database should the new service use?</legend>\n"
+        "    <label><input type=\"radio\" name=\"db\" value=\"postgres\" checked> Postgres: relational, JSONB "
+        "support</label>\n"
+        "    <label><input type=\"radio\" name=\"db\" value=\"sqlite\"> SQLite: embedded, zero-ops</label>\n"
+        "    <label><input type=\"radio\" name=\"db\" value=\"mongodb\"> MongoDB: document store</label>\n"
+        "  </fieldset>\n  <fieldset>\n    <legend>Which auth flows should ship in v1?</legend>\n"
+        "    <label><input type=\"checkbox\" name=\"auth\" value=\"password\" checked> Email + password</label>\n"
+        "    <label><input type=\"checkbox\" name=\"auth\" value=\"oauth\" checked> OAuth (Google, GitHub)</label>\n"
+        "    <label><input type=\"checkbox\" name=\"auth\" value=\"magic\"> Magic links</label>\n"
+        "    <label><input type=\"checkbox\" name=\"auth\" value=\"saml\"> SAML SSO</label>\n"
+        "  </fieldset>\n</form>";
+    std::string args;
+    jw::Writer(args).begin_object().field("html", form).end_object();
+    const std::string call =
+        R"({"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"ask","id":"call_f","arguments":)" +
+        args + "}]}}";
+    Arena ar;
+    std::vector<Event> ev;
+    pi_adapter().parse(call, ar, ev);
+    check(ev.size() == 1 && ev[0].kind == EventKind::Question &&
+              ar.view(ev[0].text) == "Which database should the new service use?",
+          "omp form: its ask is a question, the first field's");
+    QuestionCard card;
+    if (!ev.empty()) parse_question_card(ar.view(ev[0].detail), card);
+    check(card.form && !card.terminal && card.questions.size() == 2 && card.questions[0].control == "radio" &&
+              card.questions[0].options.size() == 3 &&
+              card.questions[0].options[1].label == "SQLite: embedded, zero-ops" &&
+              card.questions[0].options[1].value == "sqlite" && card.questions[1].multi &&
+              card.questions[1].text == "Which auth flows should ship in v1?" &&
+              card.questions[1].checked == std::vector<uint8_t>({1, 1, 0, 0}),
+          "omp form: radio and checkbox groups are its questions, with what starts checked");
+    check(form_answer_steps(card, {{0, 1, 0}, {1, 0, 1, 0}}) ==
+              std::vector<std::string>({"\x1b[Z", "\x1b[B", "\r", "\x1b[B", " ", "\x1b[B", " ", "\r", "\r"}),
+          "omp form: down to SQLite and Enter; OAuth off, Magic links on; then Submit");
+    check(form_answer_steps(card, {{1, 0, 0}, {1, 1, 0, 0}}) ==
+              std::vector<std::string>({"\x1b[Z", "\r", "\r", "\r"}),
+          "omp form: the first option, and the checkboxes as they were");
+
+    // A <select> changes with ←/→ past its disabled options, and a label's
+    // for= names it; a multiple one toggles like checkboxes. "Other size"
+    // is an option of the group, not a row omp adds.
+    const std::string form2 =
+        "<form><p>Pick a region for the deploy.</p><label for=\"region\">Region</label>"
+        "<select id=\"region\" name=\"region\"><option value=\"us\">US East</option>"
+        "<option value=\"eu\" selected>EU West</option><option value=\"ap\" disabled>Asia (full)</option>"
+        "<option value=\"sa\">South America</option></select>"
+        "<fieldset><legend>Which extras?</legend><select name=\"extras\" multiple>"
+        "<option value=\"cdn\" selected>CDN</option><option value=\"waf\">WAF</option>"
+        "<option value=\"logs\">Logs &amp; metrics</option></select></fieldset>"
+        "<fieldset><legend>Size</legend>"
+        "<label><input type=\"radio\" name=\"size\" value=\"s\" disabled> Small</label>"
+        "<label><input type=\"radio\" name=\"size\" value=\"m\"> Medium</label>"
+        "<label><input type=\"radio\" name=\"size\" value=\"l\" checked> Large</label>"
+        "<label><input type=\"radio\" name=\"size\" value=\"x\"> Other size</label></fieldset></form>";
+    std::string qs, first;
+    QuestionCard card2;
+    check(omp_form_questions(form2, qs, first), "omp form: a form of selects is read");
+    parse_question_card(qs, card2);
+    check(card2.questions.size() == 3 && card2.questions[0].text == "Region" &&
+              card2.questions[0].control == "select" && card2.questions[0].options.size() == 3 &&
+              card2.questions[0].recommended == 1 && card2.questions[1].control == "multiselect" &&
+              card2.questions[1].options[2].label == "Logs & metrics" && card2.questions[2].options.size() == 3,
+          "omp form: selects, a label's for=, entities, and no disabled options");
+    check(form_answer_steps(card2, {{0, 0, 1}, {0, 1, 1}, {1, 0, 0}}) ==
+              std::vector<std::string>({"\x1b[Z", "\x1b[C", "\r", " ", "\x1b[B", " ", "\x1b[B", " ", "\r", "\r", "\r"}),
+          "omp form: → past Asia to South America; CDN off, WAF and Logs on; Medium");
+
+    // What it asks: the text just before a field when nothing else names it.
+    QuestionCard card3;
+    check(omp_form_questions("<form><p>Which colour?</p><select name=\"c\"><option>Red</option>"
+                             "<option>Blue</option></select></form>",
+                             qs, first),
+          "omp form: a bare select is read");
+    parse_question_card(qs, card3);
+    check(card3.questions.size() == 1 && card3.questions[0].text == "Which colour?" &&
+              card3.questions[0].options[1].value == "Blue",
+          "omp form: the text before a field asks its question; an option's text is its value");
+
+    // A box to type in is the terminal's to fill: the card says what it asks.
+    QuestionCard card4;
+    check(omp_form_questions("<form><label>Name <input name=\"who\"></label><fieldset><legend>Ship?</legend>"
+                             "<label><input type=\"radio\" name=\"go\" value=\"y\"> Yes</label>"
+                             "<label><input type=\"radio\" name=\"go\" value=\"n\"> No</label></fieldset></form>",
+                             qs, first),
+          "omp form: a form with a text box is read");
+    parse_question_card(qs, card4);
+    check(card4.form && card4.terminal && card4.questions.size() == 2 && card4.questions[0].text == "Name" &&
+              form_answer_steps(card4, {{}, {1, 0}}).empty(),
+          "omp form: a text box makes it the terminal's to answer");
+    std::string many = "<form>";
+    for (int i = 0; i < 9; i++)
+      many += "<fieldset><legend>Q" + std::to_string(i) + "</legend><label><input type=\"radio\" name=\"q" +
+              std::to_string(i) + "\" value=\"a\"> A</label><label><input type=\"radio\" name=\"q" +
+              std::to_string(i) + "\" value=\"b\"> B</label></fieldset>";
+    QuestionCard card5;
+    omp_form_questions(many + "</form>", qs, first);
+    parse_question_card(qs, card5);
+    check(card5.questions.size() == 8 && card5.terminal, "omp form: more fields than a card holds go to the terminal");
+    check(!omp_form_questions("<form><p>Just text</p><input type=\"text\"></form>", qs, first),
+          "omp form: one with no named control is no question");
+
+    // Live, its checkboxes start as omp has them; answered, it folds down to
+    // the labels of the values omp recorded.
+    const std::string path = "/tmp/mico_form_question_test.jsonl";
+    put_file(path, call + "\n");
+    ChatRenderer c;
+    check(c.open(path, &pi_adapter()), "omp form: its transcript opens");
+    c.set_questions_interactive(true);
+    Theme theme;
+    Filters filters;
+    Surface sf;
+    sf.resize(70, 30);
+    const auto screen = [&](ChatRenderer& r) {
+      Painter p(sf, Rect{0, 0, 70, 30});
+      r.render(p, theme, filters);
+      std::string out;
+      for (int y = 0; y < 30; y++) {
+        for (int x = 0; x < 70; x++)
+          if (sf.at(x, y).width) text::encode(sf.at(x, y).cp ? sf.at(x, y).cp : U' ', out);
+        out += '\n';
+      }
+      return out;
+    };
+    std::string shown = screen(c);
+    check(shown.find("Which database should the new service use?") != std::string::npos &&
+              shown.find("SQLite: embedded, zero-ops") != std::string::npos && c.question_active(),
+          "omp form: the card is drawn, and answerable from the chat");
+    put_file(path,
+             call + "\n" +
+                 R"({"type":"message","message":{"role":"toolResult","toolCallId":"call_f","toolName":"ask","content":[{"type":"text","text":"User answers:\n{\n  \"db\": \"sqlite\",\n  \"auth\": [\n    \"password\",\n    \"magic\"\n  ]\n}"}],"isError":false}})"
+                 "\n");
+    ChatRenderer done;
+    done.open(path, &pi_adapter());
+    done.set_questions_interactive(true);
+    shown = screen(done);
+    check(shown.find("SQLite: embedded, zero-ops") != std::string::npos &&
+              shown.find("Email + password, Magic links") != std::string::npos && !done.question_active(),
+          "omp form: answered, the card shows what was chosen");
+    std::remove(path.c_str());
   }
 
   // A model question renders as a card and, when live and single-question, is

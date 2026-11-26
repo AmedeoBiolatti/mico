@@ -24,6 +24,7 @@
 #include "adapters/user_text.h"
 #include "vt/keys.h"
 #include "base/text.h"
+#include "core/chips.h"
 #include "ui/app.h"
 #include "term/input.h"
 #include "term/links.h"
@@ -3472,6 +3473,124 @@ time.sleep(10)
       if (c.width) text::encode(c.cp, row);
     check(row.starts_with("x👩‍💻y⚠️z🇮🇹! ") && vt.cursor().x == 10,
           "emoji: an agent's emoji take the columns it gave them, across reads");
+  }
+
+  // A chat just started is sent nothing until its input box is up and has
+  // stayed up. Claude keeps what is typed while it loads but loses the Enter:
+  // a model chip clicked at once left "/model opus" in its box, and the first
+  // message was written after it ("/model opusWhat is…"). Codex draws its box,
+  // then opens its update dialog over it, whose cursor starts on "Update now":
+  // an Enter meant for a message ran npm, and codex exited.
+  {
+    const std::string root = base + "/first-input";
+    const auto read = [](const std::string& path) {
+      std::ifstream f(path);
+      return std::string(std::istreambuf_iterator<char>(f), {});
+    };
+    put(root + "/claude.py", R"PY(import os, pathlib, select, sys, time, tty
+root = pathlib.Path(sys.argv[1])
+tty.setraw(0)
+early = b''
+start = time.time()
+banner = False
+while time.time() < start + 0.6:  # loading: typing is kept, an Enter is lost
+    if not banner and time.time() >= start + 0.3:
+        os.write(1, b' Claude Code\r\n\r\n')  # drawn before its box is
+        banner = True
+    if select.select([0], [], [], 0.02)[0]:
+        b = os.read(0, 1024)
+        (root / 'early').open('ab').write(b)
+        early += b.replace(b'\r', b'')
+rule = ('─' * 40 + '\r\n').encode()
+os.write(1, b'\x1b[?2004h' + rule + '❯ '.encode() + early + b'\r\n' + rule)
+line = early
+while True:
+    b = os.read(0, 1024)
+    line += b
+    os.write(1, b'.')  # the box redraws: the feedback paced keys wait for
+    while b'\r' in line:
+        msg, line = line.split(b'\r', 1)
+        msg = msg.replace(b'\x1b[200~', b'').replace(b'\x1b[201~', b'')
+        (root / 'submitted').open('ab').write(msg + b'\n')
+)PY");
+    put(root + "/codex.py", R"PY(import os, pathlib, select, sys, time, tty
+root = pathlib.Path(sys.argv[1])
+tty.setraw(0)
+box = '\x1b[2J\x1b[H  >_ OpenAI Codex\r\n\r\n› Ask Codex to do anything\r\n  ? for shortcuts\r\n'.encode()
+os.write(1, box)
+rows = ['Update now (runs `npm install -g @openai/codex`)', 'Skip', 'Skip until next version']
+def dialog(cursor):
+    out = '\x1b[2J\x1b[H  Update available · 0.172.0 → 0.173.0\r\n\r\n'
+    for i, r in enumerate(rows):
+        out += ('› ' if i == cursor else '  ') + f'{i + 1}. {r}\r\n'
+    os.write(1, (out + '\r\n  enter continue · esc skip').encode())
+end = time.time() + 0.3
+while time.time() < end:  # its box, and then the dialog over it
+    if select.select([0], [], [], 0.02)[0]:
+        (root / 'before-dialog').open('ab').write(os.read(0, 1024))
+cursor = 0
+dialog(cursor)
+while True:
+    b = os.read(0, 1024)
+    if b in (b'\x1b[B', b'\x1b[A'):
+        cursor = max(0, min(2, cursor + (1 if b == b'\x1b[B' else -1)))
+        dialog(cursor)
+    elif b == b'\r':
+        if cursor == 0:
+            (root / 'updated').touch()
+            sys.exit(1)
+        break
+    else:
+        (root / 'into-dialog').open('ab').write(b)
+os.write(1, box)
+line = b''
+while True:
+    line += os.read(0, 1024)
+    os.write(1, b'.')
+    if b'\r' in line:
+        msg = line.split(b'\r')[0].replace(b'\x1b[200~', b'').replace(b'\x1b[201~', b'')
+        (root / 'submitted').write_bytes(msg + b'\n')
+        time.sleep(10)
+)PY");
+    for (const char* agent : {"claude", "codex"}) {
+      std::filesystem::remove(root + "/submitted");
+      LiveSession session;
+      Launch l;
+      l.agent = agent;
+      l.cwd = root;
+      l.argv = {"python3", root + "/" + agent + ".py", root};
+      session.start(l);
+      session.set_geometry(80, 20);
+      // At once, as a user picking a model in a new chat and sending.
+      if (std::string_view(agent) == "claude") {
+        std::string key, value;
+        check(apply_chip_choice(session, "chipset:/model opus", &key, &value) == ChipApplied::Done,
+              "first input: a chip is taken while the agent starts");
+      }
+      check(session.send_parts({MessagePart{false, "What is a kangaroo?"}}),
+            "first input: a message is taken while the agent starts");
+      const size_t want = std::string_view(agent) == "claude" ? 2 : 1;
+      const auto submitted = [&] {
+        const std::string got = read(root + "/submitted");
+        return size_t(std::count(got.begin(), got.end(), '\n'));
+      };
+      for (int i = 0; i < 1600 && submitted() < want && !session.exited(); i++) {
+        session.pump();
+        usleep(5000);
+      }
+      const std::string got = read(root + "/submitted");
+      if (std::string_view(agent) == "claude") {
+        check(got == "/model opus\nWhat is a kangaroo?\n" && !session.answer_failed(),
+              "first input: claude runs the chip's command, then gets the message, each with its Enter");
+        check(!std::filesystem::exists(root + "/early"), "first input: nothing is typed while claude loads");
+      } else {
+        check(got == "What is a kangaroo?\n", "first input: codex gets the message once its update dialog is skipped");
+        check(!std::filesystem::exists(root + "/updated") && !std::filesystem::exists(root + "/into-dialog") &&
+                  !std::filesystem::exists(root + "/before-dialog"),
+              "first input: nothing goes to codex before its dialog or into it");
+      }
+      session.pty().terminate();
+    }
   }
 
   std::filesystem::remove_all(base);

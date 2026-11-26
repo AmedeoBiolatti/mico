@@ -868,7 +868,7 @@ void ChatRenderer::layout_question(const Event& e, int w) {
 
   // The newest unanswered card is the one answerable here; its state has to
   // exist before the first paint, or that frame draws no cursor.
-  const bool live = q_interactive_ && live_question() == e.tool_id &&
+  const bool live = q_interactive_ && live_question() == e.tool_id && !card.terminal &&
                     std::find(sent_.begin(), sent_.end(), e.tool_id) == sent_.end();
   const AsyncSlot* slot = card.async ? async_slot(e.tool_id) : nullptr;
   if (live) state_for(e.tool_id, card);
@@ -958,6 +958,10 @@ void ChatRenderer::layout_question(const Event& e, int w) {
       emit_scratch(scratch_.close(off), RowStyle::QOption, 4, e.tool_id, uint8_t(qi), 0xFC);
     }
   }
+  // A form with a field to type in: the card says what it asks, the
+  // agent's own dialog takes the answer.
+  if (card.terminal && q_interactive_ && live_question() == e.tool_id)
+    emit("answer it in the agent's terminal \xC2\xB7 F2", RowStyle::QHint, 2, 1, 0, 0xFF);
   if (slot && slot->status == AsyncStatus::Answered) {
     std::string reply = "\xE2\x86\xB3 ";
     reply += conv_.arena().view(slot->answer);
@@ -1010,6 +1014,8 @@ ChatRenderer::QState* ChatRenderer::state_for(uint64_t id, const QuestionCard& c
     const int n = int(q.options.size());
     st.cursor[qi] = std::clamp(q.recommended, 0, std::max(0, n - 1));
     st.chosen[qi].assign(size_t(std::max(0, n)), 0);
+    // A form's checkboxes start as it has them.
+    if (q.multi && q.checked.size() == size_t(n)) st.chosen[qi] = q.checked;
   }
   qstate_.push_back(QStateSlot{id, std::move(st)});
   return &qstate_.back().st;
@@ -1058,7 +1064,7 @@ bool ChatRenderer::question_live(uint64_t id) const {
   if (id == 0 || live_question() != id) return false;
   if (std::find(sent_.begin(), sent_.end(), id) != sent_.end()) return false;
   const QuestionCard* c = card(id);
-  return c && !c->questions.empty();
+  return c && !c->questions.empty() && !c->terminal;
 }
 
 bool ChatRenderer::question_active() const { return question_live(live_question()); }
@@ -1082,9 +1088,10 @@ bool ChatRenderer::focus_question() {
       c.async = is_async_question_tool(c.tool);
       if (c.async) c.call_id = std::string(conv_.arena().view(e.summary));
       parse_question_card(conv_.arena().view(e.detail), c);
-      if (c.questions.empty()) return false;
+      if (c.questions.empty() || c.terminal) return false;
       cards_.push_back(std::move(c));
     }
+    if (card(id)->terminal) return false;
     state_for(id, *card(id));
     go_to(conv_.file().line_offset(e.src_line));
     return true;

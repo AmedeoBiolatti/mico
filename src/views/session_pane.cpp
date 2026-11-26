@@ -473,6 +473,8 @@ class SessionPane final : public Pane {
     const Theme& th = app_->theme();
     const auto status = s_->status();
     const std::string state = s_->exited() ? "Stopped" : !s_->spawned() ? "Starting"
+                            : (s_->message_sending() || s_->answer_sending()) && !s_->takes_input()
+                                ? "Starting…"
                             : s_->answer_sending() ? "Sending answers…"
                             : s_->message_sending() ? "Sending…"
                             : chat_.question_submitted()
@@ -511,7 +513,8 @@ class SessionPane final : public Pane {
       recommended.push_back(q.recommended);
       options.push_back(int(q.options.size()));
     }
-    const auto steps = question_answer_steps(s_->driver(), multi, recommended, options, a.chosen);
+    const auto steps = a.card.form ? form_answer_steps(a.card, a.chosen)
+                                   : question_answer_steps(s_->driver(), multi, recommended, options, a.chosen);
     if (s_->driver().menu_keys().paced) {
       if (!s_->send_answer(steps)) {
         app_->set_status("could not send answers — F2 to finish in the terminal");
@@ -519,6 +522,7 @@ class SessionPane final : public Pane {
       }
       answering_question_ = true;
     } else {
+      s_->note_user_input();
       for (const auto& step : steps) s_->pty().write(step);
     }
     // The agents' menus have no room for notes (claude's only on questions
@@ -608,6 +612,7 @@ class SessionPane final : public Pane {
   }
 
   void send_async_reply(const std::string& msg) {
+    s_->note_user_input();
     s_->pty().write(encode_paste(msg, s_->vt().bracketed_paste()));
     s_->pty().write("\r");
     chat_.to_bottom();
@@ -1025,6 +1030,8 @@ class SessionPane final : public Pane {
         default: break;
       }
       if (seq) {
+        // Keys for a panel the agent shows: it is up, and this is use.
+        s_->note_user_input();
         s_->pty().write(seq);
         if (k.key == Key::Escape) app_->set_status("closed the side question");
         return true;
@@ -1305,7 +1312,7 @@ class SessionPane final : public Pane {
       const std::string cmd = a.substr(8);
       // Let its command completion settle before Enter. A single PTY read
       // containing both can be treated as pasted text by the agent's TUI.
-      if (!s_->send_answer({cmd, "\r"})) {
+      if (!s_->send_answer({cmd, "\r"}, true)) {
         app_->set_status("busy; try again in a moment");
         return;
       }
